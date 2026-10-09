@@ -1,0 +1,2 @@
+add_executable(ntt_walkthrough ntt_walkthrough.cpp)
+target_link_libraries(ntt_walkthrough PRIVATE openpqc::openpqc openpqc_warnings)
