@@ -1,0 +1,4 @@
+Unmodified copy of the mlkem/ directory and LICENSE of mlkem-native.
+Repository: https://github.com/pq-code-package/mlkem-native
+Commit:     6b12c8cd67e1edd07c43f581386449a6b064e6e2
+Updated by scripts/vendor_mlkem_native.py -- do not edit.

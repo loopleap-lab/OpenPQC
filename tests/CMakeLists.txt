@@ -1,13 +1,9 @@
 # one executable per test file, each registered with CTest
 set(OPENPQC_TESTS
-    test_modulo
-    test_roots
-    test_convolution
-    test_ntt_naive
-    test_ntt
     test_reduce
     test_mlkem_ntt
     test_hash
+    test_mlkem_cxx
 )
 
 foreach(name IN LISTS OPENPQC_TESTS)
@@ -18,3 +14,10 @@ foreach(name IN LISTS OPENPQC_TESTS)
     target_compile_options(${name} PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-UNDEBUG>)
     add_test(NAME ${name} COMMAND ${name})
 endforeach()
+
+# ML-KEM (OpenPQC and the reference) and Core
+add_subdirectory(ML-KEM)
+add_subdirectory(Core)
+
+# GPU backends: bit-exactness against the CPU library
+add_subdirectory(gpu)
