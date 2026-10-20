@@ -9,3 +9,12 @@
 [submodule "mlkem-native"]
 	path = references/mlkem-native
 	url = https://github.com/pq-code-package/mlkem-native.git
+[submodule "reference/dilithium"]
+	path = reference/dilithium
+	url = https://github.com/pq-crystals/dilithium.git
+[submodule "reference/mlkem-native"]
+	path = reference/mlkem-native
+	url = https://github.com/pq-code-package/mlkem-native.git
+[submodule "reference/cupqc"]
+	path = reference/cupqc
+	url = https://github.com/NVIDIA/cuPQC.git
