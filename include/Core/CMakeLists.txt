@@ -30,3 +30,15 @@ add_library(openpqc::core ALIAS openpqc_core)
 
 _openpqc_add_core(openpqc_core_testrng)
 target_compile_definitions(openpqc_core_testrng PRIVATE OPQC_CONFIG_EXTERNAL_RANDOMBYTES)
+
+# The host code shared by the GPU backends of all schemes (sycl/opqc_sycl_runtime.*):
+# the list of devices (C API in sycl/openpqc_sycl.h) and error handling
+if(OPENPQC_HAVE_SYCL)
+    add_library(openpqc_core_sycl STATIC sycl/opqc_sycl_runtime.cpp)
+    add_library(openpqc::core_sycl ALIAS openpqc_core_sycl)
+    target_include_directories(openpqc_core_sycl PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+    target_compile_features(openpqc_core_sycl PRIVATE cxx_std_20)
+    set_target_properties(openpqc_core_sycl PROPERTIES LINKER_LANGUAGE CXX POSITION_INDEPENDENT_CODE ON)
+    openpqc_sycl_sources(openpqc_core_sycl sycl/opqc_sycl_runtime.cpp)
+endif()

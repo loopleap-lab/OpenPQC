@@ -3,13 +3,13 @@
 // The only compiled file of ML-KEM: it instantiates the templates of
 // scheme/ml_kem.hpp for the three parameter sets and exports them under the
 // C names. Each function turns its pointer arguments into fixed-size spans.
-#include "ML-KEM/openpqc_mlkem.h"
+#include "ML/KEM/openpqc_mlkem.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-#include "ML-KEM/scheme/ml_kem.hpp"
+#include "ML/KEM/scheme/ml_kem.hpp"
 
 namespace {
 

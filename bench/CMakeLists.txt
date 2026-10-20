@@ -10,6 +10,9 @@
 #   bench_primitives_sycl  the math core's Keccak-f[1600] and NTT as stand-alone GPU kernels
 #   profile_stages_sycl  time per stage of the SYCL pipeline
 #   bench_cupqc_mlkem    NVIDIA cuPQC, as a baseline (optional, see below)
+#   bench_mldsa_cpu_mt   ML-DSA, CPU throughput on 1..T threads: OpenPQC, reference, AVX2
+#   bench_mldsa_sycl     ML-DSA on a SYCL device: throughput and latency per batch size
+#   profile_mldsa_stages_sycl  ML-DSA: time per stage of the SYCL pipeline
 
 add_executable(bench_mlkem_cpu_mt cpu/bench_mlkem_cpu_mt.cpp)
 target_link_libraries(bench_mlkem_cpu_mt PRIVATE openpqc_mlkem openpqc_reference_mlkem)
@@ -32,7 +35,7 @@ if(OPENPQC_HAVE_SYCL)
     # time per pipeline stage (compiles the backend's source itself, so no openpqc_mlkem_sycl)
     add_executable(profile_stages_sycl gpu/profile_stages_sycl.cpp)
     target_include_directories(profile_stages_sycl PRIVATE ${PROJECT_SOURCE_DIR}/include)
-    target_link_libraries(profile_stages_sycl PRIVATE openpqc_core ${CMAKE_DL_LIBS})
+    target_link_libraries(profile_stages_sycl PRIVATE openpqc_core openpqc_core_sycl ${CMAKE_DL_LIBS})
     target_compile_features(profile_stages_sycl PRIVATE cxx_std_20)
     openpqc_sycl_sources(profile_stages_sycl gpu/profile_stages_sycl.cpp)
 endif()
@@ -50,4 +53,26 @@ if(OPENPQC_CUPQC_DIR)
     set_target_properties(bench_cupqc_mlkem PROPERTIES CUDA_STANDARD 20 CUDA_SEPARABLE_COMPILATION ON)
     target_compile_options(bench_cupqc_mlkem PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-dlto>)
     target_link_options(bench_cupqc_mlkem PRIVATE $<DEVICE_LINK:-dlto>)
+endif()
+
+# ML-DSA on the CPU: OpenPQC, the reference implementation and its AVX2 version
+add_executable(bench_mldsa_cpu_mt cpu/bench_mldsa_cpu_mt.cpp)
+target_link_libraries(bench_mldsa_cpu_mt PRIVATE openpqc_mldsa openpqc_reference_mldsa Threads::Threads)
+if(OPENPQC_HAVE_REFERENCE_MLDSA_AVX2)
+    target_link_libraries(bench_mldsa_cpu_mt PRIVATE openpqc_reference_mldsa_avx2)
+    target_compile_definitions(bench_mldsa_cpu_mt PRIVATE OPENPQC_HAVE_REFERENCE_MLDSA_AVX2)
+endif()
+target_compile_features(bench_mldsa_cpu_mt PRIVATE cxx_std_20)
+
+if(OPENPQC_HAVE_SYCL)
+    add_executable(bench_mldsa_sycl gpu/bench_mldsa_sycl.cpp)
+    target_link_libraries(bench_mldsa_sycl PRIVATE openpqc_mldsa_sycl openpqc_mldsa ${CMAKE_DL_LIBS})
+    target_compile_features(bench_mldsa_sycl PRIVATE cxx_std_20)
+
+    # time per pipeline stage (compiles the backend's source itself, so no openpqc_mldsa_sycl)
+    add_executable(profile_mldsa_stages_sycl gpu/profile_mldsa_stages_sycl.cpp)
+    target_include_directories(profile_mldsa_stages_sycl PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(profile_mldsa_stages_sycl PRIVATE openpqc_core openpqc_core_sycl ${CMAKE_DL_LIBS})
+    target_compile_features(profile_mldsa_stages_sycl PRIVATE cxx_std_20)
+    openpqc_sycl_sources(profile_mldsa_stages_sycl gpu/profile_mldsa_stages_sycl.cpp)
 endif()

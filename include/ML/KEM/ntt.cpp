@@ -1,6 +1,6 @@
 // ntt.cpp  --  number-theoretic transform for ML-KEM (Kyber) in R_q = Z_q[X]/(X^256 + 1)
-#include "ML-KEM/ntt.hpp"
-#include "ML-KEM/reduce.hpp"
+#include "ML/KEM/ntt.hpp"
+#include "ML/KEM/reduce.hpp"
 
 #include <cstddef>
 

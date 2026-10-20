@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <span>
 
-#include "ML-KEM/params.hpp"
+#include "ML/KEM/params.hpp"
 
 namespace openpqc::mlkem {
 

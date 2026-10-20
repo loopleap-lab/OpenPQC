@@ -1,0 +1,8 @@
+# SHA-256 of the response files of the NIST KAT generator (ref/nistkat/PQCgenKAT_sign.c,
+# hedged signing with rnd from the NIST AES-256 CTR DRBG), as the unmodified reference at
+# commit d35ba3f produces them. The nistkat-sha256 values in its *_META.yml files are out of
+# date: they were computed before the FIPS 204 changes (context strings) and match no
+# current output.
+1d29c3b4ec68e3455f87f49b3386a2a6fc5e167c76e476c4770317ffbb97d242  PQCsignKAT_Dilithium2.rsp
+3c9427c9939788031cbaf2cdfa3e49c1e69ead5584516ad513567a4880fa64b6  PQCsignKAT_Dilithium3.rsp
+8f35a98d3672e89fe8b4d461ff62a145edfe972e515a9bccec248b7899b718ec  PQCsignKAT_Dilithium5.rsp

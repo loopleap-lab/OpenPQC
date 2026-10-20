@@ -1,6 +1,6 @@
 // polynomials.hpp  --  polynomials, vectors and matrices over Z_q (FIPS 203, Section 2.4)
 //
-// The C++ view of the C11 math core (ML-KEM/math): value types for the
+// The C++ view of the C11 math core (ML/KEM/math): value types for the
 // algebraic objects of the standard, and the operations K-PKE needs on them,
 // written so that the algorithms in kpke.hpp read like their pseudocode:
 //

@@ -27,8 +27,8 @@
  *
  * The function and size names are those of earlier OpenPQC versions, which
  * were built on mlkem-native; the return codes have the values of
- * mlkem-native's MLK_ERR_* codes. The implementation is ML-KEM/mlkem.cpp,
- * with the algorithms in ML-KEM/scheme.
+ * mlkem-native's MLK_ERR_* codes. The implementation is ML/KEM/mlkem.cpp,
+ * with the algorithms in ML/KEM/scheme.
  */
 
 #ifndef OPENPQC_MLKEM_H

@@ -9,9 +9,12 @@
 #   environment.txt         machine, drivers, compilers
 #   cpu_mlkem_cycles.txt    single-thread cycles, OpenPQC and the reference (mlkem-native)
 #   cpu_mlkem_mt.csv        CPU throughput on 1, T/2 and T threads, both implementations
-#   sycl_<name>.csv         OpenPQC on a SYCL device, every level and batch size
-#   primitives_<name>.csv   the math core's Keccak-f[1600] and NTT as stand-alone kernels
-#   profile_<name>.csv      time per pipeline stage at batch 32768
+#   sycl_<name>.csv         OpenPQC ML-KEM on a SYCL device, every level and batch size
+#   primitives_<name>.csv   the math cores' Keccak-f[1600] and NTTs as stand-alone kernels
+#   profile_<name>.csv      ML-KEM: time per pipeline stage at batch 32768
+#   cpu_mldsa_mt.csv        ML-DSA, CPU throughput on 1, T/2 and T threads: OpenPQC, reference, AVX2
+#   mldsa_sycl_<name>.csv   OpenPQC ML-DSA on a SYCL device, every level and batch size
+#   mldsa_profile_<name>.csv  ML-DSA: time per pipeline stage at batch 4096
 #
 # Environment variables:
 #   CPU_BUILD   build directory with the CPU benchmarks (default: build)
@@ -80,6 +83,13 @@ else
     echo "skip CPU multi-threaded ($cpu_build/bench/bench_mlkem_cpu_mt not built)"
 fi
 
+if [ -x "$cpu_build/bench/bench_mldsa_cpu_mt" ]; then
+    echo "run  CPU multi-threaded ML-DSA -> $out/cpu_mldsa_mt.csv"
+    "$cpu_build/bench/bench_mldsa_cpu_mt" "1,$((threads / 2)),$threads" 1 > "$out/cpu_mldsa_mt.csv"
+else
+    echo "skip CPU multi-threaded ML-DSA ($cpu_build/bench/bench_mldsa_cpu_mt not built)"
+fi
+
 # GPU: clock log while the GPU benchmarks run
 logger=""
 if have_nvidia_smi; then
@@ -113,6 +123,18 @@ for run in ${SYCL_RUNS:-}; do
         "$dir/bench/profile_stages_sycl" "$levels" 32768 7 "$device" "$cool" 2>/dev/null > "$out/profile_$name.csv" ||
             echo "warning: SYCL stage profile $name exited with status $?" >&2
     fi
+    if [ -x "$dir/bench/bench_mldsa_sycl" ]; then
+        echo "run  SYCL ML-DSA $name -> $out/mldsa_sycl_$name.csv"
+        "$dir/bench/bench_mldsa_sycl" 44,65,87 1,8,64,512,4096,8192 "$trials" "$cool" "$device" \
+            > "$out/mldsa_sycl_$name.csv" 2> "$out/mldsa_sycl_$name.log" ||
+            echo "warning: SYCL ML-DSA $name exited with status $?" >&2
+    fi
+    if [ -x "$dir/bench/profile_mldsa_stages_sycl" ]; then
+        echo "run  SYCL ML-DSA stage profile $name -> $out/mldsa_profile_$name.csv"
+        "$dir/bench/profile_mldsa_stages_sycl" 44,65,87 4096 7 "$device" "$cool" 2>/dev/null \
+            > "$out/mldsa_profile_$name.csv" ||
+            echo "warning: SYCL ML-DSA stage profile $name exited with status $?" >&2
+    fi
 done
 
 if [ -n "${CUPQC_BENCH:-}" ] && [ -n "${CUPQC_OUT:-}" ] && [ -x "$CUPQC_BENCH" ]; then
@@ -128,5 +150,9 @@ if command -v python3 >/dev/null 2>&1 && ls "$out"/sycl_*.csv >/dev/null 2>&1; t
     here=$(dirname "$0")
     python3 "$here/compare_gpu.py" "$out"/sycl_*.csv --mode kernel --markdown > "$out/sycl_kernel.md"
     python3 "$here/compare_gpu.py" "$out"/sycl_*.csv --mode e2e --markdown > "$out/sycl_e2e.md"
+fi
+if command -v python3 >/dev/null 2>&1 && ls "$out"/mldsa_sycl_*.csv >/dev/null 2>&1; then
+    here=$(dirname "$0")
+    python3 "$here/compare_gpu.py" "$out"/mldsa_sycl_*.csv --mode kernel --markdown > "$out/mldsa_sycl_kernel.md"
 fi
 echo "done: $out"

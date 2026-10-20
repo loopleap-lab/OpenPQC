@@ -1,7 +1,7 @@
 // test_mlkem_ntt.cpp  --  ML-KEM NTT: zeta table, round trip, and multiplication via basemul
 #include "check.hpp"
-#include "ML-KEM/ntt.hpp"
-#include "ML-KEM/reduce.hpp"
+#include "ML/KEM/ntt.hpp"
+#include "ML/KEM/reduce.hpp"
 
 #include <array>
 #include <cstddef>

@@ -90,26 +90,31 @@ if(OPENPQC_CUPQC_DIR AND OPENPQC_BUILD_BENCHMARKS)
     find_package(CUDAToolkit REQUIRED)
 endif()
 
-# The groups (include/<group>/). Each has a C11 math core (header-only, shared
-# by the CPU code and the GPU kernels) and a C++20 scheme layer:
-#   Core    primitives shared by several schemes: FIPS 202 (Keccak, SHA-3,
-#           SHAKE), constant-time helpers, OS randomness and zeroization
-#   ML-KEM  FIPS 203
+# The groups (include/<group>/), from the primitives shared by every scheme up
+# to the schemes. Each scheme has a C11 math core (header-only, shared by the
+# CPU code and the GPU kernels) and a C++20 scheme layer:
+#   Core    primitives shared by all schemes: FIPS 202 (Keccak, SHA-3, SHAKE),
+#           FIPS 180-4 (SHA-2), constant-time helpers, OS randomness and
+#           zeroization (header-only except opqc_platform.c)
+#   ML      what the module-lattice schemes share (header-only)
+#   ML/KEM  FIPS 203
+#   ML/DSA  FIPS 204
 add_subdirectory(include/Core)
-add_subdirectory(include/ML-KEM)
+add_subdirectory(include/ML/KEM)
+add_subdirectory(include/ML/DSA)
 
-# C++ umbrella library: Core and ML-KEM, and the C++ learning code for ML-KEM's
-# arithmetic (ML-KEM/reduce, ML-KEM/ntt).
+# C++ umbrella library: Core, ML-KEM and ML-DSA, and the C++ learning code for
+# ML-KEM's arithmetic (ML/KEM/reduce, ML/KEM/ntt).
 add_library(openpqc STATIC
-    include/ML-KEM/reduce.cpp
-    include/ML-KEM/ntt.cpp
+    include/ML/KEM/reduce.cpp
+    include/ML/KEM/ntt.cpp
 )
 add_library(openpqc::openpqc ALIAS openpqc)
 target_include_directories(openpqc PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_features(openpqc PUBLIC cxx_std_20)
-target_link_libraries(openpqc PUBLIC openpqc::core openpqc::mlkem PRIVATE openpqc_warnings)
+target_link_libraries(openpqc PUBLIC openpqc::core openpqc::mlkem openpqc::mldsa PRIVATE openpqc_warnings)
 
 # The reference implementation (mlkem-native, unmodified), for tests and benchmarks
 if(OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHMARKS)

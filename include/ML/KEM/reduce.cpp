@@ -1,5 +1,5 @@
 // reduce.cpp  --  Montgomery and Barrett reduction for ML-KEM (Kyber), q = 3329
-#include "ML-KEM/reduce.hpp"
+#include "ML/KEM/reduce.hpp"
 
 namespace openpqc::mlkem {
 

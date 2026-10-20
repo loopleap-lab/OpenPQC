@@ -12,8 +12,8 @@
 #include <cstdint>
 #include <span>
 
-#include "../../Core/opqc_ct.h"
-#include "../../Core/zeroize.hpp"
+#include "../../../Core/opqc_ct.h"
+#include "../../../Core/zeroize.hpp"
 #include "crypto_functions.hpp"
 #include "kpke.hpp"
 #include "parameter_sets.hpp"

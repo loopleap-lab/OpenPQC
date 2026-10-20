@@ -1,8 +1,8 @@
 // mlkem.hpp  --  C++ API for ML-KEM (FIPS 203): ML-KEM-512, ML-KEM-768, ML-KEM-1024
 //
-// Header-only wrapper over the C API in ML-KEM/openpqc_mlkem.h, so that
-// including it does not pull in the algorithms (those are in ML-KEM/scheme/,
-// compiled once in ML-KEM/mlkem.cpp). Sizes are part of the types:
+// Header-only wrapper over the C API in ML/KEM/openpqc_mlkem.h, so that
+// including it does not pull in the algorithms (those are in ML/KEM/scheme/,
+// compiled once in ML/KEM/mlkem.cpp). Sizes are part of the types:
 //
 //   using KEM = openpqc::mlkem::MLKEM768;
 //   KEM::public_key pk;  KEM::secret_key sk;
@@ -20,7 +20,7 @@
 #include <cstdint>
 #include <span>
 
-#include "ML-KEM/openpqc_mlkem.h"
+#include "ML/KEM/openpqc_mlkem.h"
 
 namespace openpqc::mlkem {
 

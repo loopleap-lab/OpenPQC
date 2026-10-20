@@ -19,7 +19,7 @@
 #ifndef MLKEM_SAMPLE_H
 #define MLKEM_SAMPLE_H
 
-#include "../../Core/opqc_sha3.h"
+#include "../../../Core/opqc_sha3.h"
 #include "mlkem_field.h"
 
 /* Lines 6-7 of Algorithm 7: two 12-bit candidates from the 3 bytes c0 c1 c2 */

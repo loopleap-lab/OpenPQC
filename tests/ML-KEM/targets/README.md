@@ -6,7 +6,7 @@ include with a target header, and the build puts the directory of one target on 
 
 | mlkem-native header | target header | `openpqc/` provides | `reference/` includes |
 |---|---|---|---|
-| `mlkem_native.h` | `mlkem_test_target_api.h` | `ML-KEM/openpqc_mlkem.h` and the size and error macros | `mlkem_native.h` |
+| `mlkem_native.h` | `mlkem_test_target_api.h` | `ML/KEM/openpqc_mlkem.h` and the size and error macros | `mlkem_native.h` |
 | `src/common.h` (and other `src/*.h`) | `mlkem_test_target_common.h` | API names, sizes, error codes, attributes, ct-test hooks | `src/common.h` |
 | `src/fips202/*.h` | `mlkem_test_target_fips202.h` | `mlk_shake256` = `opqc_shake256` | `src/fips202/fips202.h` |
 | `src/randombytes.h` | `mlkem_test_target_randombytes.h` | the declaration of `randombytes()` | `src/randombytes.h` |

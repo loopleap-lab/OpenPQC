@@ -41,6 +41,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "Core/sycl/openpqc_sycl.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -50,15 +52,8 @@ extern "C" {
 
 typedef struct opqc_sycl_mlkem opqc_sycl_mlkem;
 
-/* The SYCL implementation the backend was compiled with: "DPC++", "AdaptiveCpp"
- * or "SYCL". */
-const char *opqc_sycl_implementation(void);
-
-/* Number of SYCL devices, and the name and platform of device i (empty string if
- * i is out of range). */
-int opqc_sycl_device_count(void);
-const char *opqc_sycl_device_name(int i);
-const char *opqc_sycl_device_platform(int i);
+/* The devices (opqc_sycl_device_count, opqc_sycl_device_name, ...) are those of
+ * Core/sycl/openpqc_sycl.h, shared by the GPU backends of all schemes. */
 
 /*
  * Creates a context for parameter set `level` (512, 768 or 1024) on SYCL device

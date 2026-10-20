@@ -24,7 +24,7 @@
 
 #include <pk.hpp>
 
-#include "../../include/ML-KEM/openpqc_mlkem.h"
+#include "../../include/ML/KEM/openpqc_mlkem.h"
 #include "../bench_common.hpp"
 
 using namespace cupqc;

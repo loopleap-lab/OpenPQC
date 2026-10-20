@@ -21,8 +21,8 @@
 #include <random>
 #include <vector>
 
-#include "ML-KEM/openpqc_mlkem.h"
-#include "ML-KEM/sycl/openpqc_mlkem_sycl.h"
+#include "ML/KEM/openpqc_mlkem.h"
+#include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
 
 namespace {
 

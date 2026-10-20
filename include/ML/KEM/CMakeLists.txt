@@ -38,7 +38,7 @@ if(OPENPQC_HAVE_SYCL)
     target_include_directories(openpqc_mlkem_sycl PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
     target_compile_features(openpqc_mlkem_sycl PRIVATE cxx_std_20)
-    target_link_libraries(openpqc_mlkem_sycl PUBLIC openpqc_core)
+    target_link_libraries(openpqc_mlkem_sycl PUBLIC openpqc_core openpqc_core_sycl)
     set_target_properties(openpqc_mlkem_sycl PROPERTIES LINKER_LANGUAGE CXX POSITION_INDEPENDENT_CODE ON)
     openpqc_sycl_sources(openpqc_mlkem_sycl sycl/mlkem_sycl.cpp)
 endif()

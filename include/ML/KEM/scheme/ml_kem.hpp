@@ -22,9 +22,9 @@
 #include <cstdint>
 #include <span>
 
-#include "../../Core/opqc_ct.h"
-#include "../../Core/opqc_platform.h"
-#include "../../Core/zeroize.hpp"
+#include "../../../Core/opqc_ct.h"
+#include "../../../Core/opqc_platform.h"
+#include "../../../Core/zeroize.hpp"
 #include "crypto_functions.hpp"
 #include "mlkem_internal.hpp"
 #include "parameter_sets.hpp"

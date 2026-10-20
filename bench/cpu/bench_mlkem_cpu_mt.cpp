@@ -20,7 +20,7 @@
 #include <thread>
 #include <vector>
 
-#include "ML-KEM/openpqc_mlkem.h"
+#include "ML/KEM/openpqc_mlkem.h"
 
 extern "C" {
 // the reference's API (reference/mlkem-native, namespace prefix ref_mlkem)

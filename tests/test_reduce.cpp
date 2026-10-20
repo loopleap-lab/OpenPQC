@@ -1,6 +1,6 @@
 // test_reduce.cpp  --  Montgomery and Barrett reduction (ML-KEM, q = 3329)
 #include "check.hpp"
-#include "ML-KEM/reduce.hpp"
+#include "ML/KEM/reduce.hpp"
 
 #include <cstdint>
 

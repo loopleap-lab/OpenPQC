@@ -21,7 +21,7 @@
 #   reference_mlkemNNN_alloc  mlkem-native's custom-allocator tests
 #
 # OpenPQC's own tests:
-#   mlkem_math                the C11 math core (ML-KEM/math), exhaustively where feasible
+#   mlkem_math                the C11 math core (ML/KEM/math), exhaustively where feasible
 #   mlkem_differential        OpenPQC == reference, byte for byte, on random and
 #                             malformed inputs
 #
@@ -125,7 +125,7 @@ endforeach()
 # built with OPQC_CT_TESTING, declassifies what is public by design. valgrind
 # then fails on any branch or memory index that depends on secret data.
 if(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
-    add_library(openpqc_mlkem_ct_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML-KEM/mlkem.cpp)
+    add_library(openpqc_mlkem_ct_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
     target_include_directories(openpqc_mlkem_ct_objects PRIVATE ${PROJECT_SOURCE_DIR}/include
                                ${OPENPQC_VALGRIND_INCLUDE_DIR})
     target_compile_definitions(openpqc_mlkem_ct_objects PRIVATE OPQC_CT_TESTING)

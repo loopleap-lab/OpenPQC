@@ -11,7 +11,7 @@
  * One source therefore serves three compilers:
  *
  *   - C11 (the C API and any C caller),
- *   - C++20 (the scheme layer, e.g. include/ML-KEM/mlkem.hpp),
+ *   - C++20 (the scheme layer, e.g. include/ML/KEM/mlkem.hpp),
  *   - SYCL device compilers (the GPU kernels in include/<scheme>/sycl/).
  *
  * To stay valid in all three, the math core does not use `restrict`,

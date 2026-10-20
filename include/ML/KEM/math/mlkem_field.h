@@ -7,7 +7,7 @@
  * mlkem_field.h -- arithmetic in Z_q, q = 3329 (FIPS 203, Sections 2.3, 2.4.3)
  *
  * Representation. An element of Z_q is a uint16_t in [0, q). Every function
- * in ML-KEM/math takes and returns elements in this range, so a polynomial is
+ * in ML/KEM/math takes and returns elements in this range, so a polynomial is
  * always stored in canonical form; there are no Montgomery factors or signed
  * representatives to keep track of.
  *
@@ -33,7 +33,7 @@
 #ifndef MLKEM_FIELD_H
 #define MLKEM_FIELD_H
 
-#include "../../Core/opqc_common.h"
+#include "../../../Core/opqc_common.h"
 
 #define MLKEM_N 256  /* polynomial degree n */
 #define MLKEM_Q 3329 /* modulus q = 2^8 * 13 + 1 */

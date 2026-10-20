@@ -4,7 +4,7 @@
 // AMD GPUs, Intel GPUs, CPUs), compiled with Intel DPC++ or AdaptiveCpp. The
 // results are byte-identical to the CPU library.
 //
-// The mathematics is the C11 math core -- Core/opqc_keccak.h and ML-KEM/math --
+// The mathematics is the C11 math core -- Core/opqc_keccak.h and ML/KEM/math --
 // the same functions the CPU library runs. This file decides who computes what:
 //
 //  * Hashing stages: one work-item per independent sponge, across the batch.
@@ -27,7 +27,7 @@
 // sampled coefficients (512 bytes): SamplePolyCBD then runs in the arithmetic
 // stage, spread over the 32 work-items of the team.
 
-#include "ML-KEM/sycl/openpqc_mlkem_sycl.h"
+#include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
 
 #include <sycl/sycl.hpp>
 
@@ -39,17 +39,20 @@
 #include <vector>
 
 #include "Core/opqc_platform.h"
+#include "Core/sycl/opqc_sycl_runtime.hpp"
 #include "Core/sycl/opqc_sycl_sponge.hpp"
-#include "ML-KEM/math/mlkem_encode.h"
-#include "ML-KEM/math/mlkem_field.h"
-#include "ML-KEM/math/mlkem_ntt.h"
-#include "ML-KEM/math/mlkem_sample.h"
-#include "ML-KEM/scheme/parameter_sets.hpp"
+#include "Core/sycl/opqc_sycl_team.hpp"
+#include "ML/KEM/math/mlkem_encode.h"
+#include "ML/KEM/math/mlkem_field.h"
+#include "ML/KEM/math/mlkem_ntt.h"
+#include "ML/KEM/math/mlkem_sample.h"
+#include "ML/KEM/scheme/parameter_sets.hpp"
 
 namespace openpqc::mlkem::gpu {
 namespace {
 
 using openpqc::gpu::absorb;
+using openpqc::gpu::buffer;
 using openpqc::gpu::load64;
 using openpqc::gpu::pad_and_permute;
 using openpqc::gpu::store64;
@@ -57,6 +60,7 @@ using openpqc::gpu::SHA3_256_RATE_WORDS;
 using openpqc::gpu::SHA3_512_RATE_WORDS;
 using openpqc::gpu::SHAKE128_RATE_WORDS;
 using openpqc::gpu::SHAKE256_RATE_WORDS;
+using openpqc::gpu::workspace;
 
 constexpr unsigned HASH_GROUP = 128;   // work-group size of the hashing stages
 constexpr unsigned TEAM = 32;          // work-items per operation in the arithmetic stages
@@ -68,23 +72,6 @@ constexpr std::size_t prf_stride_of_level(int level) { return level == 512 ? 192
 static_assert(prf_stride<params::ML_KEM_512> == prf_stride_of_level(512) &&
               prf_stride<params::ML_KEM_768> == prf_stride_of_level(768) &&
               prf_stride<params::ML_KEM_1024> == prf_stride_of_level(1024));
-
-// Alignment that the kernels tell the compiler about: the caller's buffers are
-// 8-byte aligned (an API requirement, checked by the C API) and the workspace
-// sections 256-byte aligned. Every per-operation size is a multiple of 16 bytes,
-// so this carries over to each operation's data, and the compiler can combine a
-// work-item's neighbouring byte and 16-bit accesses into 32- to 128-bit ones.
-// (AdaptiveCpp's JIT finds the alignment of kernel arguments at run time; DPC++
-// compiles ahead of time and needs to be told.)
-constexpr std::size_t BUFFER_ALIGN = 8, WORKSPACE_ALIGN = 256;
-template <class T>
-inline T* buffer(T* p) {
-    return std::assume_aligned<BUFFER_ALIGN>(p);
-}
-template <class T>
-inline T* workspace(T* p) {
-    return std::assume_aligned<WORKSPACE_ALIGN>(p);
-}
 
 // Device workspace: struct of arrays over the operations of one launch.
 struct Workspace {
@@ -100,46 +87,19 @@ struct Workspace {
 
 // ------------------------------------------------------------------ launching
 
-// The kernel functions below are marked always_inline: without it, DPC++ may
-// compile a large kernel body as a function of its own, called with the captured
-// variables on the stack and with local memory reached through generic pointers.
-#define OPQC_KERNEL_INLINE __attribute__((always_inline))
+// The launch helpers of Core/sycl/opqc_sycl_team.hpp with ML-KEM's shape: hashing
+// stages in work-groups of HASH_GROUP, arithmetic stages with TEAMS teams of TEAM
+// work-items per work-group and 16-bit coefficients in local memory.
+using Team = openpqc::gpu::Team<std::uint16_t, TEAM>;
 
-// f(i) for every i < n, one work-item each
 template <class F>
 void for_each_item(sycl::queue& q, std::size_t n, F f) {
-    const std::size_t global = (n + HASH_GROUP - 1) / HASH_GROUP * HASH_GROUP;
-    q.parallel_for(sycl::nd_range<1>(global, HASH_GROUP), [=](sycl::nd_item<1> it) OPQC_KERNEL_INLINE {
-        const std::size_t i = it.get_global_id(0);
-        if (i < n) f(i);
-    });
+    openpqc::gpu::for_each_item<HASH_GROUP>(q, n, f);
 }
 
-// The view of one work-item in a team (see the top of the file).
-struct Team {
-    sycl::nd_item<1> item;
-    std::size_t op;          // the operation of this team
-    unsigned g;              // index of the work-item within its team, 0..31
-    bool active;             // false for the padding teams of the last work-group
-    std::uint16_t* local;    // this team's local memory
-    void barrier() const { sycl::group_barrier(item.get_group()); }
-};
-
-// f(team) for the n operations, with local_words 16-bit words of local memory
-// per team. Teams beyond n repeat operation n - 1 without writing results, so
-// that every work-item of a work-group reaches every barrier.
 template <class F>
 void for_each_team(sycl::queue& q, std::size_t n, std::size_t local_words, F f) {
-    const std::size_t groups = (n + TEAMS - 1) / TEAMS;
-    q.submit([&](sycl::handler& h) {
-        sycl::local_accessor<std::uint16_t, 1> local(sycl::range<1>(TEAMS * local_words), h);
-        h.parallel_for(sycl::nd_range<1>(groups * TEAMS * TEAM, TEAMS * TEAM), [=](sycl::nd_item<1> it) OPQC_KERNEL_INLINE {
-            const unsigned t = static_cast<unsigned>(it.get_local_id(0)) / TEAM;
-            const std::size_t op = it.get_group(0) * TEAMS + t;
-            f(Team{it, op < n ? op : n - 1, static_cast<unsigned>(it.get_local_id(0)) % TEAM, op < n,
-                   &local[t * local_words]});
-        });
-    });
+    openpqc::gpu::for_each_team<std::uint16_t, TEAM, TEAMS>(q, n, local_words, f);
 }
 
 // ------------------------------------------------------------------ team arithmetic
@@ -216,27 +176,13 @@ inline void store_chunk(std::uint16_t* poly, const std::uint16_t in[8], unsigned
     for (unsigned x = 0; x < 8; x++) poly[8 * g + x] = in[x];
 }
 
-// OR of `value` over the 32 work-items of the team (all must call it)
+// OR of `value` over the team (all must call it), and the clearing of the team's
+// polynomials in local memory before the kernel ends (Core/sycl/opqc_sycl_team.hpp)
 inline std::uint32_t team_or(const Team& t, std::uint16_t value) {
-    std::uint16_t* scratch = t.local;   // the caller has no data left in local memory
-    t.barrier();
-    scratch[t.g] = value;
-    t.barrier();
-    std::uint32_t any = 0;
-    for (unsigned i = 0; i < TEAM; i++) any |= scratch[i];
-    return any;
+    return openpqc::gpu::team_or(t, value);
 }
-
-// Overwrites the team's `count` polynomials in local memory with zeros, each
-// work-item its own chunks, once all of them are done with local memory. Local
-// memory is not cleared between kernels, and on some GPUs other processes could
-// read it ("LeftoverLocals"); the polynomials of the arithmetic stages are secret.
 inline void clear_local(const Team& t, unsigned count) {
-    t.barrier();
-    for (unsigned p = 0; p < count; p++) {
-#pragma unroll
-        for (unsigned x = 0; x < 8; x++) t.local[MLKEM_N * p + 8 * t.g + x] = 0;
-    }
+    openpqc::gpu::clear_local<MLKEM_N>(t, count);
 }
 
 // ------------------------------------------------------------------ hashing stages
@@ -713,26 +659,7 @@ struct opqc_sycl_mlkem {
 
 namespace {
 
-std::vector<sycl::device> all_devices() {
-    try {
-        return sycl::device::get_devices();
-    } catch (...) {
-        return {};
-    }
-}
-
-thread_local std::string name_buffer, platform_buffer;   // returned by the C API
-
-template <class F>
-int guarded(F f) {
-    try {
-        return f();
-    } catch (const std::exception&) {
-        return -2;
-    } catch (...) {
-        return -2;
-    }
-}
+using openpqc::gpu::guarded;
 
 // The secret workspace sections (bit i = section i of secret_offset/secret_bytes)
 enum Section : unsigned { SEEDS = 1, PRF = 2, MSG = 4, KBAR = 8, COINS = 16 };
@@ -771,59 +698,20 @@ void with_level(int level, F f) {
     }
 }
 
-// The kernels rely on the caller's buffers being aligned (gpu::buffer)
+// The kernels rely on the caller's buffers being aligned (openpqc::gpu::buffer)
 template <class... T>
 bool aligned(const T*... p) {
-    return ((reinterpret_cast<std::uintptr_t>(p) % gpu::BUFFER_ALIGN == 0) && ...);
+    return openpqc::gpu::aligned(openpqc::gpu::BUFFER_ALIGN, p...);
 }
 
 } // namespace
-
-extern "C" const char* opqc_sycl_implementation(void) {
-#if defined(__ACPP__) || defined(__HIPSYCL__)
-    return "AdaptiveCpp";
-#elif defined(SYCL_IMPLEMENTATION_ONEAPI) || defined(SYCL_IMPLEMENTATION_INTEL)
-    return "DPC++";
-#else
-    return "SYCL";
-#endif
-}
-
-extern "C" int opqc_sycl_device_count(void) {
-    return static_cast<int>(all_devices().size());
-}
-
-extern "C" const char* opqc_sycl_device_name(int i) {
-    const auto devices = all_devices();
-    name_buffer = i >= 0 && static_cast<std::size_t>(i) < devices.size()
-                          ? devices[static_cast<std::size_t>(i)].get_info<sycl::info::device::name>()
-                          : std::string();
-    return name_buffer.c_str();
-}
-
-extern "C" const char* opqc_sycl_device_platform(int i) {
-    const auto devices = all_devices();
-    platform_buffer = i >= 0 && static_cast<std::size_t>(i) < devices.size()
-                              ? devices[static_cast<std::size_t>(i)].get_platform().get_info<sycl::info::platform::name>()
-                              : std::string();
-    return platform_buffer.c_str();
-}
 
 extern "C" int opqc_sycl_mlkem_create(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int device) {
     if (!out || (level != 512 && level != 768 && level != 1024) || max_batch == 0) return -1;
     *out = nullptr;
     return guarded([&] {
-        if (device < 0) {
-            if (const char* env = std::getenv("OPENPQC_SYCL_DEVICE")) device = std::atoi(env);
-        }
         sycl::device dev;
-        if (device >= 0) {
-            const auto devices = all_devices();
-            if (static_cast<std::size_t>(device) >= devices.size()) return -1;
-            dev = devices[static_cast<std::size_t>(device)];
-        } else {
-            dev = sycl::device(sycl::default_selector_v);
-        }
+        if (!openpqc::gpu::select_device(device, dev)) return -1;
         auto* ctx = new opqc_sycl_mlkem{sycl::queue(dev, sycl::property::queue::in_order()), level, max_batch,
                                         nullptr, 0, {}, {}, {}, dev.get_info<sycl::info::device::name>()};
         const std::size_t k = static_cast<std::size_t>(level / 256);
@@ -834,7 +722,7 @@ extern "C" int opqc_sycl_mlkem_create(opqc_sycl_mlkem** out, int level, std::siz
             offset[i] = total;
             total += (per_op[i] * max_batch + 255) / 256 * 256;   // 256-byte aligned sections
         }
-        ctx->mem = sycl::aligned_alloc_device<std::uint8_t>(gpu::WORKSPACE_ALIGN, total, ctx->queue);
+        ctx->mem = sycl::aligned_alloc_device<std::uint8_t>(openpqc::gpu::WORKSPACE_ALIGN, total, ctx->queue);
         if (!ctx->mem) {
             delete ctx;
             return -1;
@@ -982,7 +870,7 @@ extern "C" void* opqc_sycl_mlkem_malloc(opqc_sycl_mlkem* ctx, std::size_t bytes)
     if (!ctx) return nullptr;
     void* p = nullptr;
     guarded([&] {
-        p = sycl::aligned_alloc_device(gpu::WORKSPACE_ALIGN, bytes, ctx->queue);
+        p = sycl::aligned_alloc_device(openpqc::gpu::WORKSPACE_ALIGN, bytes, ctx->queue);
         return 0;
     });
     return p;
@@ -992,7 +880,7 @@ extern "C" void* opqc_sycl_mlkem_malloc_host(opqc_sycl_mlkem* ctx, std::size_t b
     if (!ctx) return nullptr;
     void* p = nullptr;
     guarded([&] {
-        p = sycl::aligned_alloc_host(gpu::WORKSPACE_ALIGN, bytes, ctx->queue);
+        p = sycl::aligned_alloc_host(openpqc::gpu::WORKSPACE_ALIGN, bytes, ctx->queue);
         return 0;
     });
     return p;

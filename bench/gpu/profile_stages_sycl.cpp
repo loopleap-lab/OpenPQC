@@ -10,7 +10,7 @@
 //
 // usage: profile_stages_sycl [levels=512,768,1024] [batch=32768] [trials=7] [device=-1] [cool_to_c=0]
 // Prints CSV: impl,level,op,stage,batch,median_s,share
-#include "../../include/ML-KEM/sycl/mlkem_sycl.cpp"
+#include "../../include/ML/KEM/sycl/mlkem_sycl.cpp"
 
 #include <cstdio>
 #include <functional>

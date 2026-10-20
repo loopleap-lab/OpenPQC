@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include "ML-KEM/params.hpp"
+#include "ML/KEM/params.hpp"
 
 namespace openpqc::mlkem {
 

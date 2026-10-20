@@ -20,7 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../../../../include/ML-KEM/openpqc_mlkem.h"
+#include "../../../../include/ML/KEM/openpqc_mlkem.h"
 
 #define MLK_CONFIG_NAMESPACE_PREFIX openpqc_mlkem
 #if !defined(MLK_CONFIG_MULTILEVEL_BUILD)

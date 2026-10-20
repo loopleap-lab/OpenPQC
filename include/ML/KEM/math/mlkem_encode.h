@@ -26,13 +26,16 @@
  * (Algorithm 3) packs little-endian into bytes: bit k of the string is bit
  * k % 8 of byte k / 8. Eight coefficients take 8 d bits = d bytes, so the
  * encoding splits into 32 independent chunks of d bytes;
- * mlkem_byte_encode8/decode8 handle one chunk, for parallel callers.
+ * mlkem_byte_encode8/decode8 handle one chunk, for parallel callers. FIPS 204
+ * packs its polynomials the same way, so the chunk itself is encoded by the
+ * code ML-KEM and ML-DSA share (ML/math/ml_bitpack.h).
  */
 
 #ifndef MLKEM_ENCODE_H
 #define MLKEM_ENCODE_H
 
-#include "../../Core/opqc_ct.h"
+#include "../../../Core/opqc_ct.h"
+#include "../../math/ml_bitpack.h"
 #include "mlkem_field.h"
 
 /* Compress_d(x) for x in [0, q) and 1 <= d <= 11 */
@@ -72,27 +75,16 @@ OPQC_INLINE void mlkem_poly_decompress(uint16_t f[MLKEM_N], unsigned d)
 
 /*
  * One chunk of ByteEncode_d: the d-bit integers F[0..8) to the bytes
- * B[0..d), for 1 <= d <= 12. Integer i occupies bits i d .. i d + d - 1 of
- * the chunk, i.e. it starts at bit (i d) % 8 of byte (i d) / 8 and spans at
- * most three bytes. Requires F[i] < 2^d.
+ * B[0..d), for 1 <= d <= 12. Requires F[i] < 2^d.
  */
 OPQC_INLINE void mlkem_byte_encode8(uint8_t *B, const uint16_t F[8], unsigned d)
 {
-    for (unsigned o = 0; o < d; o++) {
-        B[o] = 0;
-    }
+    uint32_t w[8];
     OPQC_UNROLL(8)
     for (unsigned i = 0; i < 8; i++) {
-        unsigned byte = i * d / 8, shift = i * d % 8;
-        uint32_t w = (uint32_t)F[i] << shift;
-        B[byte] = (uint8_t)(B[byte] | w);
-        if (byte + 1 < d) {
-            B[byte + 1] = (uint8_t)(B[byte + 1] | (w >> 8));
-        }
-        if (byte + 2 < d) {
-            B[byte + 2] = (uint8_t)(B[byte + 2] | (w >> 16));
-        }
+        w[i] = F[i];
     }
+    ml_pack8(B, w, d);
 }
 
 /*
@@ -103,18 +95,11 @@ OPQC_INLINE void mlkem_byte_encode8(uint8_t *B, const uint16_t F[8], unsigned d)
  */
 OPQC_INLINE void mlkem_byte_decode8(uint16_t F[8], const uint8_t *B, unsigned d)
 {
+    uint32_t v[8];
+    ml_unpack8(v, B, d);
     OPQC_UNROLL(8)
     for (unsigned i = 0; i < 8; i++) {
-        unsigned byte = i * d / 8, shift = i * d % 8;
-        uint32_t w = B[byte];
-        if (byte + 1 < d) {
-            w |= (uint32_t)B[byte + 1] << 8;
-        }
-        if (byte + 2 < d) {
-            w |= (uint32_t)B[byte + 2] << 16;
-        }
-        uint32_t v = (w >> shift) & ((1u << d) - 1);
-        F[i] = d == 12 ? mlkem_mod_q(v) : (uint16_t)v;
+        F[i] = d == 12 ? mlkem_mod_q(v[i]) : (uint16_t)v[i];
     }
 }
 
@@ -127,14 +112,13 @@ OPQC_INLINE void mlkem_byte_decode8(uint16_t F[8], const uint8_t *B, unsigned d)
  */
 OPQC_INLINE unsigned mlkem_byte_decode12_check8(uint16_t F[8], const uint8_t *B)
 {
+    uint32_t v[8];
     unsigned bad = 0;
+    ml_unpack8(v, B, 12);
     OPQC_UNROLL(8)
     for (unsigned i = 0; i < 8; i++) {
-        /* integer i starts at bit 12 i: bit 0 or 4 of byte 12 i / 8, spanning two bytes */
-        unsigned byte = i * 12 / 8, shift = i * 12 % 8;
-        uint32_t v = (((uint32_t)B[byte] | (uint32_t)B[byte + 1] << 8) >> shift) & 0xFFF;
-        bad |= (unsigned)(v >= MLKEM_Q);
-        F[i] = mlkem_mod_q(v);
+        bad |= (unsigned)(v[i] >= MLKEM_Q);
+        F[i] = mlkem_mod_q(v[i]);
     }
     return bad;
 }

@@ -72,7 +72,7 @@ that the outputs are byte-identical to mlkem-native's.
 C (link `openpqc::mlkem`):
 
 ```c
-#include "ML-KEM/openpqc_mlkem.h"
+#include "ML/KEM/openpqc_mlkem.h"
 
 uint8_t pk[MLKEM768_PUBLICKEYBYTES], sk[MLKEM768_SECRETKEYBYTES];
 uint8_t ct[MLKEM768_CIPHERTEXTBYTES], ss[MLKEM_BYTES], ss2[MLKEM_BYTES];
@@ -83,7 +83,7 @@ if (openpqc_mlkem768_keypair(pk, sk) != 0 ||     /* randomness from the operatin
 }
 ```
 
-C++ (`ML-KEM/mlkem.hpp`; sizes are part of the types):
+C++ (`ML/KEM/mlkem.hpp`; sizes are part of the types):
 
 ```cpp
 using KEM = openpqc::mlkem::MLKEM768;
@@ -92,7 +92,7 @@ KEM::ciphertext ct; KEM::shared_secret ss, ss2;
 if (KEM::keypair(pk, sk) || KEM::encaps(ct, ss, pk) || KEM::decaps(ss2, ct, sk)) { /* error */ }
 ```
 
-To experiment with the algorithms themselves, include `ML-KEM/scheme/ml_kem.hpp` and call the templates directly, e.g.
+To experiment with the algorithms themselves, include `ML/KEM/scheme/ml_kem.hpp` and call the templates directly, e.g.
 `openpqc::mlkem::kpke::encrypt<openpqc::mlkem::params::ML_KEM_768>(c, ek, m, r)`.
 
 The `_derand` functions take the FIPS 203 seeds as arguments: d ‖ z for KeyGen, m for Encaps. FIPS 203 §3.3 permits
@@ -105,7 +105,7 @@ byte-identical to the CPU library. The buffers must be 8-byte aligned, as those 
 calls with other buffers return -1.
 
 ```c
-#include "ML-KEM/sycl/openpqc_mlkem_sycl.h"   /* link openpqc::mlkem_sycl */
+#include "ML/KEM/sycl/openpqc_mlkem_sycl.h"   /* link openpqc::mlkem_sycl */
 
 opqc_sycl_mlkem *ctx;
 opqc_sycl_mlkem_create(&ctx, 768, max_batch, -1);            /* -1: default device (or OPENPQC_SYCL_DEVICE) */
@@ -126,7 +126,7 @@ an Intel Iris Xe (Level Zero and OpenCL, both implementations) and the CPU (Adap
 
 ## Build
 
-`include/ML-KEM/CMakeLists.txt` compiles `mlkem.cpp` once and makes two libraries of it. `openpqc_mlkem` takes its
+`include/ML/KEM/CMakeLists.txt` compiles `mlkem.cpp` once and makes two libraries of it. `openpqc_mlkem` takes its
 randomness from the operating system; `openpqc_mlkem_testrng` calls the application's `randombytes()` and exists for
 the tests. `openpqc_mlkem_sycl` is added when a SYCL compiler is found (see the top-level README).
 

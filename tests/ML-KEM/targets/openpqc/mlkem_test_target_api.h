@@ -8,7 +8,7 @@
 #ifndef MLKEM_TEST_TARGET_API_H
 #define MLKEM_TEST_TARGET_API_H
 
-#include "../../../../include/ML-KEM/openpqc_mlkem.h"
+#include "../../../../include/ML/KEM/openpqc_mlkem.h"
 #include "mlkem_test_target_common.h"
 
 #endif /* !MLKEM_TEST_TARGET_API_H */

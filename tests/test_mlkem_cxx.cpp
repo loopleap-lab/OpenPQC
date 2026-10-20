@@ -1,6 +1,6 @@
 // test_mlkem_cxx.cpp  --  C++ ML-KEM API: round trips, determinism, implicit rejection
 #include "check.hpp"
-#include "ML-KEM/mlkem.hpp"
+#include "ML/KEM/mlkem.hpp"
 
 #include <algorithm>
 #include <array>

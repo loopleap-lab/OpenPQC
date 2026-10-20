@@ -67,6 +67,39 @@ OPQC_INLINE uint8_t opqc_ct_mask_nonzero_u8(uint8_t x)
 }
 
 /*
+ * 32-bit masks: all ones (0xFFFFFFFF) or all zeros, computed without branches,
+ * and the selection they drive. The value barrier keeps the compiler from
+ * seeing that the mask has only two possible values (see above).
+ */
+
+/* 0xFFFFFFFF if x != 0, 0 if x == 0 */
+OPQC_INLINE uint32_t opqc_ct_mask_nonzero_u32(uint32_t x)
+{
+    uint32_t t = opqc_value_barrier_u32(x);
+    /* For every t != 0, t or -t (mod 2^32) has its top bit set. */
+    return 0u - ((t | (0u - t)) >> 31);
+}
+
+/* 0xFFFFFFFF if a == b, 0 otherwise */
+OPQC_INLINE uint32_t opqc_ct_mask_eq_u32(uint32_t a, uint32_t b)
+{
+    return ~opqc_ct_mask_nonzero_u32(a ^ b);
+}
+
+/* 0xFFFFFFFF if a < b, 0 otherwise; a and b must be less than 2^31, so that
+ * a - b (mod 2^32) has its top bit set exactly when a < b. */
+OPQC_INLINE uint32_t opqc_ct_mask_lt_u32(uint32_t a, uint32_t b)
+{
+    return 0u - (opqc_value_barrier_u32(a - b) >> 31);
+}
+
+/* a where mask is all ones, b where it is zero */
+OPQC_INLINE uint32_t opqc_ct_select_u32(uint32_t mask, uint32_t a, uint32_t b)
+{
+    return (a & mask) | (b & ~mask);
+}
+
+/*
  * Compares a[0..len) and b[0..len) in constant time.
  * Returns 0x00 if they are equal and 0xFF otherwise.
  */
