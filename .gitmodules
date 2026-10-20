@@ -1,0 +1,3 @@
+[submodule "cuPQC"]
+	path = cuPQC
+	url = https://github.com/NVIDIA/cuPQC.git
