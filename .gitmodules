@@ -18,3 +18,6 @@
 [submodule "reference/cupqc"]
 	path = reference/cupqc
 	url = https://github.com/NVIDIA/cuPQC.git
+[submodule "reference/sphincsplus"]
+	path = reference/sphincsplus
+	url = https://github.com/sphincs/sphincsplus.git
