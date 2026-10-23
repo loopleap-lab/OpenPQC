@@ -1,6 +1,6 @@
 # Reference implementations
 
-Two unmodified upstream implementations, one per standard. Neither is part of the OpenPQC libraries: they are built
+Three unmodified upstream implementations, one per standard. None is part of the OpenPQC libraries: they are built
 only for the tests and the benchmarks (`reference/CMakeLists.txt`). Each is used for three things:
 
 1. **Test oracle.** The differential tests compare OpenPQC with it byte for byte, and its own test programs run
@@ -54,6 +54,49 @@ dialect, as upstream's Makefile does (`randombytes.c` needs the GNU extensions f
 
 Licence: public domain (CC0), or Apache-2.0, or GPL-2.0 (`dilithium/LICENSE`); the Keccak and RNG code is public domain.
 
+## SPHINCS+ (FIPS 205, SLH-DSA)
+
+`sphincsplus/` is an unmodified copy of [sphincs/sphincsplus](https://github.com/sphincs/sphincsplus), the
+implementation of SLH-DSA by the designers of SPHINCS+, from its branch `bas/fips205` (FIPS 205 with context strings,
+HashSLH-DSA and the internal functions), without the repository's hidden files and without `acvp/` (NIST's ACVP
+vectors, 66 MB, which `tests/SLH-DSA/acvp` downloads from NIST and pins by SHA-256 instead). The branch and commit are
+recorded in `sphincsplus/UPSTREAM.txt`. It has portable C for the twelve parameter sets in `ref/`, AVX2 code for the
+six SHA2 sets in `sha2-avx2/` and for the six SHAKE sets in `shake-avx2/` (most of their files are symbolic links into
+`ref/`, kept as links), and AArch64 code in `shake-a64/`, which is not built.
+
+- Its test programs (`ref/test/spx.c`, compiled with upstream's `SPX_TEST_INVALIDSIG`, and the NIST KAT generator
+  `ref/PQCgenKAT_sign.c`) run against both implementations; OpenPQC's side is the adapter in
+  `tests/SLH-DSA/targets/openpqc`. The KAT output of both must hash to the value in upstream's `SHA256SUMS` (which
+  separates hash and name by one space, so `sha256sum -c` cannot read it). `ref/test/fors.c` calls the reference's
+  internal FORS functions and runs on the reference only.
+- The NIST ACVP vectors run through OpenPQC (`slhdsa_acvp`) and through the reference (`reference_slhdsa_acvp`, and
+  `reference_slhdsa_avx2_acvp` for the AVX2 code), with the same client and driver (`tests/SLH-DSA/acvp`).
+
+sphincsplus compiles one parameter set per build (`-DPARAMS=sphincs-<family>-<size>`), and its API (`crypto_sign_*`)
+and its SHA-2 functions carry no prefix, so two sets cannot be linked into one program as shipped. The libraries below
+hold all twelve through a "params hook": every source that depends on the parameter set is compiled once per set with
+`-DPARAMS=slh-<family>-<size>`, so that upstream's `params.h` includes `params/params-slh-<family>-<size>.h`. Upstream
+has no such file; the compiler finds a header that `reference/CMakeLists.txt` generates in the build tree, which
+includes upstream's params header, sets the prefix of upstream's `SPX_NAMESPACE` and renames the API (and, for the SHA2
+sets, `sha256*` and `sha512*`). No upstream file is changed. The FIPS 202 code (`fips202.c`, `shake256*`) does not
+depend on the parameter set and is compiled once per library under its upstream names.
+
+| Target | Contents |
+|---|---|
+| `openpqc_reference_slhdsa` | `ref/` for the twelve sets in one library, API `spx_ref_<family>_<size>_crypto_sign_*` (e.g. `spx_ref_sha2_128s_crypto_sign_keypair`) |
+| `openpqc_reference_slhdsa_avx2` | `sha2-avx2/` and `shake-avx2/` likewise, on x86-64 CPUs with AVX2 (`OPENPQC_HAVE_REFERENCE_SLHDSA_AVX2`), API `spx_avx2_<family>_<size>_crypto_sign_*`; compiled with `-mavx2` instead of upstream's `-march=native -flto` |
+| `openpqc_reference_slhdsa_params()` | compiles one of the reference's own programs for one parameter set (`PARAMS` and the include directory of the params hook) |
+
+Both take their randomness from the application's `randombytes()` and are compiled in C99 with the warning flags of
+upstream's Makefiles, as those do (`-std=c99`).
+
+Licence: `sphincsplus/LICENSE` states `(LicenseRef-SPHINCS-PLUS-Public-Domain OR CC0-1.0 OR 0BSD OR MIT-0) AND MIT`,
+with the texts in `sphincsplus/LICENSES/`. Upstream's README says that all code "has been placed into Public Domain and
+is available under various open source licenses" (CC0-1.0, 0BSD, MIT-0), "with the exception of `rng.c`, `rng.h` and
+`PQCgenKAT_sign.c`, which were provided by NIST"; upstream's REUSE metadata (`.reuse/dep5`, not vendored) gives those
+three as "Copyright: 2017 Bassham, Lawrence E (Fed). License: All rights reserved." and applies the `MIT` term to
+`ref/haraka.c`, which this branch no longer has.
+
 ## Updating
 
 ```sh
@@ -61,7 +104,11 @@ scripts/vendor_mlkem_native.py --upstream ../mlkem-native          # copy mlkem/
 scripts/vendor_mlkem_native.py --upstream ../mlkem-native --check  # verify that nothing drifted
 scripts/vendor_dilithium.py --upstream ../dilithium                 # copy the repository and the test programs
 scripts/vendor_dilithium.py --upstream ../dilithium --check
+scripts/vendor_sphincsplus.py --upstream reference/repos/sphincsplus           # copy the repository and the test programs
+scripts/vendor_sphincsplus.py --upstream reference/repos/sphincsplus --check
 ```
 
 The scripts copy the upstream files verbatim. They change only the `#include` lines of the test programs they place
-in `tests/ML-KEM` and `tests/ML-DSA/upstream` (see their docstrings).
+in `tests/ML-KEM`, `tests/ML-DSA/upstream` and `tests/SLH-DSA/upstream` (see their docstrings). The sphincsplus
+checkout's `.git` link does not resolve, so `vendor_sphincsplus.py` takes the commit from `--commit` (default: the
+vendored one, `ef36d20`) and refuses a checkout whose git metadata names another commit.

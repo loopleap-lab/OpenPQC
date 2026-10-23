@@ -14,7 +14,18 @@
  *    boundary: 55/56 and 63/64 bytes (512-bit blocks), 111/112 and 127/128 bytes
  *    (1024-bit blocks), 103/104 and 143/144 bytes (the rates of SHA3-384 and
  *    SHA3-224);
- *  - absorbing in pieces of every size from 1 to 200 bytes gives the one-shot result.
+ *  - absorbing in pieces of every size from 1 to 200 bytes, and in pieces of random sizes
+ *    from 0 to 300 bytes, gives the one-shot result;
+ *  - the big-endian loads and stores (opqc_load32_be, opqc_load64_be,
+ *    opqc_store32_be, opqc_store64_be) on a known value, without writing past
+ *    their 4 or 8 bytes, and in round trips;
+ *  - the word-level compression functions (opqc_sha256_compress_words,
+ *    opqc_sha512_compress_words): the padded blocks of the FIPS 180-4 examples
+ *    ("abc", and the two-block messages of 448 and 896 bits) as words, from
+ *    H(0), give the known digests; on random hash values and blocks they agree
+ *    with the byte-level functions and with a literal transcription of Sections
+ *    6.2.2 and 6.4.2 (the schedule W_0 .. W_63, W_79 in full), and the ring they
+ *    leave holds the last 16 words of that schedule.
  */
 
 #include <stdio.h>
@@ -306,10 +317,209 @@ static void test_incremental(void)
     }
 }
 
+/* The incremental interface with pieces of random sizes from 0 to 300 bytes (empty pieces too), so
+ * that a piece that completes a begun block is followed by whole blocks and a rest at every offset */
+static void test_random_pieces(void)
+{
+    static uint8_t m[3000];
+    uint8_t expect256[32], expect512[64], got[64];
+    uint64_t x = UINT64_C(0x0123456789abcdef);
+    for (unsigned i = 0; i < sizeof m; i++) m[i] = (uint8_t)(i * 131 + 7);
+    for (unsigned trial = 0; trial < 500; trial++) {
+        const size_t total = trial * 6; /* 0 .. 2994 bytes */
+        opqc_sha256(expect256, m, total);
+        opqc_sha512(expect512, m, total);
+        opqc_sha256_state s256;
+        opqc_sha512_state s512;
+        opqc_sha256_init(&s256);
+        opqc_sha512_init(&s512);
+        for (size_t i = 0; i < total;) {
+            x ^= x << 13; /* xorshift64 */
+            x ^= x >> 7;
+            x ^= x << 17;
+            size_t piece = (size_t)(x % 301);
+            if (piece > total - i) piece = total - i;
+            opqc_sha256_absorb(&s256, m + i, piece);
+            opqc_sha512_absorb(&s512, m + i, piece);
+            i += piece;
+        }
+        opqc_sha256_finalize(&s256, got, 32);
+        CHECK(memcmp(got, expect256, 32) == 0);
+        opqc_sha512_finalize(&s512, got, 64);
+        CHECK(memcmp(got, expect512, 64) == 0);
+    }
+}
+
+/* The big-endian loads and stores (Section 3.1) */
+static void test_byte_order(void)
+{
+    static const uint8_t b[8] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+    uint8_t out[9];
+    CHECK(opqc_load32_be(b) == 0x01234567u);
+    CHECK(opqc_load64_be(b) == UINT64_C(0x0123456789abcdef));
+    memset(out, 0xEE, sizeof out);
+    opqc_store32_be(out, 0x01234567u);
+    CHECK(memcmp(out, b, 4) == 0 && out[4] == 0xEE);
+    memset(out, 0xEE, sizeof out);
+    opqc_store64_be(out, UINT64_C(0x0123456789abcdef));
+    CHECK(memcmp(out, b, 8) == 0 && out[8] == 0xEE);
+
+    uint64_t x = UINT64_C(0x9e3779b97f4a7c15);
+    for (unsigned i = 0; i < 1000; i++) {
+        x ^= x << 13; /* xorshift64 */
+        x ^= x >> 7;
+        x ^= x << 17;
+        opqc_store32_be(out, (uint32_t)x);
+        CHECK(opqc_load32_be(out) == (uint32_t)x);
+        opqc_store64_be(out, x);
+        CHECK(opqc_load64_be(out) == x);
+    }
+}
+
+/* --- The word-level compression functions ------------------------------------------------ */
+
+/* Steps 1-4 of Section 6.2.2 as written: the schedule W_0 .. W_63 in full, returned in W */
+static void literal_sha256_compress(uint32_t H[8], const uint32_t M[16], uint32_t W[64])
+{
+    for (unsigned t = 0; t < 16; t++) W[t] = M[t];
+    for (unsigned t = 16; t < 64; t++) {
+        W[t] = opqc_sha256_sigma1(W[t - 2]) + W[t - 7] + opqc_sha256_sigma0(W[t - 15]) + W[t - 16];
+    }
+    uint32_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (unsigned t = 0; t < 64; t++) {
+        uint32_t T1 = h + opqc_sha256_Sigma1(e) + OPQC_SHA2_CH(e, f, g) + opqc_sha256_K[t] + W[t];
+        uint32_t T2 = opqc_sha256_Sigma0(a) + OPQC_SHA2_MAJ(a, b, c);
+        h = g; g = f; f = e; e = d + T1; d = c; c = b; b = a; a = T1 + T2;
+    }
+    H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+}
+
+/* Section 6.4.2 the same way: W_0 .. W_79 */
+static void literal_sha512_compress(uint64_t H[8], const uint64_t M[16], uint64_t W[80])
+{
+    for (unsigned t = 0; t < 16; t++) W[t] = M[t];
+    for (unsigned t = 16; t < 80; t++) {
+        W[t] = opqc_sha512_sigma1(W[t - 2]) + W[t - 7] + opqc_sha512_sigma0(W[t - 15]) + W[t - 16];
+    }
+    uint64_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (unsigned t = 0; t < 80; t++) {
+        uint64_t T1 = h + opqc_sha512_Sigma1(e) + OPQC_SHA2_CH(e, f, g) + opqc_sha512_K[t] + W[t];
+        uint64_t T2 = opqc_sha512_Sigma0(a) + OPQC_SHA2_MAJ(a, b, c);
+        h = g; g = f; f = e; e = d + T1; d = c; c = b; b = a; a = T1 + T2;
+    }
+    H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+}
+
+/* The known answer of the function `name` for one of its messages (see answers[]) */
+static const struct known_answers *answer(const char *name)
+{
+    for (size_t a = 0; a < sizeof answers / sizeof answers[0]; a++) {
+        if (strcmp(answers[a].name, name) == 0) return &answers[a];
+    }
+    return NULL;
+}
+
+static int sha256_digest_is(const uint32_t H[8], const char *hex)
+{
+    uint8_t d[32];
+    for (unsigned i = 0; i < 8; i++) opqc_store32_be(d + 4 * i, H[i]);
+    return equals_hex(d, 32, hex);
+}
+static int sha512_digest_is(const uint64_t H[8], const char *hex)
+{
+    uint8_t d[64];
+    for (unsigned i = 0; i < 8; i++) opqc_store64_be(d + 8 * i, H[i]);
+    return equals_hex(d, 64, hex);
+}
+
+static void test_words(void)
+{
+    static const char two256[] = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    static const char two512[] =
+            "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu";
+    const struct known_answers *k256 = answer("SHA-256"), *k512 = answer("SHA-512");
+    uint32_t H[8], W[16];
+    uint64_t H5[8], W5[16];
+    CHECK(k256 != NULL && k512 != NULL);
+    if (!k256 || !k512) return;
+
+    /* The FIPS 180-4 examples, the padded message M(1) (M(2)) as words (Sections 5.1, 5.2) */
+    memset(W, 0, sizeof W); /* "abc": 61626380 00000000 ... 00000018 */
+    W[0] = 0x61626380u;
+    W[15] = 0x18;
+    memcpy(H, opqc_sha256_H0, sizeof H);
+    opqc_sha256_compress_words(H, W);
+    CHECK(sha256_digest_is(H, k256->abc));
+    memset(W5, 0, sizeof W5);
+    W5[0] = UINT64_C(0x6162638000000000);
+    W5[15] = 0x18;
+    memcpy(H5, opqc_sha512_H0, sizeof H5);
+    opqc_sha512_compress_words(H5, W5);
+    CHECK(sha512_digest_is(H5, k512->abc));
+
+    /* 448 bits: the 56 bytes, then 0x80 (the length does not fit), then a block with the length 0x1c0 */
+    memcpy(H, opqc_sha256_H0, sizeof H);
+    for (unsigned t = 0; t < 14; t++) W[t] = opqc_load32_be((const uint8_t *)two256 + 4 * t);
+    W[14] = 0x80000000u;
+    W[15] = 0;
+    opqc_sha256_compress_words(H, W);
+    memset(W, 0, sizeof W);
+    W[15] = 448;
+    opqc_sha256_compress_words(H, W);
+    CHECK(sha256_digest_is(H, k256->two256));
+    /* 896 bits: the same with 112 bytes and the length 0x380 */
+    memcpy(H5, opqc_sha512_H0, sizeof H5);
+    for (unsigned t = 0; t < 14; t++) W5[t] = opqc_load64_be((const uint8_t *)two512 + 8 * t);
+    W5[14] = UINT64_C(0x8000000000000000);
+    W5[15] = 0;
+    opqc_sha512_compress_words(H5, W5);
+    memset(W5, 0, sizeof W5);
+    W5[15] = 896;
+    opqc_sha512_compress_words(H5, W5);
+    CHECK(sha512_digest_is(H5, k512->two512));
+
+    /* random hash values and blocks: words, bytes and the literal transcription agree */
+    uint64_t x = UINT64_C(0x2545f4914f6cdd1d);
+    for (unsigned trial = 0; trial < 2000; trial++) {
+        uint32_t Hw[8], Hb[8], Hl[8], M[16], Wl[64];
+        uint64_t Hw5[8], Hb5[8], Hl5[8], M5[16], Wl5[80];
+        uint8_t block[128];
+        for (unsigned i = 0; i < 16; i++) {
+            x ^= x << 13; /* xorshift64 */
+            x ^= x >> 7;
+            x ^= x << 17;
+            M5[i] = x;
+            M[i] = (uint32_t)(x >> 16);
+            if (i < 8) {
+                Hw5[i] = Hb5[i] = Hl5[i] = x * UINT64_C(0x9e3779b97f4a7c15);
+                Hw[i] = Hb[i] = Hl[i] = (uint32_t)(x >> 32);
+            }
+        }
+        memcpy(W, M, sizeof W);
+        opqc_sha256_compress_words(Hw, W);
+        for (unsigned i = 0; i < 16; i++) opqc_store32_be(block + 4 * i, M[i]);
+        opqc_sha256_compress(Hb, block);
+        literal_sha256_compress(Hl, M, Wl);
+        CHECK(memcmp(Hw, Hl, sizeof Hw) == 0 && memcmp(Hb, Hl, sizeof Hb) == 0);
+        CHECK(memcmp(W, Wl + 48, sizeof W) == 0); /* the ring: W_48 .. W_63 */
+
+        memcpy(W5, M5, sizeof W5);
+        opqc_sha512_compress_words(Hw5, W5);
+        for (unsigned i = 0; i < 16; i++) opqc_store64_be(block + 8 * i, M5[i]);
+        opqc_sha512_compress(Hb5, block);
+        literal_sha512_compress(Hl5, M5, Wl5);
+        CHECK(memcmp(Hw5, Hl5, sizeof Hw5) == 0 && memcmp(Hb5, Hl5, sizeof Hb5) == 0);
+        CHECK(memcmp(W5, Wl5 + 64, sizeof W5) == 0); /* W_64 .. W_79 */
+    }
+}
+
 int main(void)
 {
     test_known_answers();
     test_incremental();
+    test_random_pieces();
+    test_byte_order();
+    test_words();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

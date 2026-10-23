@@ -7,12 +7,13 @@ comments that cite FIPS 204 section, algorithm and line numbers, and a GPU backe
 | Layer | Files | Language | Contents |
 |---|---|---|---|
 | math core | `math/mldsa_field.h`, `mldsa_ntt.h`, `mldsa_rounding.h`, `mldsa_encode.h`, `mldsa_sample.h` | C11, header-only | arithmetic in Z_q, NTT, Power2Round/Decompose and the hints, bit packing and hint packing, SampleInBall and the rejection samplers (FIPS 204 §7.1–§7.5, Algorithms 14–21, 29–31, 35–45) |
-| scheme layer | `scheme/parameter_sets.hpp`, `polynomials.hpp`, `crypto_functions.hpp`, `sampling.hpp`, `encoding.hpp`, `mldsa_internal.hpp`, `prehash.hpp`, `ml_dsa.hpp` | C++20, header-only templates | the parameter sets (§4), H and G (§3.7), ExpandA/S/Mask (§7.3), the encodings of keys and signatures (§7.2), the internal algorithms (§6, Algorithms 6–8), ML-DSA and HashML-DSA (§5, Algorithms 1–5) |
+| scheme layer | `scheme/parameter_sets.hpp`, `polynomials.hpp`, `crypto_functions.hpp`, `sampling.hpp`, `encoding.hpp`, `mldsa_internal.hpp`, `ml_dsa.hpp` | C++20, header-only templates | the parameter sets (§4), H and G (§3.7), ExpandA/S/Mask (§7.3), the encodings of keys and signatures (§7.2), the internal algorithms (§6, Algorithms 6–8), ML-DSA and HashML-DSA (§5, Algorithms 1–5) |
 | interfaces | `openpqc_mldsa.h` (C API), `mldsa.cpp` (its implementation), `mldsa.hpp` (C++ API) | C / C++20 | the functions applications call, for the three parameter sets |
 | GPU backend | `sycl/openpqc_mldsa_sycl.h`, `sycl/mldsa_sycl.cpp` | SYCL 2020 | batched KeyGen, Sign and Verify on GPUs and other SYCL devices, from the same math core |
 
-The bit packing that FIPS 203 and FIPS 204 share is in `../math/ml_bitpack.h`; SHAKE, SHA-2 (for HashML-DSA), the
-constant-time helpers and the GPU launch helpers are in `Core`.
+The bit packing that FIPS 203 and FIPS 204 share is in `../math/ml_bitpack.h`; SHAKE, SHA-2, the pre-hash functions
+of HashML-DSA with their OIDs (`Core/prehash.hpp`, shared with HashSLH-DSA), the constant-time helpers and the GPU
+launch helpers are in `Core`.
 
 ## Parameter sets
 
@@ -53,7 +54,7 @@ allowed bound on the signing loop (Appendix C, Table 3) from 814 to 821, which `
 | §3.7 H, G | `H<L>`, `H_init` (`scheme/crypto_functions.hpp`) over `openpqc::sponge` and `openpqc::Xof` (`Core/xof.hpp`); G inside `mldsa_rej_ntt_poly` |
 | Algorithms 6–8 KeyGen_internal, Sign_internal, Verify_internal | `internal::keygen`, `internal::sign` / `sign_mu`, `internal::verify` / `verify_mu` (`scheme/mldsa_internal.hpp`) |
 | Algorithms 1–3 ML-DSA.KeyGen, Sign, Verify | `keygen`, `sign`, `verify` and the `_derand` variants (`scheme/ml_dsa.hpp`) |
-| Algorithms 4, 5 HashML-DSA.Sign, Verify | `hash_sign`, `hash_verify`; the twelve pre-hash functions and their OIDs: `PreHash`, `prehash`, `prehash_oid` (`scheme/prehash.hpp`) |
+| Algorithms 4, 5 HashML-DSA.Sign, Verify | `hash_sign`, `hash_verify`; the twelve pre-hash functions and their OIDs: `PreHash`, `prehash`, `prehash_oid` (`Core/prehash.hpp`, shared with HashSLH-DSA; also reachable as `openpqc::mldsa::PreHash` etc.), the C values `OPENPQC_MLDSA_PREHASH_*` = `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`) |
 | Algorithm 7 line 6, Algorithm 8 line 7: external μ | `external_mu`, `sign_mu`, `verify_mu` |
 | §3.6.1 randomness, §3.6.3 destruction of intermediate values | `opqc_randombytes` (`Core/opqc_platform.h`); every `Poly` zeroizes itself when its lifetime ends, unnamed temporaries included (`scheme/polynomials.hpp`), and `ZeroizeOnExit` (`Core/zeroize.hpp`) destroys the secret byte strings; `mldsa_stack` checks that KeyGen and Sign leave no secret on the stack |
 | Appendix C bound on the signing loop | `max_signing_attempts` = 821, the smallest that NIST's errata allow (Table 3 itself says 814); then `Status::signing_limit` and the signature all zeros |

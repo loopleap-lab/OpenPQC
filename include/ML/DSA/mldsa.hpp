@@ -21,10 +21,18 @@
 #include <cstdint>
 #include <span>
 
+#include "Core/prehash.hpp"
 #include "ML/DSA/openpqc_mldsa.h"
-#include "ML/DSA/scheme/prehash.hpp"
 
 namespace openpqc::mldsa {
+
+// The pre-hash functions of HashML-DSA are Core's (Core/prehash.hpp), shared with HashSLH-DSA; their names
+// in this namespace stay valid
+using openpqc::max_prehash_bytes;
+using openpqc::PreHash;
+using openpqc::prehash;
+using openpqc::prehash_bytes;
+using openpqc::prehash_oid;
 
 namespace detail {
 

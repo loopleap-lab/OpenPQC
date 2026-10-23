@@ -119,3 +119,141 @@ if(OPENPQC_NATIVE_ARCH STREQUAL "x86_64" AND OPENPQC_NATIVE_FLAGS MATCHES "-mavx
 else()
     set(OPENPQC_HAVE_REFERENCE_MLDSA_AVX2 OFF CACHE INTERNAL "")
 endif()
+
+# --- SPHINCS+ (FIPS 205): the reference of SLH-DSA --------------------------------------------
+#
+# sphincsplus/ is the implementation of the SPHINCS+ team, unmodified (see README.md). It
+# compiles one parameter set per build (-DPARAMS=sphincs-<family>-<size>), prefixes its
+# internal functions with SPX_NAMESPACE(), which every params header fixes to SPX_##s, and
+# leaves crypto_sign_* and its SHA-2 functions without a prefix. All twelve sets are linked
+# into one library through a "params hook": every per-set source is compiled with
+# -DPARAMS=slh-<family>-<size>, so that upstream's params.h includes
+# params/params-slh-<family>-<size>.h. Upstream has no such file, so the compiler finds the
+# one generated below (in the build tree, on the include path): it includes upstream's params
+# header, redefines SPX_NAMESPACE and renames crypto_sign_* (and, for the SHA2 sets, the
+# sha256*/sha512* functions of the parameter-dependent sha2.c). No upstream file changes.
+#
+#   openpqc_reference_slhdsa        ref/ for the twelve sets: API spx_ref_<fam>_<size>_crypto_sign_*
+#                                   (e.g. spx_ref_sha2_128s_crypto_sign_keypair)
+#   openpqc_reference_slhdsa_avx2   sha2-avx2/ (the six SHA2 sets) and shake-avx2/ (the six SHAKE
+#                                   sets), on x86-64 CPUs with AVX2: spx_avx2_<fam>_<size>_crypto_sign_*;
+#                                   the optimized CPU baseline of the benchmarks
+#
+#   openpqc_reference_slhdsa_params(<target> <ref|avx2> <set>)
+#                                   compiles <target>, one of the reference's own programs (e.g.
+#                                   ref/test/spx.c), for one parameter set <set> (e.g. sha2-128s):
+#                                   PARAMS and the include directory of the params hook
+#
+# Both libraries take their randomness from the application's randombytes(). The FIPS 202 code
+# (shake256*, fips202.c) does not depend on the parameter set; it is compiled once per library
+# and keeps its upstream names, so a program that links both libraries uses the copy the
+# linker finds first (they are the same file). Neither library is built with -Werror: the code
+# is third-party C99, compiled with the warning flags of its own Makefiles. shake-a64/ (AArch64
+# assembly) is not built.
+set(OPENPQC_SPHINCSPLUS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/sphincsplus CACHE INTERNAL "")
+set(OPENPQC_SPHINCSPLUS_HOOK_DIR ${CMAKE_CURRENT_BINARY_DIR}/sphincsplus CACHE INTERNAL "")
+# The parameter sets in the order of FIPS 205, Table 2 (the position is OpenPQC's set id, 1-12)
+set(OPENPQC_SLHDSA_SETS sha2-128s shake-128s sha2-128f shake-128f sha2-192s shake-192s
+                        sha2-192f shake-192f sha2-256s shake-256s sha2-256f shake-256f CACHE INTERNAL "")
+
+# the unprefixed functions of upstream's api.h, and of sha2.c
+set(_spx_api crypto_sign crypto_sign_bytes crypto_sign_keypair crypto_sign_open crypto_sign_publickeybytes
+             crypto_sign_secretkeybytes crypto_sign_seedbytes crypto_sign_seed_keypair crypto_sign_signature
+             crypto_sign_signature_derand crypto_sign_signature_internal crypto_sign_signature_prehash
+             crypto_sign_signature_prehash_derand crypto_sign_verify crypto_sign_verify_internal
+             crypto_sign_verify_prehash)
+set(_spx_sha2 sha256 sha256_inc_blocks sha256_inc_finalize sha256_inc_init
+              sha512 sha512_inc_blocks sha512_inc_finalize sha512_inc_init)
+
+function(openpqc_reference_slhdsa_params target impl set)
+    target_compile_definitions(${target} PRIVATE PARAMS=slh-${set})
+    target_include_directories(${target} PRIVATE ${OPENPQC_SPHINCSPLUS_HOOK_DIR}/${impl}-${set})
+endfunction()
+
+# _openpqc_sphincsplus_target(<name> <ref|avx2> <flags> <shared sources>): the library <name> with
+# every parameter set of implementation <impl>, each set an OBJECT library <name>_<set>, all compiled
+# with <flags> (upstream's warning flags, and -mavx2 for the AVX2 code)
+function(_openpqc_sphincsplus_target name impl flags shared)
+    set(_spx ${OPENPQC_SPHINCSPLUS_DIR})
+    add_library(${name} STATIC ${shared})
+    set(_targets ${name})
+    foreach(set IN LISTS OPENPQC_SLHDSA_SETS)
+        string(REPLACE "-" "_" infix ${set})
+        string(REGEX MATCH "^[a-z0-9]+" family ${set})
+        # the sources of upstream's Makefiles that depend on the parameter set
+        if(impl STREQUAL "ref")
+            set(dir ${_spx}/ref)
+            set(files address merkle wots wotsx1 utils utilsx1 fors sign)
+            if(family STREQUAL "sha2")
+                list(APPEND files sha2 hash_sha2 thash_sha2_simple)
+            else()
+                list(APPEND files hash_shake thash_shake_simple)
+            endif()
+        elseif(family STREQUAL "sha2")
+            set(dir ${_spx}/sha2-avx2)
+            set(files address merkle wots utils utilsx8 fors sign sha2 hash_sha2 hash_sha2x8 thash_sha2_simple
+                      thash_sha2_simplex8 sha256x8 sha512x4)
+        else()
+            set(dir ${_spx}/shake-avx2)
+            set(files address merkle wots utils utilsx4 fors sign hash_shake hash_shakex4 thash_shake_simple
+                      thash_shake_simplex4)
+        endif()
+        list(TRANSFORM files PREPEND ${dir}/)
+        list(TRANSFORM files APPEND .c)
+
+        # the params hook of this set
+        set(PREFIX spx_${impl}_${infix}_)
+        set(UPSTREAM_PARAMS ${dir}/params/params-sphincs-${set}.h)
+        set(names ${_spx_api})
+        if(family STREQUAL "sha2")
+            list(APPEND names ${_spx_sha2})
+        endif()
+        set(RENAMES "")
+        foreach(s IN LISTS names)
+            string(APPEND RENAMES "#define ${s} ${PREFIX}${s}\n")
+        endforeach()
+        set(SET ${set})
+        set(IMPL ${impl})
+        file(CONFIGURE OUTPUT ${OPENPQC_SPHINCSPLUS_HOOK_DIR}/${impl}-${set}/params/params-slh-${set}.h
+             CONTENT [=[/*
+ * params-slh-@SET@.h -- generated by reference/CMakeLists.txt (the "params hook"), do not edit
+ *
+ * sphincsplus parameter set @SET@ (@IMPL@), with every function prefixed by @PREFIX@
+ */
+#ifndef OPENPQC_SPX_PARAMS_HOOK_H
+#define OPENPQC_SPX_PARAMS_HOOK_H
+
+#include "@UPSTREAM_PARAMS@"
+
+#undef SPX_NAMESPACE
+#define SPX_NAMESPACE(s) @PREFIX@##s
+
+@RENAMES@
+#endif
+]=] @ONLY)
+
+        add_library(${name}_${infix} OBJECT ${files})
+        openpqc_reference_slhdsa_params(${name}_${infix} ${impl} ${set})
+        target_sources(${name} PRIVATE $<TARGET_OBJECTS:${name}_${infix}>)
+        list(APPEND _targets ${name}_${infix})
+    endforeach()
+    foreach(t ${_targets})
+        target_compile_options(${t} PRIVATE $<$<COMPILE_LANGUAGE:C>:${flags}>)
+        set_target_properties(${t} PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                              POSITION_INDEPENDENT_CODE ON)   # -std=c99, as upstream
+    endforeach()
+endfunction()
+
+_openpqc_sphincsplus_target(openpqc_reference_slhdsa ref
+    "-Wall;-Wextra;-Wpedantic;-Wconversion;-Wmissing-prototypes"   # ref/Makefile
+    "${OPENPQC_SPHINCSPLUS_DIR}/ref/fips202.c")
+
+if(OPENPQC_NATIVE_ARCH STREQUAL "x86_64" AND OPENPQC_NATIVE_FLAGS MATCHES "-mavx2")
+    # -mavx2 instead of upstream's -march=native -flto, as for the Dilithium AVX2 library
+    _openpqc_sphincsplus_target(openpqc_reference_slhdsa_avx2 avx2
+        "-Wall;-Wextra;-Wpedantic;-Wmissing-prototypes;-mavx2"       # sha2-avx2/Makefile, shake-avx2/Makefile
+        "${OPENPQC_SPHINCSPLUS_DIR}/shake-avx2/fips202.c;${OPENPQC_SPHINCSPLUS_DIR}/shake-avx2/fips202x4.c;${OPENPQC_SPHINCSPLUS_DIR}/shake-avx2/keccak4x/KeccakP-1600-times4-SIMD256.c;${OPENPQC_SPHINCSPLUS_DIR}/sha2-avx2/sha256avx.c")
+    set(OPENPQC_HAVE_REFERENCE_SLHDSA_AVX2 ON CACHE INTERNAL "")
+else()
+    set(OPENPQC_HAVE_REFERENCE_SLHDSA_AVX2 OFF CACHE INTERNAL "")
+endif()

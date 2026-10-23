@@ -1,0 +1,13 @@
+Unmodified copy of the SPHINCS+ repository (SLH-DSA, FIPS 205), without hidden files and without acvp/.
+Repository: https://github.com/sphincs/sphincsplus
+Branch:     bas/fips205
+Commit:     ef36d20ff3588324ad69f844507b8217f008f35a
+
+Left out:
+  hidden files: .git, .github/, .reuse/, ref/.gitignore, sha2-avx2/.gitignore, shake-a64/.gitignore, shake-avx2/.gitignore
+      (version control, upstream's CI workflows and REUSE metadata; the licence is stated in LICENSE,
+      LICENSES/ and README.md, and .reuse/dep5 adds that ref/PQCgenKAT_sign.c, ref/rng.c and ref/rng.h
+      are "Copyright: 2017 Bassham, Lawrence E (Fed). License: All rights reserved.")
+  acvp/: NIST's ACVP vectors (keyGen, sigGen and sigVer internalProjection.json, 66 MB); they are byte-identical to the files of NIST's ACVP server at v1.1.0.43, which tests/SLH-DSA/acvp downloads and pins by SHA-256 (upstream's acvp.py, which reads them, is kept)
+
+Updated by scripts/vendor_sphincsplus.py -- do not edit.

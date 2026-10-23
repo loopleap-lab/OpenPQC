@@ -32,13 +32,6 @@ int result(Status s) {
     return static_cast<int>(s);
 }
 
-// The pre-hash function with the OPENPQC_MLDSA_PREHASH_* value ph, or nothing for an unknown value
-bool to_prehash(int ph, PreHash& out_ph) {
-    if (ph < 1 || ph > 12) return false;
-    out_ph = static_cast<PreHash>(ph);
-    return true;
-}
-
 template <ParameterSet P>
 struct CApi {
     using S = Sizes<P>;
@@ -66,21 +59,21 @@ struct CApi {
     static int prehash_sign(std::uint8_t* sig, const std::uint8_t* m, std::size_t mlen, const std::uint8_t* ctx,
                             std::size_t ctxlen, int ph, const std::uint8_t* sk) {
         PreHash p;
-        if (!to_prehash(ph, p)) return result(Status::invalid_argument);
+        if (!openpqc::to_prehash(ph, p)) return result(Status::invalid_argument);
         return result(hash_sign<P>(out<S::sig>(sig), in<S::sk>(sk), bytes(m, mlen), p, bytes(ctx, ctxlen)));
     }
     static int prehash_sign_derand(std::uint8_t* sig, const std::uint8_t* m, std::size_t mlen,
                                    const std::uint8_t* ctx, std::size_t ctxlen, int ph, const std::uint8_t* rnd,
                                    const std::uint8_t* sk) {
         PreHash p;
-        if (!to_prehash(ph, p)) return result(Status::invalid_argument);
+        if (!openpqc::to_prehash(ph, p)) return result(Status::invalid_argument);
         return result(hash_sign_derand<P>(out<S::sig>(sig), in<S::sk>(sk), bytes(m, mlen), p, bytes(ctx, ctxlen),
                                           in<32>(rnd)));
     }
     static int prehash_verify(const std::uint8_t* sig, std::size_t siglen, const std::uint8_t* m, std::size_t mlen,
                               const std::uint8_t* ctx, std::size_t ctxlen, int ph, const std::uint8_t* pk) {
         PreHash p;
-        if (!to_prehash(ph, p)) return result(Status::invalid_argument);
+        if (!openpqc::to_prehash(ph, p)) return result(Status::invalid_argument);
         return result(hash_verify<P>(in<S::pk>(pk), bytes(m, mlen), bytes(sig, siglen), bytes(ctx, ctxlen), p));
     }
     static int external_mu(std::uint8_t* mu, const std::uint8_t* m, std::size_t mlen, const std::uint8_t* ctx,
@@ -122,8 +115,16 @@ static_assert(static_cast<int>(Status::invalid_signature) == OPENPQC_MLDSA_ERR_I
               static_cast<int>(Status::signing_limit) == OPENPQC_MLDSA_ERR_SIGNING_LIMIT &&
               static_cast<int>(Status::pct_failure) == OPENPQC_MLDSA_ERR_PCT_FAIL);
 static_assert(static_cast<int>(PreHash::SHA2_256) == OPENPQC_MLDSA_PREHASH_SHA2_256 &&
+              static_cast<int>(PreHash::SHA2_384) == OPENPQC_MLDSA_PREHASH_SHA2_384 &&
+              static_cast<int>(PreHash::SHA2_512) == OPENPQC_MLDSA_PREHASH_SHA2_512 &&
               static_cast<int>(PreHash::SHA2_224) == OPENPQC_MLDSA_PREHASH_SHA2_224 &&
+              static_cast<int>(PreHash::SHA2_512_224) == OPENPQC_MLDSA_PREHASH_SHA2_512_224 &&
+              static_cast<int>(PreHash::SHA2_512_256) == OPENPQC_MLDSA_PREHASH_SHA2_512_256 &&
               static_cast<int>(PreHash::SHA3_224) == OPENPQC_MLDSA_PREHASH_SHA3_224 &&
+              static_cast<int>(PreHash::SHA3_256) == OPENPQC_MLDSA_PREHASH_SHA3_256 &&
+              static_cast<int>(PreHash::SHA3_384) == OPENPQC_MLDSA_PREHASH_SHA3_384 &&
+              static_cast<int>(PreHash::SHA3_512) == OPENPQC_MLDSA_PREHASH_SHA3_512 &&
+              static_cast<int>(PreHash::SHAKE128) == OPENPQC_MLDSA_PREHASH_SHAKE128 &&
               static_cast<int>(PreHash::SHAKE256) == OPENPQC_MLDSA_PREHASH_SHAKE256);
 
 } // namespace

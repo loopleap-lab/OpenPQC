@@ -12,6 +12,9 @@ directory; then every test case is run through acvp_mldsa and its output compare
 For the default version, the SHA-256 of every file and its number of test cases are pinned:
 a changed, damaged or truncated download is an error rather than a smaller test.
 
+The ACVP client of SLH-DSA (tests/SLH-DSA/acvp/acvp_client.py) runs main() of this file with
+its own files, pins and command lines.
+
 usage: acvp_client.py --binary PATH [--version TAG] [--cache DIR] [--jobs N]
 """
 
@@ -44,10 +47,10 @@ PINNED = {
 }
 
 
-def download(version, cache):
+def download(version, cache, files=FILES, pinned=PINNED):
     """The internalProjection.json of every vector set, from the cache or from GitHub."""
     data = {}
-    for name in FILES:
+    for name in files:
         path = cache / version / name / "internalProjection.json"
         if not path.exists():
             url = ("https://raw.githubusercontent.com/usnistgov/ACVP-Server/"
@@ -66,10 +69,10 @@ def download(version, cache):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
         content = path.read_bytes()
-        if version in PINNED:
+        if version in pinned:
             digest = hashlib.sha256(content).hexdigest()
-            if digest != PINNED[version][name][0]:
-                sys.exit(f"{path}: SHA-256 {digest}, expected {PINNED[version][name][0]} (delete it to download again)")
+            if digest != pinned[version][name][0]:
+                sys.exit(f"{path}: SHA-256 {digest}, expected {pinned[version][name][0]} (delete it to download again)")
         loaded = json.loads(content)
         data[name] = loaded[1] if isinstance(loaded, list) else loaded
     return data
@@ -106,7 +109,8 @@ def run_case(case):
     name, tg, tc, cmd, expected = case
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        return f"{name} tcId {tc['tcId']}: acvp_mldsa failed ({result.returncode}): {result.stderr.strip()}"
+        program = pathlib.Path(cmd[0]).name
+        return f"{name} tcId {tc['tcId']}: {program} failed ({result.returncode}): {result.stderr.strip()}"
     got = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     for key, value in expected.items():
         if got.get(key, "").lower() != value.lower():
@@ -114,15 +118,16 @@ def run_case(case):
     return None
 
 
-def main():
+def main(command=command, files=FILES, pinned=PINNED, default_version=DEFAULT_VERSION):
+    """Runs every test case of the vector sets files through command(binary, mode, group, case)."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
-    parser.add_argument("--version", default=DEFAULT_VERSION)
+    parser.add_argument("--version", default=default_version)
     parser.add_argument("--cache", default="acvp-data", type=pathlib.Path)
     parser.add_argument("--jobs", default=8, type=int)
     args = parser.parse_args()
 
-    data = download(args.version, args.cache)
+    data = download(args.version, args.cache, files, pinned)
     cases = []
     for name, vectors in data.items():
         mode = vectors["mode"]
@@ -138,9 +143,9 @@ def main():
     counts = {name: sum(1 for c in cases if c[0] == name) for name in data}
     print(f"ACVP {args.version}: " + ", ".join(f"{n} {c}" for n, c in counts.items()))
     print(f"{len(cases) - len(failures)} of {len(cases)} test cases passed")
-    missing = [n for n, c in counts.items() if args.version in PINNED and c != PINNED[args.version][n][1]]
+    missing = [n for n, c in counts.items() if args.version in pinned and c != pinned[args.version][n][1]]
     for n in missing:
-        print(f"{n}: {counts[n]} test cases, expected {PINNED[args.version][n][1]}", file=sys.stderr)
+        print(f"{n}: {counts[n]} test cases, expected {pinned[args.version][n][1]}", file=sys.stderr)
     sys.exit(1 if failures or missing else 0)
 
 

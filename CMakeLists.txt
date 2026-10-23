@@ -3,6 +3,7 @@ project(OpenPQC VERSION 0.3.0 LANGUAGES C CXX)
 
 option(OPENPQC_BUILD_TESTS      "Build the OpenPQC tests"                ${PROJECT_IS_TOP_LEVEL})
 option(OPENPQC_BUILD_BENCHMARKS "Build the OpenPQC benchmarks"           ${PROJECT_IS_TOP_LEVEL})
+option(OPENPQC_BUILD_EXAMPLES   "Build the demos in examples/"            ${PROJECT_IS_TOP_LEVEL})
 option(OPENPQC_NATIVE           "Use the SIMD/assembly backends of the reference (mlkem-native)" ON)
 option(OPENPQC_WERROR           "Treat warnings in OpenPQC's own code as errors" ${PROJECT_IS_TOP_LEVEL})
 
@@ -99,12 +100,15 @@ endif()
 #   ML      what the module-lattice schemes share (header-only)
 #   ML/KEM  FIPS 203
 #   ML/DSA  FIPS 204
+#   SLH     the stateless hash-based schemes
+#   SLH/DSA FIPS 205
 add_subdirectory(include/Core)
 add_subdirectory(include/ML/KEM)
 add_subdirectory(include/ML/DSA)
+add_subdirectory(include/SLH/DSA)
 
-# C++ umbrella library: Core, ML-KEM and ML-DSA, and the C++ learning code for
-# ML-KEM's arithmetic (ML/KEM/reduce, ML/KEM/ntt).
+# C++ umbrella library: Core, ML-KEM, ML-DSA and SLH-DSA, and the C++ learning
+# code for ML-KEM's arithmetic (ML/KEM/reduce, ML/KEM/ntt).
 add_library(openpqc STATIC
     include/ML/KEM/reduce.cpp
     include/ML/KEM/ntt.cpp
@@ -114,7 +118,8 @@ target_include_directories(openpqc PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_features(openpqc PUBLIC cxx_std_20)
-target_link_libraries(openpqc PUBLIC openpqc::core openpqc::mlkem openpqc::mldsa PRIVATE openpqc_warnings)
+target_link_libraries(openpqc PUBLIC openpqc::core openpqc::mlkem openpqc::mldsa openpqc::slhdsa
+                              PRIVATE openpqc_warnings)
 
 # The reference implementation (mlkem-native, unmodified), for tests and benchmarks
 if(OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHMARKS)
@@ -128,4 +133,8 @@ endif()
 
 if(OPENPQC_BUILD_BENCHMARKS)
     add_subdirectory(bench)
+endif()
+
+if(OPENPQC_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()

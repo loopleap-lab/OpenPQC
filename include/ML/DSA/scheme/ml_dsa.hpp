@@ -28,15 +28,22 @@
 
 #include "../../../Core/opqc_ct.h"
 #include "../../../Core/opqc_platform.h"
+#include "../../../Core/prehash.hpp"
 #include "../../../Core/zeroize.hpp"
 #include "crypto_functions.hpp"
 #include "mldsa_internal.hpp"
 #include "parameter_sets.hpp"
-#include "prehash.hpp"
 
 namespace openpqc::mldsa {
 
-inline constexpr std::size_t max_context_bytes = 255;
+// The pre-hash functions PH of HashML-DSA, their OIDs and the limit on context strings are Core's
+// (Core/prehash.hpp), shared with HashSLH-DSA; their names in this namespace stay valid
+using openpqc::max_context_bytes;
+using openpqc::max_prehash_bytes;
+using openpqc::PreHash;
+using openpqc::prehash;
+using openpqc::prehash_bytes;
+using openpqc::prehash_oid;
 
 // --- key generation ------------------------------------------------------------------
 

@@ -41,6 +41,8 @@ tests/       C++ tests; tests/Core; tests/ML-KEM, tests/ML-DSA (the references' 
              implementations, differential, math-core and constant-time tests, ACVP); tests/gpu (SYCL vs CPU,
              every device)
 bench/       CPU and GPU benchmarks, run_benchmarks.sh, compare_gpu.py
+examples/    demo_cpu, demo_gpu: how to use ML-KEM, ML-DSA and SLH-DSA, on the CPU and on a GPU
+                                                                                    -> examples/README.md
 scripts/     vendor_mlkem_native.py, vendor_dilithium.py (update reference/ and the test programs from upstream)
 cmake/       warning flags, native-backend detection for the reference
 ```
@@ -86,6 +88,9 @@ cmake -S . -B build-acpp -DCMAKE_BUILD_TYPE=Release \
 | `OPENPQC_CUPQC_DIR` | empty | path to an NVIDIA cuPQC SDK: builds the optional baseline benchmark (its results are covered by NVIDIA's licence and are not published here) |
 
 ## Usage
+
+Complete programs: [examples/](examples/README.md) (`demo_cpu`: the three schemes on the CPU; `demo_gpu`: the same in
+batches on a GPU, checked against the CPU and timed against it).
 
 ```c
 #include "ML/KEM/openpqc_mlkem.h"        /* link openpqc::mlkem */

@@ -1,11 +1,18 @@
 # Build trees (build/, build-dpcpp/, build-acpp/, ...) and tool output
 build*/
-.cache/
 compile_commands.json
-
-.*
-
 __pycache__/
+
+# Hidden files and directories are local (.cache/, .claude/, .vscode/, .idea/, .original-src/,
+# the original sources of the removed NTT learning library, ...), except the repository's own
+.*
+!.gitignore
+!.gitmodules
+!.gitattributes
+!.github/
+!.clang-format
+!.clang-tidy
+*.swp
 
 # Logs and results generated on a local machine
 *.log
@@ -15,15 +22,8 @@ perf.data*
 vgcore.*
 core.[0-9]*
 
-# Local editor and assistant settings
-.claude/
-.vscode/
-.idea/
-*.swp
-
-# Original sources of the removed NTT learning library
-.original-src/
-
 # Notes, reports and plans that do not document the code as it is
 docs/
 
+# The upstream checkouts in reference/repos/ are submodules (.gitmodules) and are not ignored:
+# git add needs to see them to record their commits

@@ -5,6 +5,7 @@ set(OPENPQC_TESTS
     test_hash
     test_mlkem_cxx
     test_mldsa_cxx
+    test_slhdsa_cxx
 )
 
 foreach(name IN LISTS OPENPQC_TESTS)
@@ -19,6 +20,7 @@ endforeach()
 # ML-KEM (OpenPQC and the reference) and Core
 add_subdirectory(ML-KEM)
 add_subdirectory(ML-DSA)
+add_subdirectory(SLH-DSA)
 add_subdirectory(Core)
 
 # GPU backends: bit-exactness against the CPU library

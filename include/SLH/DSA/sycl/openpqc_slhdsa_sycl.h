@@ -1,0 +1,191 @@
+/*
+ * Copyright (c) The OpenPQC project authors
+ * SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+ */
+
+/*
+ * openpqc_slhdsa_sycl.h -- batched SLH-DSA (FIPS 205) on GPUs and other SYCL devices
+ *
+ * One call runs n independent operations of the context's parameter set. All key,
+ * signature, message, seed, addrnd, pre-hash, offset and status buffers are DEVICE
+ * buffers (allocate them with opqc_sycl_slhdsa_malloc) holding the n operations back
+ * to back in the FIPS 205 byte formats: operation i starts at i * size, with the
+ * sizes of openpqc_slhdsa.h (pk 2n, sk 4n, seeds 3n, addrnd n, signature as in
+ * Table 2). Key, seed, addrnd, pre-hash, offset and SIGNATURE buffers must be 8-byte
+ * aligned and status buffers 4-byte aligned, as those of opqc_sycl_slhdsa_malloc
+ * are (every SLH-DSA signature size and every n-byte value in a signature is a
+ * multiple of 8 bytes); calls with other buffers return -1. Messages may start at
+ * any byte. Outputs must not overlap inputs. The results are byte-identical to the
+ * CPU library (openpqc_slhdsa_<set>_*):
+ *
+ *   opqc_sycl_slhdsa_keypair_derand        = keypair_derand: slh_keygen_internal (Alg. 18), seeds
+ *                                            SK.seed || SK.prf || PK.seed (3n B per operation)
+ *   opqc_sycl_slhdsa_sign_derand           = sign_derand: slh_sign (Alg. 22) with addrnd (n B per
+ *                                            operation); addrnd = NULL: the deterministic variant
+ *                                            (opt_rand = PK.seed, Alg. 19, line 2)
+ *   opqc_sycl_slhdsa_prehash_sign_derand   = prehash_sign_derand: hash_slh_sign (Alg. 23), given
+ *                                            the pre-hashes PH(M) (see below)
+ *   opqc_sycl_slhdsa_sign_internal_derand  = sign_internal: slh_sign_internal (Alg. 19) on M'
+ *   opqc_sycl_slhdsa_verify                = verify: slh_verify (Alg. 24)
+ *   opqc_sycl_slhdsa_prehash_verify        = prehash_verify: hash_slh_verify (Alg. 25), given PH(M)
+ *   opqc_sycl_slhdsa_verify_internal       = verify_internal: slh_verify_internal (Alg. 20) on M'
+ *
+ * Messages. The n messages lie back to back in one device buffer `msg`; message i is
+ * msg[offsets[i] .. offsets[i + 1]), with offsets a device buffer of n + 1 uint64_t
+ * (offsets[0] is usually 0). The offsets must not decrease and must stay within msg;
+ * they are device data and are not checked. For the same reason msg (mprime, ph_m)
+ * must not be NULL even when every message is empty: the call cannot see that no
+ * byte will be read, and refuses NULL with -1 (verification fails closed, see
+ * Status), where the CPU library accepts NULL for an empty message. All messages of a
+ * call share one context string ctx of ctxlen <= 255 bytes, given in HOST memory (the
+ * caller may reuse it as soon as the call returns). The internal functions take the
+ * formatted messages M' themselves in the same form, and no context string.
+ *
+ * Pre-hash. The prehash functions take PH(M) instead of M: `ph_m` holds n pre-hashes
+ * of prehash_bytes(ph) bytes each (28, 32, 48 or 64; Core/prehash.hpp), back to back;
+ * ph is an OPENPQC_SLHDSA_PREHASH_* value. The device forms
+ * M' = toByte(1, 1) || toByte(|ctx|, 1) || ctx || OID || PH(M) (Alg. 23, line 24;
+ * Alg. 25, line 20) without copying it. Computing PH(M) is the caller's business; the
+ * results equal the CPU's prehash_sign_derand and prehash_verify of M.
+ *
+ * Randomness. opqc_sycl_slhdsa_keypair, _sign and _prehash_sign (and their _one_key
+ * forms) draw the seeds or addrnd from the operating system's RNG on the host (FIPS
+ * 205, Section 3.1: the module, not the caller, generates them) and return
+ * OPENPQC_SLHDSA_ERR_RNG_FAIL if it fails. They go to the device from page-locked host
+ * memory that the context holds and wipes after every launch (a copy from pageable
+ * memory would leave them in a staging buffer of the driver).
+ *
+ * One key. The _one_key functions use a single key (sk or pk is one key in device
+ * memory) for all n operations; the results are those of the functions above with n
+ * copies of the key, and the work that depends only on the key is done once per
+ * launch.
+ *
+ * Status. Signing cannot fail on the device and has no status buffer. Verification
+ * writes 0 (valid) or OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE per operation into `status`
+ * (device, n int32_t, required). A signature of the wrong length cannot be passed
+ * (the sizes are the parameter set's), so Alg. 20, lines 1-3 never apply. Fail
+ * closed: when a verification call is refused (-1: a context string over 255 bytes,
+ * a bad ph, an unaligned or missing buffer, msg NULL) or fails (-2), every status
+ * entry is set to OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE as long as the context and the
+ * status buffer themselves are usable, so that a caller who ignores the result never
+ * reads a stale 0.
+ *
+ * Calls are asynchronous: they return once the work is queued (there is no rejection
+ * loop in SLH-DSA, signing included), and opqc_sycl_slhdsa_sync waits for it. All
+ * functions return 0 on success, -1 for invalid arguments, -2 for an exception of the
+ * SYCL runtime (or, for the randomized calls, page-locked host memory that cannot be
+ * allocated), or OPENPQC_SLHDSA_ERR_RNG_FAIL. (The GPU's -1 and -2 are not the CPU
+ * library's OPENPQC_SLHDSA_ERR_* codes of the same values, as for ML-DSA's backend.)
+ * Secret intermediate values kept in device memory between the stages of a call are
+ * zeroized when the call ends, also when it fails part way (as far as the device still
+ * accepts work), and so are those of verification (FIPS 205, Section 3.1); local
+ * memory is cleared before every team kernel ends.
+ *
+ * Threads. A context may be used from several host threads: their calls take turns
+ * (each holds the context's lock while it queues its work). opqc_sycl_slhdsa_destroy
+ * must not run while another call uses the context.
+ */
+
+#ifndef OPENPQC_SLHDSA_SYCL_H
+#define OPENPQC_SLHDSA_SYCL_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "Core/sycl/openpqc_sycl.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct opqc_sycl_slhdsa opqc_sycl_slhdsa;
+
+/*
+ * Creates a context for parameter set `param_set` (an OPENPQC_SLHDSA_* id of
+ * openpqc_slhdsa.h, 1-12 in the order of FIPS 205, Table 2) on SYCL device `device`
+ * (an index for opqc_sycl_device_name, or -1 for the default device, which the
+ * environment variable OPENPQC_SYCL_DEVICE=<index> can set). Device memory for
+ * `max_batch` operations per launch is allocated; larger calls are split into
+ * launches of max_batch operations. Per operation (opqc_sycl_slhdsa_workspace_bytes):
+ * 1.97 MiB (128s), 104 KiB (128f), 6.46 MiB (192s), 222 KiB (192f), 11.07 MiB
+ * (256s) and 587 KiB (256f), the same for SHA2 and SHAKE within 96 bytes; mostly
+ * the FORS leaves and the WOTS+ chain ends of a signature. Returns -1 for a parameter
+ * set that this build does not contain (the development option
+ * OPENPQC_SLHDSA_SYCL_SETS), a device without enough local memory, or device memory
+ * that cannot be allocated.
+ */
+int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa **ctx, int param_set, size_t max_batch, int device);
+void opqc_sycl_slhdsa_destroy(opqc_sycl_slhdsa *ctx);
+const char *opqc_sycl_slhdsa_device_name(const opqc_sycl_slhdsa *ctx);
+
+/* The device memory that a context for param_set and max_batch allocates, in bytes; 0 if
+ * this build does not contain the parameter set */
+size_t opqc_sycl_slhdsa_workspace_bytes(int param_set, size_t max_batch);
+
+int opqc_sycl_slhdsa_keypair_derand(opqc_sycl_slhdsa *ctx, uint8_t *pk, uint8_t *sk, const uint8_t *seeds,
+                                    size_t n);
+int opqc_sycl_slhdsa_keypair(opqc_sycl_slhdsa *ctx, uint8_t *pk, uint8_t *sk, size_t n);
+
+int opqc_sycl_slhdsa_sign_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg, const uint64_t *offsets,
+                                 const uint8_t *ctxstr, size_t ctxlen, const uint8_t *addrnd, const uint8_t *sk,
+                                 size_t n);
+int opqc_sycl_slhdsa_sign(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg, const uint64_t *offsets,
+                          const uint8_t *ctxstr, size_t ctxlen, const uint8_t *sk, size_t n);
+int opqc_sycl_slhdsa_prehash_sign_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *ph_m,
+                                         const uint8_t *ctxstr, size_t ctxlen, int ph, const uint8_t *addrnd,
+                                         const uint8_t *sk, size_t n);
+int opqc_sycl_slhdsa_prehash_sign(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *ph_m, const uint8_t *ctxstr,
+                                  size_t ctxlen, int ph, const uint8_t *sk, size_t n);
+int opqc_sycl_slhdsa_sign_internal_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *mprime,
+                                          const uint64_t *offsets, const uint8_t *addrnd, const uint8_t *sk,
+                                          size_t n);
+
+int opqc_sycl_slhdsa_verify(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *msg, const uint64_t *offsets,
+                            const uint8_t *ctxstr, size_t ctxlen, const uint8_t *pk, int32_t *status, size_t n);
+int opqc_sycl_slhdsa_prehash_verify(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *ph_m,
+                                    const uint8_t *ctxstr, size_t ctxlen, int ph, const uint8_t *pk, int32_t *status,
+                                    size_t n);
+int opqc_sycl_slhdsa_verify_internal(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *mprime,
+                                     const uint64_t *offsets, const uint8_t *pk, int32_t *status, size_t n);
+
+/* One key for the whole batch: sk (or pk) is a single key in device memory */
+int opqc_sycl_slhdsa_sign_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg,
+                                         const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
+                                         const uint8_t *addrnd, const uint8_t *sk, size_t n);
+int opqc_sycl_slhdsa_sign_one_key(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg, const uint64_t *offsets,
+                                  const uint8_t *ctxstr, size_t ctxlen, const uint8_t *sk, size_t n);
+int opqc_sycl_slhdsa_prehash_sign_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *ph_m,
+                                                 const uint8_t *ctxstr, size_t ctxlen, int ph,
+                                                 const uint8_t *addrnd, const uint8_t *sk, size_t n);
+int opqc_sycl_slhdsa_prehash_sign_one_key(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *ph_m,
+                                          const uint8_t *ctxstr, size_t ctxlen, int ph, const uint8_t *sk, size_t n);
+int opqc_sycl_slhdsa_sign_internal_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *mprime,
+                                                  const uint64_t *offsets, const uint8_t *addrnd, const uint8_t *sk,
+                                                  size_t n);
+int opqc_sycl_slhdsa_verify_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *msg,
+                                    const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen, const uint8_t *pk,
+                                    int32_t *status, size_t n);
+int opqc_sycl_slhdsa_prehash_verify_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *ph_m,
+                                            const uint8_t *ctxstr, size_t ctxlen, int ph, const uint8_t *pk,
+                                            int32_t *status, size_t n);
+int opqc_sycl_slhdsa_verify_internal_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *mprime,
+                                             const uint64_t *offsets, const uint8_t *pk, int32_t *status, size_t n);
+
+/* Waits until all queued work of the context is done. */
+int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa *ctx);
+
+/* Memory: device memory on the context's device, and page-locked host memory (faster
+ * transfers), both 256-byte aligned and freed with opqc_sycl_slhdsa_free. Copies in any
+ * direction: memcpy waits for the copy, memcpy_async queues it behind the context's
+ * earlier work. */
+void *opqc_sycl_slhdsa_malloc(opqc_sycl_slhdsa *ctx, size_t bytes);
+void *opqc_sycl_slhdsa_malloc_host(opqc_sycl_slhdsa *ctx, size_t bytes);
+void opqc_sycl_slhdsa_free(opqc_sycl_slhdsa *ctx, void *p);
+int opqc_sycl_slhdsa_memcpy(opqc_sycl_slhdsa *ctx, void *dst, const void *src, size_t bytes);
+int opqc_sycl_slhdsa_memcpy_async(opqc_sycl_slhdsa *ctx, void *dst, const void *src, size_t bytes);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* !OPENPQC_SLHDSA_SYCL_H */

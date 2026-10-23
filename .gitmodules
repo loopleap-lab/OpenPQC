@@ -1,23 +1,20 @@
-[submodule "cuPQC"]
-	path = references/cuPQC
-	url = https://github.com/NVIDIA/cuPQC.git
-
-[submodule "dilithium"]
-	path = references/dilithium
-	url = https://github.com/pq-crystals/dilithium.git
-
-[submodule "mlkem-native"]
-	path = references/mlkem-native
-	url = https://github.com/pq-code-package/mlkem-native.git
-[submodule "reference/dilithium"]
-	path = reference/dilithium
-	url = https://github.com/pq-crystals/dilithium.git
+# Upstream checkouts of the reference implementations. Neither the libraries nor the tests
+# build from them: the build uses the vendored copies in reference/{mlkem-native,dilithium,
+# sphincsplus}, which scripts/vendor_*.py copy from these checkouts (see reference/README.md).
+# The submodule names are the older paths, so the existing .git/modules/reference/<name> stay valid.
 [submodule "reference/mlkem-native"]
-	path = reference/mlkem-native
+	path = reference/repos/mlkem-native
 	url = https://github.com/pq-code-package/mlkem-native.git
-[submodule "reference/cupqc"]
-	path = reference/cupqc
-	url = https://github.com/NVIDIA/cuPQC.git
+	branch = main
+[submodule "reference/dilithium"]
+	path = reference/repos/dilithium
+	url = https://github.com/pq-crystals/dilithium.git
+	branch = master
 [submodule "reference/sphincsplus"]
-	path = reference/sphincsplus
+	path = reference/repos/sphincsplus
 	url = https://github.com/sphincs/sphincsplus.git
+	branch = bas/fips205
+[submodule "reference/cupqc"]
+	path = reference/repos/cupqc
+	url = https://github.com/NVIDIA/cuPQC.git
+	branch = main

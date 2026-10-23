@@ -23,7 +23,7 @@ Ring Z_q[x]/(x^n + 1), q = 12289 (complete NTT for n ≤ 1024).
 |---|---|
 | SHAKE256, incremental (μ, tr, HashToPoint, sampler PRNG) | **Core**: `opqc_shake256_inc_*` exists. A buffered byte-wise reader (`next_u8/u16/u64`) belongs to FN-DSA |
 | `randombytes()`, constant-time masks/selects, zeroize | **Core** (Core's `ct.h` needs 32/64-bit variants) |
-| μ framing (domain separator, context, pre-hash OIDs), the same as FIPS 204 | Core candidate once ML-DSA exists |
+| μ framing (domain separator, context, pre-hash OIDs), the same as FIPS 204 | **Core**: `Core/prehash.hpp` (pre-hash functions, OIDs, the 255-byte context limit) and `Core/openpqc_prehash.h`, shared by HashML-DSA and HashSLH-DSA; the two-byte prefix (domain separator, \|ctx\|) is written at each scheme's call site |
 | NTT mod 12289 (n = 512/1024, 9/10 layers), Montgomery-style reduction, pointwise multiplication and **division** in NTT domain | Core (pattern) |
 | HashToPoint (16-bit SHAKE256 chunks < 5q, reduced mod q) | Core (pattern), rejection sampling |
 | 14-bit public-key packing, 5/6/8-bit secret-key trimming | Core (pattern), bit packing |

@@ -11,7 +11,8 @@
 //    (no assumption is made about the sub-group size).
 //
 // And the conventions that the kernels rely on: the alignment of the buffers,
-// which the compiler is told about, and kernels that are always inlined.
+// which the compiler is told about, kernels that are always inlined, stores of
+// 16 bytes at a time, and local memory cleared before a kernel ends.
 #pragma once
 
 #include <sycl/sycl.hpp>
@@ -43,6 +44,41 @@ template <class T>
 inline T* workspace(T* p) {
     return std::assume_aligned<WORKSPACE_ALIGN>(p);
 }
+
+// Stages in which every work-item writes its own output (a polynomial, a node of a hash tree) write
+// 16 bytes at a time: the work-items of a warp write to different places, so that each of their 1- to
+// 4-byte stores would be a memory transaction of its own (ExpandS of ML-DSA became 4.3-5.7 times
+// faster, ML/DSA/README.md). store16 writes the 16 bytes lo || hi (little-endian) to p, which must be
+// 16-byte aligned; Store16 collects values of Bits bits (8, 16, 32 or 64), value k of a group at bits
+// Bits k, and writes every group of 16 bytes as it is complete (a partial last group is not written).
+OPQC_KERNEL_INLINE inline void store16(void* p, std::uint64_t lo, std::uint64_t hi) {
+    *static_cast<sycl::vec<std::uint32_t, 4>*>(p) =
+            sycl::vec<std::uint32_t, 4>(static_cast<std::uint32_t>(lo), static_cast<std::uint32_t>(lo >> 32),
+                                        static_cast<std::uint32_t>(hi), static_cast<std::uint32_t>(hi >> 32));
+}
+
+template <unsigned Bits>
+struct Store16 {
+    static_assert(Bits == 8 || Bits == 16 || Bits == 32 || Bits == 64, "values of 8, 16, 32 or 64 bits");
+    static constexpr unsigned per_group = 128 / Bits;
+    std::uint8_t* out;          // 16-byte aligned
+    std::uint64_t lo = 0, hi = 0;   // the values of the group being collected
+    unsigned count = 0;         // values appended so far
+
+    explicit Store16(void* p) : out(static_cast<std::uint8_t*>(p)) {}
+    // appends a value of at most Bits bits
+    OPQC_KERNEL_INLINE void append(std::uint64_t value) {
+        const unsigned p = count % per_group;
+        const std::uint64_t v = value << (Bits * (p % (per_group / 2)));
+        if (p < per_group / 2) lo |= v;
+        else hi |= v;
+        if (p == per_group - 1) {
+            store16(out + 16 * (count / per_group), lo, hi);
+            lo = hi = 0;
+        }
+        count++;
+    }
+};
 
 // f(i) for every i < n, one work-item each, in work-groups of GroupSize
 template <unsigned GroupSize = 128, class F>
@@ -124,6 +160,17 @@ void clear_local(const Team<Word, TeamSize>& t, unsigned polys) {
 #pragma unroll
         for (unsigned x = 0; x < chunk; x++) t.local[N * p + chunk * t.g + x] = 0;
     }
+}
+
+// The same for local data of any shape (the nodes of a hash tree, for instance): overwrites the team's
+// first `words` words of local memory with zeros, work-item g taking the words g, g + TeamSize, ...,
+// after a barrier, once all of them are done with local memory. As for clear_local, every work-item of
+// the work-group calls it (the barrier is the work-group's), as the last use of local memory in the
+// kernel; words must not exceed the team's local_words.
+template <class Word, unsigned TeamSize>
+OPQC_KERNEL_INLINE void clear_local_words(const Team<Word, TeamSize>& t, std::size_t words) {
+    t.barrier();
+    for (std::size_t i = t.g; i < words; i += TeamSize) t.local[i] = 0;
 }
 
 } // namespace openpqc::gpu

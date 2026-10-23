@@ -13,6 +13,9 @@
 #   bench_mldsa_cpu_mt   ML-DSA, CPU throughput on 1..T threads: OpenPQC, reference, AVX2
 #   bench_mldsa_sycl     ML-DSA on a SYCL device: throughput and latency per batch size
 #   profile_mldsa_stages_sycl  ML-DSA: time per stage of the SYCL pipeline
+#   bench_slhdsa_cpu_mt  SLH-DSA, CPU throughput on 1..T threads: OpenPQC, the sphincsplus reference, its AVX2 code
+#   bench_slhdsa_sycl    SLH-DSA on a SYCL device: throughput and latency per batch size
+#   profile_slhdsa_stages_sycl  SLH-DSA: time per stage of the SYCL pipeline (KeyGen, Sign, Verify)
 
 add_executable(bench_mlkem_cpu_mt cpu/bench_mlkem_cpu_mt.cpp)
 target_link_libraries(bench_mlkem_cpu_mt PRIVATE openpqc_mlkem openpqc_reference_mlkem)
@@ -75,4 +78,33 @@ if(OPENPQC_HAVE_SYCL)
     target_link_libraries(profile_mldsa_stages_sycl PRIVATE openpqc_core openpqc_core_sycl ${CMAKE_DL_LIBS})
     target_compile_features(profile_mldsa_stages_sycl PRIVATE cxx_std_20)
     openpqc_sycl_sources(profile_mldsa_stages_sycl gpu/profile_mldsa_stages_sycl.cpp)
+endif()
+
+# SLH-DSA on the CPU: OpenPQC, the reference implementation (sphincsplus ref) and its AVX2 code
+add_executable(bench_slhdsa_cpu_mt cpu/bench_slhdsa_cpu_mt.cpp)
+target_link_libraries(bench_slhdsa_cpu_mt PRIVATE openpqc_slhdsa openpqc_reference_slhdsa Threads::Threads)
+if(OPENPQC_HAVE_REFERENCE_SLHDSA_AVX2)
+    target_link_libraries(bench_slhdsa_cpu_mt PRIVATE openpqc_reference_slhdsa_avx2)
+    target_compile_definitions(bench_slhdsa_cpu_mt PRIVATE OPENPQC_HAVE_REFERENCE_SLHDSA_AVX2)
+endif()
+target_compile_features(bench_slhdsa_cpu_mt PRIVATE cxx_std_20)
+
+if(OPENPQC_HAVE_SYCL)
+    # DPC++ generates the device code of the backend at the link of each of these two executables:
+    # about 10 minutes each with all twelve sets (include/SLH/DSA/CMakeLists.txt)
+    add_executable(bench_slhdsa_sycl gpu/bench_slhdsa_sycl.cpp)
+    target_link_libraries(bench_slhdsa_sycl PRIVATE openpqc_slhdsa_sycl openpqc_slhdsa ${CMAKE_DL_LIBS})
+    target_compile_features(bench_slhdsa_sycl PRIVATE cxx_std_20)
+
+    # time per pipeline stage (compiles the backend's source itself, so no openpqc_slhdsa_sycl; the
+    # development set filter is passed on as the backend library would)
+    add_executable(profile_slhdsa_stages_sycl gpu/profile_slhdsa_stages_sycl.cpp)
+    target_include_directories(profile_slhdsa_stages_sycl PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(profile_slhdsa_stages_sycl PRIVATE openpqc_core openpqc_core_sycl ${CMAKE_DL_LIBS})
+    target_compile_features(profile_slhdsa_stages_sycl PRIVATE cxx_std_20)
+    if(OPENPQC_SLHDSA_SYCL_SETS)
+        target_compile_definitions(profile_slhdsa_stages_sycl PRIVATE
+            OPENPQC_SLHDSA_SYCL_SETS=${OPENPQC_SLHDSA_SYCL_SETS})
+    endif()
+    openpqc_sycl_sources(profile_slhdsa_stages_sycl gpu/profile_slhdsa_stages_sycl.cpp)
 endif()

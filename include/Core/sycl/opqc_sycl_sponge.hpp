@@ -15,6 +15,10 @@
 // Lanes are little-endian 64-bit words (FIPS 202, Section 3.1.2); on the
 // little-endian devices SYCL runs on, a 64-bit load of 8 message bytes is the
 // lane value.
+//
+// The helpers are always inlined (as OPQC_KERNEL_INLINE of opqc_sycl_team.hpp,
+// which this header does not include): out of line, as DPC++ left absorb in its
+// SPIR-V image, the caller's state would be passed by pointer, through memory.
 #pragma once
 
 #include <cstddef>
@@ -31,10 +35,10 @@ inline constexpr unsigned SHAKE128_RATE_WORDS = OPQC_SHAKE128_RATE / 8;   // 21
 inline constexpr unsigned SHAKE256_RATE_WORDS = OPQC_SHAKE256_RATE / 8;   // 17
 
 // The 8 bytes at p as a little-endian word, and back; p must be 8-byte aligned.
-inline std::uint64_t load64(const std::uint8_t* p) {
+__attribute__((always_inline)) inline std::uint64_t load64(const std::uint8_t* p) {
     return *reinterpret_cast<const std::uint64_t*>(p);
 }
-inline void store64(std::uint8_t* p, std::uint64_t v) {
+__attribute__((always_inline)) inline void store64(std::uint8_t* p, std::uint64_t v) {
     *reinterpret_cast<std::uint64_t*>(p) = v;
 }
 
@@ -42,7 +46,7 @@ inline void store64(std::uint8_t* p, std::uint64_t v) {
 // (Algorithm 8 of FIPS 202, steps 1-6, one block of RateWords words at a time).
 // The last N % RateWords words stay in the open block, which pad_and_permute closes.
 template <unsigned RateWords, unsigned N, class Word>
-inline void absorb(std::uint64_t s[25], Word word) {
+__attribute__((always_inline)) inline void absorb(std::uint64_t s[25], Word word) {
 #pragma unroll
     for (unsigned i = 0; i < 25; i++) s[i] = 0;
     for (unsigned block = 0; block < N / RateWords; block++) {
@@ -59,8 +63,8 @@ inline void absorb(std::uint64_t s[25], Word word) {
 // pad10*1, see opqc_sha3.h) and the last pad bit, then permutes. Afterwards
 // s[0 .. RateWords) is the first block of output.
 template <unsigned RateWords, unsigned N>
-inline void pad_and_permute(std::uint64_t s[25], std::uint64_t tail, unsigned tail_bytes,
-                            std::uint8_t suffix) {
+__attribute__((always_inline)) inline void pad_and_permute(std::uint64_t s[25], std::uint64_t tail,
+                                                           unsigned tail_bytes, std::uint8_t suffix) {
     constexpr unsigned pos = N % RateWords;
     s[pos] ^= tail | (static_cast<std::uint64_t>(suffix) << (8 * tail_bytes));
     s[RateWords - 1] ^= UINT64_C(0x8000000000000000);

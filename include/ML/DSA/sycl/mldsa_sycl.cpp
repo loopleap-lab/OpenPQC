@@ -51,6 +51,8 @@
 #include <vector>
 
 #include "Core/opqc_platform.h"
+#include "Core/sycl/opqc_sycl_context.hpp"
+#include "Core/sycl/opqc_sycl_messages.hpp"
 #include "Core/sycl/opqc_sycl_runtime.hpp"
 #include "Core/sycl/opqc_sycl_sponge.hpp"
 #include "Core/sycl/opqc_sycl_team.hpp"
@@ -71,10 +73,12 @@ using openpqc::gpu::absorb;
 using openpqc::gpu::absorb_and_pad;
 using openpqc::gpu::buffer;
 using openpqc::gpu::load64;
+using openpqc::gpu::Messages;   // the messages of a call (Core/sycl/opqc_sycl_messages.hpp)
 using openpqc::gpu::pad_and_permute;
 using openpqc::gpu::SHAKE128_RATE_WORDS;
 using openpqc::gpu::SHAKE256_RATE_WORDS;
 using openpqc::gpu::store64;
+using openpqc::gpu::Store16;
 using openpqc::gpu::workspace;
 
 constexpr unsigned HASH_GROUP = 128;   // work-group size of the hashing stages
@@ -132,14 +136,6 @@ struct Schedule {
 struct SignStats {
     std::size_t rounds = 0, attempts = 0;
     std::size_t limit = 0;   // signatures that reached max_signing_attempts (all zeros)
-};
-
-// The messages of a call: message i is msg[offsets[i] .. offsets[i + 1]); the context
-// string, shared by all, is in the workspace
-struct Messages {
-    const std::uint8_t* msg;
-    const std::uint64_t* offsets;
-    std::size_t ctxlen;
 };
 
 // ------------------------------------------------------------------ launching
@@ -411,33 +407,9 @@ inline void row_chunk(std::uint32_t out[8], const std::uint32_t* A_row, const st
 // M' = IntegerToBytes(0, 1) || IntegerToBytes(|ctx|, 1) || ctx || M, the formatted
 // message of ML-DSA.Sign and ML-DSA.Verify (Algorithm 2, line 10; Algorithm 3,
 // line 5), read byte by byte from the context string and the message
-struct FormattedMessage {
-    const std::uint8_t* ctx;
-    std::size_t ctxlen;
-    const std::uint8_t* m;
-    std::size_t mlen;
-
-    std::size_t size() const { return 2 + ctxlen + mlen; }
-    std::uint8_t byte(std::size_t i) const {
-        if (i == 0) return 0;
-        if (i == 1) return static_cast<std::uint8_t>(ctxlen);
-        if (i < 2 + ctxlen) return ctx[i - 2];
-        if (i < 2 + ctxlen + mlen) return m[i - 2 - ctxlen];
-        return 0;
-    }
-    // bytes 8i .. 8i+7 as a little-endian word, zero past the end
-    std::uint64_t word(std::size_t i) const {
-        std::uint64_t v = 0;
-#pragma unroll
-        for (unsigned b = 0; b < 8; b++) v |= static_cast<std::uint64_t>(byte(8 * i + b)) << (8 * b);
-        return v;
-    }
-};
-
-inline FormattedMessage formatted_message(const std::uint8_t* ctx, const Messages& msgs, std::size_t op) {
-    return {ctx, msgs.ctxlen, msgs.msg + msgs.offsets[op],
-            static_cast<std::size_t>(msgs.offsets[op + 1] - msgs.offsets[op])};
-}
+// (Core/sycl/opqc_sycl_messages.hpp, shared with SLH-DSA)
+using FormattedMessage = openpqc::gpu::FormattedMessage<true>;
+using openpqc::gpu::formatted_message;   // formatted_message(ctx, msgs, op): M' of message op
 
 // mu <- H(BytesToBits(tr) || M', 64) (Algorithm 7, line 6; Algorithm 8, line 7), with
 // tr the 64 bytes at tr (8-byte aligned), into s[0 .. 8)
@@ -480,32 +452,17 @@ void expand_a(sycl::queue& q, const std::uint8_t* rho_base, std::size_t rho_stri
 
         // Algorithm 30, lines 4-10, one SHAKE128 block (56 groups of 3 bytes) at a time.
         // Accepted coefficients are collected 4 at a time and written with one 16-byte
-        // store: the work-items of a warp write to different polynomials, so 4-byte
-        // stores would each cost a separate memory transaction.
-        auto* out = reinterpret_cast<sycl::vec<std::uint32_t, 4>*>(matrix + t * MLDSA_N);
-        std::uint64_t lo = 0, hi = 0;   // pending coefficients 4 (count / 4) .. count - 1
-        unsigned count = 0;
-        const auto accept = [&](std::uint32_t z) {
-            const unsigned p = count % 4;
-            const std::uint64_t v = static_cast<std::uint64_t>(z) << (32 * (p % 2));
-            if (p < 2) lo |= v;
-            else hi |= v;
-            if (p == 3) {
-                out[count / 4] = sycl::vec<std::uint32_t, 4>(
-                        static_cast<std::uint32_t>(lo), static_cast<std::uint32_t>(lo >> 32),
-                        static_cast<std::uint32_t>(hi), static_cast<std::uint32_t>(hi >> 32));
-                lo = hi = 0;
-            }
-            count++;
-        };
+        // store (Store16): the work-items of a warp write to different polynomials, so
+        // 4-byte stores would each cost a separate memory transaction.
+        Store16<32> out(matrix + t * MLDSA_N);
         for (;;) {
 #pragma unroll
             for (unsigned c = 0; c < 56; c++) {
                 const auto byte = [&](unsigned o) { return static_cast<std::uint8_t>(s[o / 8] >> (8 * (o % 8))); };
                 const std::uint32_t z = mldsa_coeff_from_three_bytes(byte(3 * c), byte(3 * c + 1), byte(3 * c + 2));
-                if (z < MLDSA_Q && count < MLDSA_N) accept(z);   // line 7: z != bottom
+                if (z < MLDSA_Q && out.count < MLDSA_N) out.append(z);   // line 7: z != bottom
             }
-            if (count == MLDSA_N) break;
+            if (out.count == MLDSA_N) break;
             opqc_keccak_f1600(s);   // the next block of G's output
         }
     });
@@ -535,37 +492,25 @@ void expand_s(sycl::queue& q, const Workspace& ws, std::size_t n) {
         pad_and_permute<SHAKE256_RATE_WORDS, 8>(s, r, 2, OPQC_SHAKE_SUFFIX);
 
         // Algorithm 31, lines 4-15 (as mldsa_rej_bounded_byte), one SHAKE256 block at a time.
-        // The bytes are collected 16 at a time and written with one 16-byte store: the
-        // work-items of a warp write to different polynomials.
-        auto* out = reinterpret_cast<sycl::vec<std::uint32_t, 4>*>(s_bytes<P>(secrets, op) + MLDSA_N * r);
-        std::uint64_t lo = 0, hi = 0;   // pending bytes 16 (j / 16) .. j - 1
-        unsigned j = 0;
+        // The bytes are collected 16 at a time and written with one 16-byte store (Store16):
+        // the work-items of a warp write to different polynomials. out.count is j.
+        Store16<8> out(s_bytes<P>(secrets, op) + MLDSA_N * r);
         const auto append = [&](std::int32_t z) {   // lines 9-10 and 13-14
-            const unsigned p = j % 16;
-            const std::uint64_t v = static_cast<std::uint64_t>(P::eta - z) << (8 * (p % 8));
-            if (p < 8) lo |= v;
-            else hi |= v;
-            if (p == 15) {
-                out[j / 16] = sycl::vec<std::uint32_t, 4>(
-                        static_cast<std::uint32_t>(lo), static_cast<std::uint32_t>(lo >> 32),
-                        static_cast<std::uint32_t>(hi), static_cast<std::uint32_t>(hi >> 32));
-                lo = hi = 0;
-            }
-            j++;
+            out.append(static_cast<std::uint64_t>(P::eta - z));
         };
         for (;;) {
 #pragma unroll
             for (unsigned b = 0; b < OPQC_SHAKE256_RATE; b++) {
-                if (j < MLDSA_N) {                                                          // line 4
+                if (out.count < MLDSA_N) {                                                  // line 4
                     const std::uint32_t z = static_cast<std::uint8_t>(s[b / 8] >> (8 * (b % 8)));   // line 5
                     std::int32_t z0, z1;
                     const unsigned ok0 = mldsa_coeff_from_half_byte(&z0, z & 15u, P::eta);   // line 6
                     const unsigned ok1 = mldsa_coeff_from_half_byte(&z1, z >> 4, P::eta);    // line 7
                     if (ok0) append(z0);                                                    // line 8
-                    if (ok1 && j < MLDSA_N) append(z1);                                     // line 12
+                    if (ok1 && out.count < MLDSA_N) append(z1);                             // line 12
                 }
             }
-            if (j == MLDSA_N) break;
+            if (out.count == MLDSA_N) break;
             opqc_keccak_f1600(s);
         }
     });
@@ -1196,17 +1141,8 @@ void verify(sycl::queue& q, const Workspace& ws, const std::uint8_t* sig, Messag
 }
 
 // The context string, copied into the workspace by a kernel that receives it by value:
-// the caller may reuse its memory as soon as the call returns
-void put_context(sycl::queue& q, std::uint8_t* dst, const std::uint8_t* ctx, std::size_t ctxlen) {
-    if (ctxlen == 0) return;
-    struct {
-        std::uint8_t b[255];
-    } bytes{};
-    std::memcpy(bytes.b, ctx, ctxlen);
-    q.single_task([=] {
-        for (std::size_t i = 0; i < ctxlen; i++) dst[i] = bytes.b[i];
-    });
-}
+// the caller may reuse its memory as soon as the call returns (Core/sycl/opqc_sycl_messages.hpp)
+using openpqc::gpu::put_context;
 
 // ------------------------------------------------------------------ workspace layout
 
@@ -1236,36 +1172,28 @@ using namespace openpqc::mldsa;
 using openpqc::mldsa::gpu::Section;
 using openpqc::mldsa::gpu::Workspace;
 
-struct opqc_sycl_mldsa {
-    sycl::queue queue;
+// The queue, the workspace and the lock (Core/sycl/opqc_sycl_context.hpp): calls from several
+// threads take turns, so that one call's context string, lists and counters in the workspace
+// are not overwritten by another's before its kernels have run
+struct opqc_sycl_mldsa : openpqc::gpu::Context<gpu::SECTIONS> {
     int level;
-    std::size_t max_batch;
-    std::uint8_t* mem;
-    std::size_t mem_bytes;
-    Workspace ws;
-    std::size_t offset[gpu::SECTIONS], bytes[gpu::SECTIONS];   // per section: offset, bytes per operation
+    Workspace ws{};
     gpu::Schedule schedule;
     gpu::SignStats stats;
-    std::string device_name;
-    // Calls from several threads take turns: one call's context string, lists and
-    // counters in the workspace must not be overwritten by another's before its kernels
-    // have run. Recursive, as the randomized calls call the derandomized ones.
-    mutable std::recursive_mutex mutex;
+
+    opqc_sycl_mldsa(const sycl::device& dev, int lvl, std::size_t batch)
+        : openpqc::gpu::Context<gpu::SECTIONS>(dev, batch), level(lvl) {}
 };
 
 namespace {
 
 using openpqc::gpu::guarded;
-using Lock = std::lock_guard<std::recursive_mutex>;
+using openpqc::gpu::Lock;
 
 // Zeroizes the given secret sections of the first `ops` operations and `slots` slots; the
 // memsets are queued behind the operation that used them.
 void zeroize_workspace(opqc_sycl_mldsa* ctx, std::size_t ops, std::size_t slots, unsigned sections) {
-    for (unsigned i = 0; i < gpu::SECTIONS; i++) {
-        if (!(sections & (1u << i))) continue;
-        const std::size_t count = gpu::SLOT_SECTIONS & (1u << i) ? slots : ops;
-        if (count > 0) ctx->queue.memset(ctx->mem + ctx->offset[i], 0, ctx->bytes[i] * count);
-    }
+    ctx->zeroize(sections, [&](unsigned i) { return gpu::SLOT_SECTIONS & (1u << i) ? slots : ops; });
 }
 
 // Runs f(offset, count) over chunks of at most max_batch operations; f returns the number
@@ -1274,23 +1202,9 @@ void zeroize_workspace(opqc_sycl_mldsa* ctx, std::size_t ops, std::size_t slots,
 // device still accepts work (FIPS 204, Section 3.6.3).
 template <class F>
 int chunked(opqc_sycl_mldsa* ctx, std::size_t n, unsigned sections, F f) {
-    if (!ctx) return -1;
-    const int rc = guarded([&] {
-        for (std::size_t off = 0; off < n; off += ctx->max_batch) {
-            const std::size_t m = std::min(n - off, ctx->max_batch);
-            const std::size_t slots = f(off, m);
-            zeroize_workspace(ctx, m, slots, sections);
-        }
-        return 0;
+    return openpqc::gpu::chunked(ctx, n, sections, f, [&](std::size_t ops, std::size_t slots, unsigned mask) {
+        zeroize_workspace(ctx, ops, slots, mask);
     });
-    if (rc != 0 && sections != 0) {
-        guarded([&] {
-            zeroize_workspace(ctx, ctx->max_batch, ctx->max_batch, sections);
-            ctx->queue.wait();
-            return 0;
-        });
-    }
-    return rc;
 }
 
 template <class F>
@@ -1316,43 +1230,27 @@ extern "C" int opqc_sycl_mldsa_create(opqc_sycl_mldsa** out, int level, std::siz
     return guarded([&] {
         sycl::device dev;
         if (!openpqc::gpu::select_device(device, dev)) return -1;
-        auto* ctx = new opqc_sycl_mldsa{sycl::queue(dev, sycl::property::queue::in_order()),
-                                        level,
-                                        max_batch,
-                                        nullptr,
-                                        0,
-                                        {},
-                                        {},
-                                        {},
-                                        {},
-                                        {},
-                                        dev.get_info<sycl::info::device::name>(),
-                                        {}};
+        auto* ctx = new opqc_sycl_mldsa(dev, level, max_batch);
         std::array<std::size_t, gpu::SECTIONS> per_op{};
         with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
-        std::size_t total = 0;
-        for (unsigned i = 0; i < gpu::SECTIONS; i++) {
-            ctx->offset[i] = total;
-            ctx->bytes[i] = per_op[i];
-            total += (per_op[i] * max_batch + 255) / 256 * 256;   // 256-byte aligned sections
+        std::uint8_t* extra = nullptr;
+        try {
+            extra = ctx->allocate(per_op, 256 + 256);   // 256-byte aligned sections; the context string, the counter
+        } catch (...) {
+            delete ctx;
+            throw;
         }
-        const std::size_t ctx_offset = total;
-        total += 256 + 256;   // the context string, the counter
-        ctx->mem = sycl::aligned_alloc_device<std::uint8_t>(openpqc::gpu::WORKSPACE_ALIGN, total, ctx->queue);
-        if (!ctx->mem) {
+        if (!extra) {
             delete ctx;
             return -1;
         }
-        ctx->mem_bytes = total;
-        ctx->queue.memset(ctx->mem, 0, total).wait();
-        std::uint8_t* base = ctx->mem;
-        const auto at = [&](Section s) { return base + ctx->offset[s]; };
+        const auto at = [&](Section s) { return ctx->section(s); };
         const auto words = [&](Section s) { return reinterpret_cast<std::uint32_t*>(at(s)); };
         ctx->ws = Workspace{at(gpu::SEEDS),   at(gpu::COINS), words(gpu::MATRIX), words(gpu::SECRETS),
                             at(gpu::MU),      at(gpu::TR),     at(gpu::RHO_PP),   words(gpu::LISTS), at(gpu::YBYTES),
                             words(gpu::SCRATCH), words(gpu::W), at(gpu::W1),      words(gpu::C),
-                            at(gpu::SIG),     words(gpu::FLAGS), base + ctx_offset,
-                            reinterpret_cast<std::uint32_t*>(base + ctx_offset + 256)};
+                            at(gpu::SIG),     words(gpu::FLAGS), extra,
+                            reinterpret_cast<std::uint32_t*>(extra + 256)};
         *out = ctx;
         return 0;
     });
@@ -1360,12 +1258,7 @@ extern "C" int opqc_sycl_mldsa_create(opqc_sycl_mldsa** out, int level, std::siz
 
 extern "C" void opqc_sycl_mldsa_destroy(opqc_sycl_mldsa* ctx) {
     if (!ctx) return;
-    guarded([&] {
-        ctx->queue.wait();
-        ctx->queue.memset(ctx->mem, 0, ctx->mem_bytes).wait();
-        sycl::free(ctx->mem, ctx->queue);
-        return 0;
-    });
+    ctx->release();   // waits, wipes the whole workspace and frees it
     delete ctx;
 }
 
@@ -1534,38 +1427,16 @@ extern "C" int opqc_sycl_mldsa_verify_mu(opqc_sycl_mldsa* ctx, const std::uint8_
 // operation.
 namespace {
 
+// (Core/sycl/opqc_sycl_context.hpp) 32 bytes per operation; the coins are destroyed whatever
+// happened: xi is as secret as the key it expands to. A signature that reached the signing
+// limit is remembered while the other chunks go on.
 template <class F>
 int with_random_coins(opqc_sycl_mldsa* ctx, std::size_t n, F f) {
     if (!ctx) return -1;
-    const Lock lock(ctx->mutex);
-    std::vector<std::uint8_t> host(32 * std::min(n, ctx->max_batch));
-    int rc = 0;
-    bool limit = false;   // a signature reached the signing limit (the other chunks go on)
-    for (std::size_t off = 0; off < n && rc == 0; off += ctx->max_batch) {
-        const std::size_t m = std::min(n - off, ctx->max_batch);
-        if (opqc_randombytes(host.data(), 32 * m) != 0) {
-            rc = OPENPQC_MLDSA_ERR_RNG_FAIL;
-            break;
-        }
-        rc = guarded([&] {
-            ctx->queue.memcpy(ctx->ws.coins, host.data(), 32 * m).wait();
-            return 0;
-        });
-        opqc_zeroize(host.data(), host.size());
-        if (rc == 0) rc = f(off, m, ctx->ws.coins);
-        if (rc == OPENPQC_MLDSA_ERR_SIGNING_LIMIT) {
-            limit = true;
-            rc = 0;
-        }
-        // the coins are destroyed whatever happened: xi is as secret as the key it expands to
-        const int wiped = guarded([&] {
-            zeroize_workspace(ctx, m, 0, gpu::bit(gpu::COINS));
-            return 0;
-        });
-        if (rc == 0) rc = wiped;
-    }
-    opqc_zeroize(host.data(), host.size());
-    return rc != 0 ? rc : limit ? OPENPQC_MLDSA_ERR_SIGNING_LIMIT : 0;
+    return openpqc::gpu::with_random_coins(ctx, n, 32, ctx->ws.coins, OPENPQC_MLDSA_ERR_RNG_FAIL,
+                                           OPENPQC_MLDSA_ERR_SIGNING_LIMIT, f, [&](std::size_t m) {
+                                               zeroize_workspace(ctx, m, 0, gpu::bit(gpu::COINS));
+                                           });
 }
 
 } // namespace
@@ -1610,46 +1481,23 @@ extern "C" int opqc_sycl_mldsa_sign_one_key(opqc_sycl_mldsa* ctx, std::uint8_t* 
     });
 }
 
+// Memory (Core/sycl/opqc_sycl_context.hpp)
 extern "C" void* opqc_sycl_mldsa_malloc(opqc_sycl_mldsa* ctx, std::size_t bytes) {
-    if (!ctx) return nullptr;
-    void* p = nullptr;
-    guarded([&] {
-        p = sycl::aligned_alloc_device(openpqc::gpu::WORKSPACE_ALIGN, bytes, ctx->queue);
-        return 0;
-    });
-    return p;
+    return ctx ? openpqc::gpu::device_malloc(ctx->queue, bytes) : nullptr;
 }
 
 extern "C" void* opqc_sycl_mldsa_malloc_host(opqc_sycl_mldsa* ctx, std::size_t bytes) {
-    if (!ctx) return nullptr;
-    void* p = nullptr;
-    guarded([&] {
-        p = sycl::aligned_alloc_host(openpqc::gpu::WORKSPACE_ALIGN, bytes, ctx->queue);
-        return 0;
-    });
-    return p;
+    return ctx ? openpqc::gpu::host_malloc(ctx->queue, bytes) : nullptr;
 }
 
 extern "C" void opqc_sycl_mldsa_free(opqc_sycl_mldsa* ctx, void* p) {
-    if (!ctx || !p) return;
-    guarded([&] {
-        sycl::free(p, ctx->queue);
-        return 0;
-    });
+    if (ctx) openpqc::gpu::device_free(ctx->queue, p);
 }
 
 extern "C" int opqc_sycl_mldsa_memcpy(opqc_sycl_mldsa* ctx, void* dst, const void* src, std::size_t bytes) {
-    if (!ctx) return -1;
-    return guarded([&] {
-        ctx->queue.memcpy(dst, src, bytes).wait();
-        return 0;
-    });
+    return ctx ? openpqc::gpu::copy(ctx->queue, dst, src, bytes, true) : -1;
 }
 
 extern "C" int opqc_sycl_mldsa_memcpy_async(opqc_sycl_mldsa* ctx, void* dst, const void* src, std::size_t bytes) {
-    if (!ctx) return -1;
-    return guarded([&] {
-        ctx->queue.memcpy(dst, src, bytes);
-        return 0;
-    });
+    return ctx ? openpqc::gpu::copy(ctx->queue, dst, src, bytes, false) : -1;
 }

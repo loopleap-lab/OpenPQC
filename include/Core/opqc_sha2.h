@@ -26,8 +26,16 @@
  * multiple of 8 bits; this code does not support them. The functions have no
  * data-dependent branches or memory indices, so they may hash secret data.
  *
- * In OpenPQC, SHA-2 pre-hashes messages for HashML-DSA (FIPS 204, Section 5.4),
- * and it is a building block of SLH-DSA (FIPS 205).
+ * Two levels. The compression functions proper take the block as its 16 words
+ * (opqc_sha256_compress_words, opqc_sha512_compress_words); GPU kernels call
+ * them directly, with the words in registers (Core/sycl/opqc_sycl_sha2.hpp).
+ * The byte-level opqc_sha256_compress / opqc_sha512_compress read the words of
+ * a block in memory and call them; the incremental and one-shot functions
+ * below use those, so the CPU and the GPU run one source.
+ *
+ * In OpenPQC, SHA-2 pre-hashes messages for HashML-DSA (FIPS 204, Section 5.4)
+ * and HashSLH-DSA (FIPS 205, Section 10.2.2; see Core/prehash.hpp), and it is a
+ * building block of SLH-DSA (FIPS 205, Section 11.2).
  */
 
 #ifndef OPQC_SHA2_H
@@ -137,6 +145,12 @@ OPQC_INLINE uint64_t opqc_load64_be(const uint8_t *p)
 {
     return (uint64_t)opqc_load32_be(p) << 32 | opqc_load32_be(p + 4);
 }
+OPQC_INLINE void opqc_store32_be(uint8_t *p, uint32_t x)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        p[i] = (uint8_t)(x >> (24 - 8 * i));
+    }
+}
 OPQC_INLINE void opqc_store64_be(uint8_t *p, uint64_t x)
 {
     for (unsigned i = 0; i < 8; i++) {
@@ -146,23 +160,66 @@ OPQC_INLINE void opqc_store64_be(uint8_t *p, uint64_t x)
 
 /* --- The hash computations (Sections 6.2.2 and 6.4.2) --------------------- */
 
-/* Steps 1-4 of Section 6.2.2: H <- H(i) from H(i-1) and the block M(i) */
-OPQC_INLINE void opqc_sha256_compress(uint32_t H[8], const uint8_t M[OPQC_SHA256_BLOCK_BYTES])
+/*
+ * The message schedule as a ring of 16 words. Step 1 defines W_0 .. W_63 (W_79
+ * for SHA-512), but W_t for t >= 16 depends only on W_{t-2}, W_{t-7}, W_{t-15}
+ * and W_{t-16}, and round t (step 3) is the last to need W_t. So W_t is
+ * computed in round t, into the place of W_{t-16} in W[t mod 16], and the
+ * schedule takes 16 words instead of 64 (80). The rounds run in passes of 16:
+ * the first on the block's words as they are, the others computing W_t.
+ * Inside a pass the 16 rounds are unrolled (OPQC_UNROLL), so every index into
+ * W is a constant: on a GPU, W stays in registers (a W[64] indexed in a loop
+ * went to slow private memory), and the eight working variables need no moves
+ * (16 rounds turn a, ..., h around twice).
+ *
+ * OPQC_SHA256_UNROLL_PASSES, OPQC_SHA512_UNROLL_PASSES (OPQC_SHA2_UNROLL_PASSES
+ * sets both): how many of the passes after the first (3 for SHA-256, 4 for
+ * SHA-512) are unrolled as well; 1 keeps them a loop, 4 unrolls all rounds, so
+ * that the round constants and the words that a caller knows at compile time
+ * (padding, lengths) become constants of the code. More code is not always
+ * faster (Keccak-f's 24 rounds unrolled made the GPU kernels slower,
+ * opqc_keccak.h). The defaults are the measured best
+ * (docs/slhdsa-notes/experiments/H1.md: GCC 16 -O3 on an i7-11370H, an RTX 3050
+ * Laptop and an Iris Xe, with DPC++ and AdaptiveCpp): SHA-256 with all rounds
+ * unrolled everywhere (6-11 % more compressions per second than with the
+ * passes a loop); SHA-512 with the passes a loop (5-8 % more on the CPU, 10 %
+ * more on the Iris Xe than all rounds), except in DPC++'s device code for NVIDIA
+ * GPUs (__NVPTX__), where all rounds gained 7 %. AdaptiveCpp compiles one
+ * binary for all devices and so keeps the loop (all rounds gained 3.5 % on its
+ * RTX runs).
+ */
+#if defined(OPQC_SHA2_UNROLL_PASSES) && !defined(OPQC_SHA256_UNROLL_PASSES)
+#define OPQC_SHA256_UNROLL_PASSES OPQC_SHA2_UNROLL_PASSES
+#endif
+#if defined(OPQC_SHA2_UNROLL_PASSES) && !defined(OPQC_SHA512_UNROLL_PASSES)
+#define OPQC_SHA512_UNROLL_PASSES OPQC_SHA2_UNROLL_PASSES
+#endif
+#if !defined(OPQC_SHA256_UNROLL_PASSES)
+#define OPQC_SHA256_UNROLL_PASSES 4
+#endif
+#if !defined(OPQC_SHA512_UNROLL_PASSES)
+#if defined(__NVPTX__)
+#define OPQC_SHA512_UNROLL_PASSES 4
+#else
+#define OPQC_SHA512_UNROLL_PASSES 1
+#endif
+#endif
+
+/*
+ * Steps 1-4 of Section 6.2.2: H <- H(i) from H(i-1) and the block M(i) given as
+ * its words W[t] = M_t(i), t = 0..15 (big-endian, Section 5.2.1). W is the
+ * schedule's ring (above): it holds W_48 .. W_63 on return.
+ */
+OPQC_INLINE void opqc_sha256_compress_words(uint32_t H[8], uint32_t W[16])
 {
-    uint32_t W[64];
-    /* 1. the message schedule {W_t} */
-    for (unsigned t = 0; t < 16; t++) {
-        W[t] = opqc_load32_be(M + 4 * t);
-    }
-    for (unsigned t = 16; t < 64; t++) {
-        W[t] = opqc_sha256_sigma1(W[t - 2]) + W[t - 7] + opqc_sha256_sigma0(W[t - 15]) + W[t - 16];
-    }
+    uint32_t T1, T2;
     /* 2. the working variables, from H(i-1) */
     uint32_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
-    /* 3. the 64 rounds */
-    for (unsigned t = 0; t < 64; t++) {
-        uint32_t T1 = h + opqc_sha256_Sigma1(e) + OPQC_SHA2_CH(e, f, g) + opqc_sha256_K[t] + W[t];
-        uint32_t T2 = opqc_sha256_Sigma0(a) + OPQC_SHA2_MAJ(a, b, c);
+    /* 3. the 64 rounds; rounds 0..15 with W_t = M_t(i) (1.) */
+    OPQC_UNROLL(16)
+    for (unsigned t = 0; t < 16; t++) {
+        T1 = h + opqc_sha256_Sigma1(e) + OPQC_SHA2_CH(e, f, g) + opqc_sha256_K[t] + W[t];
+        T2 = opqc_sha256_Sigma0(a) + OPQC_SHA2_MAJ(a, b, c);
         h = g;
         g = f;
         f = e;
@@ -171,26 +228,39 @@ OPQC_INLINE void opqc_sha256_compress(uint32_t H[8], const uint8_t M[OPQC_SHA256
         c = b;
         b = a;
         a = T1 + T2;
+    }
+    /* rounds t = t0 + j, 16 <= t < 64, with W_t from 1. (W_{t-k} is in W[(j - k) mod 16]) */
+    OPQC_UNROLL(OPQC_SHA256_UNROLL_PASSES)
+    for (unsigned t0 = 16; t0 < 64; t0 += 16) {
+        OPQC_UNROLL(16)
+        for (unsigned j = 0; j < 16; j++) {
+            W[j] = opqc_sha256_sigma1(W[(j + 14) % 16]) + W[(j + 9) % 16] + opqc_sha256_sigma0(W[(j + 1) % 16]) + W[j];
+            T1 = h + opqc_sha256_Sigma1(e) + OPQC_SHA2_CH(e, f, g) + opqc_sha256_K[t0 + j] + W[j];
+            T2 = opqc_sha256_Sigma0(a) + OPQC_SHA2_MAJ(a, b, c);
+            h = g;
+            g = f;
+            f = e;
+            e = d + T1;
+            d = c;
+            c = b;
+            b = a;
+            a = T1 + T2;
+        }
     }
     /* 4. H(i) */
     H[0] += a; H[1] += b; H[2] += c; H[3] += d;
     H[4] += e; H[5] += f; H[6] += g; H[7] += h;
 }
 
-/* Steps 1-4 of Section 6.4.2: the same with 64-bit words and 80 rounds */
-OPQC_INLINE void opqc_sha512_compress(uint64_t H[8], const uint8_t M[OPQC_SHA512_BLOCK_BYTES])
+/* Steps 1-4 of Section 6.4.2: the same with 64-bit words and 80 rounds; W holds W_64 .. W_79 on return */
+OPQC_INLINE void opqc_sha512_compress_words(uint64_t H[8], uint64_t W[16])
 {
-    uint64_t W[80];
-    for (unsigned t = 0; t < 16; t++) {
-        W[t] = opqc_load64_be(M + 8 * t);
-    }
-    for (unsigned t = 16; t < 80; t++) {
-        W[t] = opqc_sha512_sigma1(W[t - 2]) + W[t - 7] + opqc_sha512_sigma0(W[t - 15]) + W[t - 16];
-    }
+    uint64_t T1, T2;
     uint64_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
-    for (unsigned t = 0; t < 80; t++) {
-        uint64_t T1 = h + opqc_sha512_Sigma1(e) + OPQC_SHA2_CH(e, f, g) + opqc_sha512_K[t] + W[t];
-        uint64_t T2 = opqc_sha512_Sigma0(a) + OPQC_SHA2_MAJ(a, b, c);
+    OPQC_UNROLL(16)
+    for (unsigned t = 0; t < 16; t++) {
+        T1 = h + opqc_sha512_Sigma1(e) + OPQC_SHA2_CH(e, f, g) + opqc_sha512_K[t] + W[t];
+        T2 = opqc_sha512_Sigma0(a) + OPQC_SHA2_MAJ(a, b, c);
         h = g;
         g = f;
         f = e;
@@ -200,11 +270,59 @@ OPQC_INLINE void opqc_sha512_compress(uint64_t H[8], const uint8_t M[OPQC_SHA512
         b = a;
         a = T1 + T2;
     }
+    OPQC_UNROLL(OPQC_SHA512_UNROLL_PASSES)
+    for (unsigned t0 = 16; t0 < 80; t0 += 16) {
+        OPQC_UNROLL(16)
+        for (unsigned j = 0; j < 16; j++) {
+            W[j] = opqc_sha512_sigma1(W[(j + 14) % 16]) + W[(j + 9) % 16] + opqc_sha512_sigma0(W[(j + 1) % 16]) + W[j];
+            T1 = h + opqc_sha512_Sigma1(e) + OPQC_SHA2_CH(e, f, g) + opqc_sha512_K[t0 + j] + W[j];
+            T2 = opqc_sha512_Sigma0(a) + OPQC_SHA2_MAJ(a, b, c);
+            h = g;
+            g = f;
+            f = e;
+            e = d + T1;
+            d = c;
+            c = b;
+            b = a;
+            a = T1 + T2;
+        }
+    }
     H[0] += a; H[1] += b; H[2] += c; H[3] += d;
     H[4] += e; H[5] += f; H[6] += g; H[7] += h;
 }
 
+/* The same for the block M(i) as 64 bytes (128 bytes for SHA-512) in memory: its words (Section 5.2.1),
+ * then the compression. The words, and the schedule computed from them, are left in this function's
+ * frame (callers that hashed a secret remove them, see SLH/DSA/scheme/slhdsa_internal.hpp). */
+OPQC_INLINE void opqc_sha256_compress(uint32_t H[8], const uint8_t M[OPQC_SHA256_BLOCK_BYTES])
+{
+    uint32_t W[16];
+    OPQC_UNROLL(16)
+    for (unsigned t = 0; t < 16; t++) {
+        W[t] = opqc_load32_be(M + 4 * t);
+    }
+    opqc_sha256_compress_words(H, W);
+}
+OPQC_INLINE void opqc_sha512_compress(uint64_t H[8], const uint8_t M[OPQC_SHA512_BLOCK_BYTES])
+{
+    uint64_t W[16];
+    OPQC_UNROLL(16)
+    for (unsigned t = 0; t < 16; t++) {
+        W[t] = opqc_load64_be(M + 8 * t);
+    }
+    opqc_sha512_compress_words(H, W);
+}
+
 /* --- Initial hash values (Section 5.3) ------------------------------------ */
+
+/* H(0) of SHA-256 (Section 5.3.3): the first 32 bits of the fractional parts of the square roots of the
+ * first 8 primes; and of SHA-512 (Section 5.3.5), the first 64 bits */
+static const uint32_t opqc_sha256_H0[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                                           0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+static const uint64_t opqc_sha512_H0[8] = {
+    UINT64_C(0x6a09e667f3bcc908), UINT64_C(0xbb67ae8584caa73b), UINT64_C(0x3c6ef372fe94f82b),
+    UINT64_C(0xa54ff53a5f1d36f1), UINT64_C(0x510e527fade682d1), UINT64_C(0x9b05688c2b3e6c1f),
+    UINT64_C(0x1f83d9abfb41bd6b), UINT64_C(0x5be0cd19137e2179)};
 
 OPQC_INLINE void opqc_sha256_set_iv(opqc_sha256_state *s, const uint32_t iv[8])
 {
@@ -228,12 +346,10 @@ OPQC_INLINE void opqc_sha224_init(opqc_sha256_state *s)
                                    0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4};
     opqc_sha256_set_iv(s, iv);
 }
-/* Section 5.3.3: the first 32 bits of the fractional parts of the square roots of the first 8 primes */
+/* Section 5.3.3 */
 OPQC_INLINE void opqc_sha256_init(opqc_sha256_state *s)
 {
-    static const uint32_t iv[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-                                   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    opqc_sha256_set_iv(s, iv);
+    opqc_sha256_set_iv(s, opqc_sha256_H0);
 }
 /* Section 5.3.4 */
 OPQC_INLINE void opqc_sha384_init(opqc_sha512_state *s)
@@ -247,11 +363,7 @@ OPQC_INLINE void opqc_sha384_init(opqc_sha512_state *s)
 /* Section 5.3.5 */
 OPQC_INLINE void opqc_sha512_init(opqc_sha512_state *s)
 {
-    static const uint64_t iv[8] = {
-        UINT64_C(0x6a09e667f3bcc908), UINT64_C(0xbb67ae8584caa73b), UINT64_C(0x3c6ef372fe94f82b),
-        UINT64_C(0xa54ff53a5f1d36f1), UINT64_C(0x510e527fade682d1), UINT64_C(0x9b05688c2b3e6c1f),
-        UINT64_C(0x1f83d9abfb41bd6b), UINT64_C(0x5be0cd19137e2179)};
-    opqc_sha512_set_iv(s, iv);
+    opqc_sha512_set_iv(s, opqc_sha512_H0);
 }
 /* Section 5.3.6.1: the output of the SHA-512/t IV generation function for t = 224 */
 OPQC_INLINE void opqc_sha512_224_init(opqc_sha512_state *s)
@@ -274,47 +386,57 @@ OPQC_INLINE void opqc_sha512_256_init(opqc_sha512_state *s)
 
 /* --- Absorbing and finishing ----------------------------------------------- */
 
-/* Appends len message bytes, processing every block as soon as it is complete
- * (Section 5.2 parses the padded message into blocks M(1), ..., M(N)). */
+/*
+ * Appends len message bytes, processing every block as soon as it is complete
+ * (Section 5.2 parses the padded message into blocks M(1), ..., M(N)): first the
+ * bytes that complete the block begun by earlier calls, then the whole blocks of
+ * the input, compressed where they lie, and the rest is kept for the next call.
+ * The bytes are copied as runs, not one at a time with a modulo and a test per
+ * byte: SLH-DSA absorbs a few short pieces in each of millions of calls, and the
+ * per-byte loop made its SHA2 sets sign 6-30 % slower (6 % for 128s, 30 % for
+ * 256f; GCC 16, -O3, i7-11370H, medians of six interleaved runs), 11-37 % slower
+ * than the reference implementation against 5-7 % with runs. Every branch and
+ * loop count depends on lengths only.
+ */
 OPQC_INLINE void opqc_sha256_absorb(opqc_sha256_state *s, const uint8_t *in, size_t len)
 {
-    while (len > 0) {
-        unsigned pos = (unsigned)(s->length % OPQC_SHA256_BLOCK_BYTES);
-        if (pos == 0 && len >= OPQC_SHA256_BLOCK_BYTES) {
-            opqc_sha256_compress(s->H, in); /* fast path: a whole block of the input */
-            in += OPQC_SHA256_BLOCK_BYTES;
-            len -= OPQC_SHA256_BLOCK_BYTES;
-            s->length += OPQC_SHA256_BLOCK_BYTES;
-            continue;
-        }
-        s->block[pos] = *in;
-        in += 1;
-        len -= 1;
-        s->length += 1;
-        if (pos + 1 == OPQC_SHA256_BLOCK_BYTES) {
-            opqc_sha256_compress(s->H, s->block);
-        }
+    size_t pos = (size_t)(s->length % OPQC_SHA256_BLOCK_BYTES);
+    s->length += len;
+    if (pos > 0) { /* the block begun by earlier calls */
+        size_t take = OPQC_SHA256_BLOCK_BYTES - pos;
+        if (take > len) take = len;
+        for (size_t i = 0; i < take; i++) s->block[pos + i] = in[i];
+        in += take;
+        len -= take;
+        if (pos + take < OPQC_SHA256_BLOCK_BYTES) return; /* still incomplete */
+        opqc_sha256_compress(s->H, s->block);
     }
+    while (len >= OPQC_SHA256_BLOCK_BYTES) { /* whole blocks of the input */
+        opqc_sha256_compress(s->H, in);
+        in += OPQC_SHA256_BLOCK_BYTES;
+        len -= OPQC_SHA256_BLOCK_BYTES;
+    }
+    for (size_t i = 0; i < len; i++) s->block[i] = in[i]; /* the start of the next block */
 }
 OPQC_INLINE void opqc_sha512_absorb(opqc_sha512_state *s, const uint8_t *in, size_t len)
 {
-    while (len > 0) {
-        unsigned pos = (unsigned)(s->length % OPQC_SHA512_BLOCK_BYTES);
-        if (pos == 0 && len >= OPQC_SHA512_BLOCK_BYTES) {
-            opqc_sha512_compress(s->H, in);
-            in += OPQC_SHA512_BLOCK_BYTES;
-            len -= OPQC_SHA512_BLOCK_BYTES;
-            s->length += OPQC_SHA512_BLOCK_BYTES;
-            continue;
-        }
-        s->block[pos] = *in;
-        in += 1;
-        len -= 1;
-        s->length += 1;
-        if (pos + 1 == OPQC_SHA512_BLOCK_BYTES) {
-            opqc_sha512_compress(s->H, s->block);
-        }
+    size_t pos = (size_t)(s->length % OPQC_SHA512_BLOCK_BYTES);
+    s->length += len;
+    if (pos > 0) {
+        size_t take = OPQC_SHA512_BLOCK_BYTES - pos;
+        if (take > len) take = len;
+        for (size_t i = 0; i < take; i++) s->block[pos + i] = in[i];
+        in += take;
+        len -= take;
+        if (pos + take < OPQC_SHA512_BLOCK_BYTES) return;
+        opqc_sha512_compress(s->H, s->block);
     }
+    while (len >= OPQC_SHA512_BLOCK_BYTES) {
+        opqc_sha512_compress(s->H, in);
+        in += OPQC_SHA512_BLOCK_BYTES;
+        len -= OPQC_SHA512_BLOCK_BYTES;
+    }
+    for (size_t i = 0; i < len; i++) s->block[i] = in[i];
 }
 
 /*

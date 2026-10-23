@@ -54,6 +54,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../../Core/openpqc_prehash.h"
+
 #define MLDSA_SEEDBYTES 32 /* the seed xi of KeyGen */
 #define MLDSA_RNDBYTES 32  /* the per-signature randomness rnd */
 #define MLDSA_CRHBYTES 64  /* the message representative mu */
@@ -75,20 +77,21 @@
 #define OPENPQC_MLDSA_ERR_SIGNING_LIMIT (-4)     /* 821 signing attempts failed (FIPS 204, App. C, errata) */
 #define OPENPQC_MLDSA_ERR_PCT_FAIL (-5)          /* pair-wise consistency test failed */
 
-/* Pre-hash functions of HashML-DSA. The value is the last component of the
- * function's OID 2.16.840.1.101.3.4.2.x (see ML/DSA/scheme/prehash.hpp). */
-#define OPENPQC_MLDSA_PREHASH_SHA2_256 1
-#define OPENPQC_MLDSA_PREHASH_SHA2_384 2
-#define OPENPQC_MLDSA_PREHASH_SHA2_512 3
-#define OPENPQC_MLDSA_PREHASH_SHA2_224 4
-#define OPENPQC_MLDSA_PREHASH_SHA2_512_224 5
-#define OPENPQC_MLDSA_PREHASH_SHA2_512_256 6
-#define OPENPQC_MLDSA_PREHASH_SHA3_224 7
-#define OPENPQC_MLDSA_PREHASH_SHA3_256 8
-#define OPENPQC_MLDSA_PREHASH_SHA3_384 9
-#define OPENPQC_MLDSA_PREHASH_SHA3_512 10
-#define OPENPQC_MLDSA_PREHASH_SHAKE128 11
-#define OPENPQC_MLDSA_PREHASH_SHAKE256 12
+/* Pre-hash functions of HashML-DSA: the values of Core/openpqc_prehash.h, which
+ * HashSLH-DSA shares. The value is the last component of the function's OID
+ * 2.16.840.1.101.3.4.2.x (see Core/prehash.hpp). */
+#define OPENPQC_MLDSA_PREHASH_SHA2_256 OPENPQC_PREHASH_SHA2_256
+#define OPENPQC_MLDSA_PREHASH_SHA2_384 OPENPQC_PREHASH_SHA2_384
+#define OPENPQC_MLDSA_PREHASH_SHA2_512 OPENPQC_PREHASH_SHA2_512
+#define OPENPQC_MLDSA_PREHASH_SHA2_224 OPENPQC_PREHASH_SHA2_224
+#define OPENPQC_MLDSA_PREHASH_SHA2_512_224 OPENPQC_PREHASH_SHA2_512_224
+#define OPENPQC_MLDSA_PREHASH_SHA2_512_256 OPENPQC_PREHASH_SHA2_512_256
+#define OPENPQC_MLDSA_PREHASH_SHA3_224 OPENPQC_PREHASH_SHA3_224
+#define OPENPQC_MLDSA_PREHASH_SHA3_256 OPENPQC_PREHASH_SHA3_256
+#define OPENPQC_MLDSA_PREHASH_SHA3_384 OPENPQC_PREHASH_SHA3_384
+#define OPENPQC_MLDSA_PREHASH_SHA3_512 OPENPQC_PREHASH_SHA3_512
+#define OPENPQC_MLDSA_PREHASH_SHAKE128 OPENPQC_PREHASH_SHAKE128
+#define OPENPQC_MLDSA_PREHASH_SHAKE256 OPENPQC_PREHASH_SHAKE256
 
 #ifdef __cplusplus
 extern "C" {

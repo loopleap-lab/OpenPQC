@@ -16,6 +16,9 @@
  *     opqc_sha224, opqc_sha256, opqc_sha384, opqc_sha512, opqc_sha512_224,
  *     opqc_sha512_256 (out, in, inlen)
  *     opqc_sha256_init / _absorb / _finalize, opqc_sha512_init / ...   (incremental)
+ *     opqc_load32_be, opqc_load64_be, opqc_store32_be, opqc_store64_be (big-endian byte order)
+ *   Pre-hash functions of HashML-DSA and HashSLH-DSA (Core/openpqc_prehash.h):
+ *     OPENPQC_PREHASH_SHA2_256 (1) ... OPENPQC_PREHASH_SHAKE256 (12), the values of ph
  *   Constant time (Core/opqc_ct.h), header-only:
  *     opqc_ct_memcmp, opqc_ct_cmov, opqc_value_barrier_u32, ...
  *   Operating system (Core/opqc_platform.h), in the library openpqc_core:
@@ -25,6 +28,7 @@
 #ifndef OPENPQC_CORE_H
 #define OPENPQC_CORE_H
 
+#include "openpqc_prehash.h"
 #include "opqc_ct.h"
 #include "opqc_keccak.h"
 #include "opqc_platform.h"
