@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // polynomials.hpp  --  polynomials, vectors and matrices over Z_q (FIPS 203, Section 2.4)
 //
 // The C++ view of the C11 math core (ML/KEM/math): value types for the
@@ -9,6 +12,19 @@
 //
 // Section 2.4.8: an algorithm applied to a vector is applied to each entry, and
 // the byte outputs of ByteEncode are concatenated. All coefficients are in [0, q).
+//
+// Destruction of intermediate values (Section 3.3). Expressions such as
+// invntt(dot(s_hat, ntt(u_prime))) pass their results through unnamed
+// temporaries and by-value parameters, which no ZeroizeOnExit can name (and a
+// function that returns its parameter copies it: copy elision never applies to
+// a parameter). Left on the stack, such copies give away the decapsulation key
+// (s, NTT(e), the rows of A^ o s^ in KeyGen) or the shared secret (y, NTT(y),
+// A^T o y^, mu in Encaps and in the re-encryption of Decaps); GCC 16 and
+// Clang 23 at -O3 leave some of them behind in every operation when only the
+// named variables are zeroized. So every polynomial zeroizes itself when its
+// lifetime ends, named or not, as ML-DSA's does; vectors and matrices of
+// polynomials inherit it. The public ones (A^, t^, u', v') are zeroized too,
+// which costs little and keeps one type.
 #pragma once
 
 #include <array>
@@ -16,6 +32,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/opqc_platform.h"
 #include "../math/mlkem_encode.h"
 #include "../math/mlkem_field.h"
 #include "../math/mlkem_ntt.h"
@@ -25,8 +42,12 @@ namespace openpqc::mlkem {
 
 // An element of R_q (coefficients f_0, ..., f_255 of f = f_0 + f_1 X + ... + f_255 X^255)
 // or of T_q (an NTT representation), Section 2.4.4. The derived type gives the
-// operators below their own namespace.
-struct Poly : std::array<std::uint16_t, MLKEM_N> {};
+// operators below their own namespace, and the destructor destroys the
+// coefficients (see above). A type with a destructor is not trivially copyable,
+// so a Poly is never given to ZeroizeOnExit, and need not be.
+struct Poly : std::array<std::uint16_t, MLKEM_N> {
+    ~Poly() { opqc_zeroize(data(), MLKEM_N * sizeof(std::uint16_t)); }
+};
 
 template <std::size_t K> using PolyVec = std::array<Poly, K>;             // R_q^k or T_q^k
 template <std::size_t K> using PolyMatrix = std::array<PolyVec<K>, K>;    // T_q^(k x k), A[row][column]
@@ -43,7 +64,7 @@ inline Poly operator-(Poly f, const Poly& g) {
 }
 template <std::size_t K>
 PolyVec<K> operator+(PolyVec<K> u, const PolyVec<K>& v) {
-    for (std::size_t i = 0; i < K; i++) u[i] = u[i] + v[i];
+    for (std::size_t i = 0; i < K; i++) mlkem_poly_add(u[i].data(), v[i].data());   // in place: no copies
     return u;
 }
 

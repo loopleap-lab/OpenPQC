@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // slh_dsa.hpp  --  SLH-DSA and HashSLH-DSA (FIPS 205, Section 10)
 //
 // The algorithms an application uses: slh_keygen (Algorithm 21), slh_sign and
@@ -54,23 +57,10 @@ using openpqc::prehash_oid;
 
 // --- key generation ------------------------------------------------------------------------
 
-// The pair-wise consistency test that FIPS 140-3 asks of validated modules after key generation:
-// a signature made with SK must verify under PK. OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST (tests only)
-// flips a bit of the signature, so that the test fails and the failure path of keygen_derand is taken
-// (tests/SLH-DSA: slhdsa_pct_fail).
-template <ParameterSet P>
-bool check_pair_wise_consistency(std::span<const std::uint8_t, Sizes<P>::pk> PK,
-                                 std::span<const std::uint8_t, Sizes<P>::sk> SK) {
-    static constexpr std::uint8_t message[] = {'O', 'p', 'e', 'n', 'P', 'Q', 'C', ' ', 'P', 'C', 'T'};
-    std::array<std::uint8_t, Sizes<P>::sig> SIG;
-    internal::sign<P>(SIG, SK, {message});
-#if defined(OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST)
-    SIG[0] ^= 1;
-#endif
-    bool ok = internal::verify<P>(PK, {message}, SIG);
-    OPQC_CT_DECLASSIFY(&ok, sizeof ok);   // the outcome of the check is public
-    return ok;
-}
+// The message M' that the pair-wise consistency test signs with slh_sign_internal. The M' of SLH-DSA and
+// of HashSLH-DSA begins with the byte 0 or 1 (Algorithms 22 and 23, lines 8 and 24), this one with 'O'
+// (0x4F), so the test's signature never verifies as a signature of an application's message.
+inline constexpr std::array<std::uint8_t, 11> pct_message = {'O', 'p', 'e', 'n', 'P', 'Q', 'C', ' ', 'P', 'C', 'T'};
 
 // The key check of Section 3.1 for the owner of SK ("assurance of private key possession via
 // regeneration"): PK.root recomputed from SK.seed and PK.seed equals the PK.root that SK holds.
@@ -88,14 +78,60 @@ bool check_secret_key(std::span<const std::uint8_t, Sizes<P>::sk> SK) {
     return ok;
 }
 
-// Algorithm 21, line 7, with the seeds given: slh_keygen_internal(SK.seed, SK.prf, PK.seed)
+// The configuration of key generation. keygen_derand and keygen run the pair-wise consistency test only
+// where this header is compiled with OPENPQC_SLHDSA_KEYGEN_PCT (slhdsa.cpp, for a FIPS 140-3 module), and
+// check_pair_wise_consistency fails on purpose with OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST (tests only).
+// Each translation unit that uses these templates for a parameter set has its own copy of them, and the
+// linker keeps one copy per name. Under one name for every configuration, the copy of an application
+// compiled without the test could take the place of the library's, and KeyGen would return keys that were
+// never tested (and the program would break C++'s one-definition rule); with Clang 23, which calls
+// keygen_derand out of line from the C API, an application that instantiated it had that effect. So each
+// configuration defines them in an inline namespace of its own: part of the names the linker sees, not of
+// the names that callers write.
+#if defined(OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST)
+#define OPENPQC_SLHDSA_KEYGEN_CONFIGURATION keygen_pct_breakage_test
+#elif defined(OPENPQC_SLHDSA_KEYGEN_PCT)
+#define OPENPQC_SLHDSA_KEYGEN_CONFIGURATION keygen_pct
+#else
+#define OPENPQC_SLHDSA_KEYGEN_CONFIGURATION keygen_no_pct
+#endif
+inline namespace OPENPQC_SLHDSA_KEYGEN_CONFIGURATION {
+
+// The pair-wise consistency test that FIPS 140-3 asks of validated modules after key generation: a
+// signature made with SK must verify under PK. OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST (tests only) flips a
+// bit of the signature, so that the test fails and the failure path of keygen_derand is taken
+// (tests/SLH-DSA: slhdsa_pct_fail). The signature, 7,856 to 49,856 bytes and so larger than a guard page,
+// lives in the frame of this function, which is never inlined: its caller touches that much stack first
+// (touch_stack, slhdsa_internal.hpp), so that on a stack that is too short the touch ends in a fault at the
+// guard page before the frame is entered. Inlined (Clang 23 inlines it into keygen_derand otherwise), the
+// signature would be part of the caller's frame, which the prologue allocates before any code runs: the
+// touch would run below it, and the first write below that frame could land beyond the guard page. The
+// signature is never published, so it is destroyed as an intermediate value (FIPS 205, Section 3.1): it
+// holds k FORS secret values and the WOTS+ chain values at the positions it signs.
+template <ParameterSet P>
+OPENPQC_SLHDSA_NOINLINE bool check_pair_wise_consistency(std::span<const std::uint8_t, Sizes<P>::pk> PK,
+                                                         std::span<const std::uint8_t, Sizes<P>::sk> SK) {
+    std::array<std::uint8_t, Sizes<P>::sig> SIG;
+    ZeroizeOnExit wipe{SIG};
+    internal::sign<P>(SIG, SK, {pct_message});
+#if defined(OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST)
+    SIG[0] ^= 1;
+#endif
+    bool ok = internal::verify<P>(PK, {pct_message}, SIG);
+    OPQC_CT_DECLASSIFY(&ok, sizeof ok);   // the outcome of the check is public
+    return ok;
+}
+
+// Algorithm 21, line 7, with the seeds given: slh_keygen_internal(SK.seed, SK.prf, PK.seed). Built with
+// OPENPQC_SLHDSA_KEYGEN_PCT, the pair-wise consistency test follows; if it fails, both keys are zeroized.
 template <ParameterSet P>
 Status keygen_derand(std::span<std::uint8_t, Sizes<P>::pk> PK, std::span<std::uint8_t, Sizes<P>::sk> SK,
                      std::span<const std::uint8_t, P::n> SK_seed, std::span<const std::uint8_t, P::n> SK_prf,
                      std::span<const std::uint8_t, P::n> PK_seed) {
     internal::keygen<P>(PK, SK, SK_seed, SK_prf, PK_seed);
 #if defined(OPENPQC_SLHDSA_KEYGEN_PCT)
-    // the test holds a signature in its frame, larger than a guard page: touch that stack first (slhdsa_internal.hpp)
+    // the test's frame holds a signature, larger than a guard page: touch that stack (and 1 KiB for the rest of
+    // the frame) before the frame is entered (check_pair_wise_consistency, slhdsa_internal.hpp)
     touch_stack<Sizes<P>::sig + 1024>();
     if (!check_pair_wise_consistency<P>(PK, SK)) {
         opqc_zeroize(PK.data(), PK.size());
@@ -117,6 +153,9 @@ Status keygen(std::span<std::uint8_t, Sizes<P>::pk> PK, std::span<std::uint8_t, 
     return keygen_derand<P>(PK, SK, s.template subspan<0, P::n>(), s.template subspan<P::n, P::n>(),
                             s.template subspan<2 * P::n, P::n>());                     // 7
 }
+
+} // namespace OPENPQC_SLHDSA_KEYGEN_CONFIGURATION
+#undef OPENPQC_SLHDSA_KEYGEN_CONFIGURATION
 
 // --- SLH-DSA (pure) ------------------------------------------------------------------------------
 

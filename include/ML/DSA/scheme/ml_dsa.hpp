@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // ml_dsa.hpp  --  ML-DSA and HashML-DSA (FIPS 204, Section 5)
 //
 // The algorithms an application uses: KeyGen (Algorithm 1), Sign and Verify
@@ -11,7 +14,9 @@
 //   - the checks of the context string (at most 255 bytes) and of the signature
 //     length (Section 3.6.2),
 //   - optionally (OPENPQC_MLDSA_KEYGEN_PCT), a pair-wise consistency test after
-//     KeyGen, as FIPS 140-3 asks of validated modules.
+//     KeyGen, as FIPS 140-3 asks of validated modules,
+//   - checks of a private key or a key pair from storage or from another party
+//     (check_secret_key, check_key_pair), which FIPS 204 does not define.
 //
 // The *_derand functions take rnd as an argument: rnd = {0}^32 is the
 // deterministic variant of Algorithms 2 and 4 (Section 3.4); other values are
@@ -58,6 +63,72 @@ bool check_pair_wise_consistency(std::span<const std::uint8_t, Sizes<P>::pk> pk,
     if (internal::sign<P>(sigma, sk, {message}, rnd) != Status::ok) return false;
     bool ok = internal::verify<P>(pk, {message}, sigma);
     OPQC_CT_DECLASSIFY(&ok, sizeof ok);   // the outcome of the check is public
+    return ok;
+}
+
+// The key pair that Algorithm 6 computes (lines 3 and 5-10) for the rho, K, s1 and s2 of a given
+// sk, in place of those that line 1 derives from xi: the regeneration that the key checks below
+// compare with. Returns whether s1 and s2 lie in [-eta, eta] (Algorithm 25, lines 3 and 6).
+// The result and the regenerated keys are as secret as sk (pk too, until it is found to be the
+// public key of sk); no branch or index depends on them.
+template <ParameterSet P>
+bool regenerate_key_pair(std::span<std::uint8_t, Sizes<P>::pk> pk_regenerated,
+                         std::span<std::uint8_t, Sizes<P>::sk> sk_regenerated,
+                         std::span<const std::uint8_t, Sizes<P>::sk> sk) {
+    constexpr unsigned k = P::k, l = P::l;
+    PolyVec<l> s1;                                                       // polynomials destroy themselves
+    PolyVec<k> s2, t0, t1;                                               // (polynomials.hpp)
+    const auto rho = sk.template subspan<0, 32>();
+    const auto K = sk.template subspan<32, 32>();
+    const bool in_range = sk_decode<P>(s1, s2, t0, sk);                  // Algorithm 25, lines 3 and 6
+    OPQC_CT_DECLASSIFY(rho.data(), rho.size());                          // rho is public (part of pk)
+    {
+        const PolyMatrix<k, l> A_hat = expand_a<P>(rho);                 // Algorithm 6, line 3
+        const PolyVec<k> t = invntt(matrix_vector_ntt(A_hat, ntt(s1))) + s2;   // 5
+        power2round(t1, t0, t);                                          // 6: t0 regenerated
+    }
+    pk_encode<P>(pk_regenerated, rho, t1);                               // 8
+    const auto tr = H<64>({pk_regenerated});                             // 9
+    sk_encode<P>(sk_regenerated, rho, K, tr, s1, s2, t0);                // 10
+    return in_range;
+}
+
+// The key check for a private key that comes from storage or from another party: whether
+// sk is a key that KeyGen outputs. FIPS 204 defines none; it runs skDecode only on input
+// from a trusted source (Section 7.2), and signing checks only that s1 and s2 lie in
+// [-eta, eta] (internal::sign_mu). Here sk is regenerated from its own rho, s1 and s2 as
+// Algorithm 6 computes a key pair (lines 3 and 5-10), and must equal the regenerated key
+// byte for byte: so t0 and tr = H(pk), for pk = pkEncode(rho, t1), are checked as well,
+// and through tr also rho. s1 and s2 must be in range besides, as BitPack and BitUnpack
+// are inverse even on the codes above 2 eta. K is not checked: any 32 bytes are a valid
+// K. Constant time; only the outcome is public. It costs about as much as KeyGen.
+template <ParameterSet P>
+bool check_secret_key(std::span<const std::uint8_t, Sizes<P>::sk> sk) {
+    std::array<std::uint8_t, Sizes<P>::pk> pk_regenerated;
+    std::array<std::uint8_t, Sizes<P>::sk> sk_regenerated;
+    ZeroizeOnExit wipe{pk_regenerated, sk_regenerated};
+    const bool in_range = regenerate_key_pair<P>(pk_regenerated, sk_regenerated, sk);
+    const bool regenerated = opqc_ct_memcmp(sk_regenerated.data(), sk.data(), sk.size()) == 0;
+    bool ok = in_range & regenerated;                                    // no branch on either
+    OPQC_CT_DECLASSIFY(&ok, sizeof ok);                                  // the outcome of the check is public
+    return ok;
+}
+
+// The same check for a key pair from storage or from another party: whether pk and sk are a
+// key pair that KeyGen outputs, as for check_secret_key, and pk the public key regenerated
+// from sk. (sk holds only tr = H(pk, 64) of its public key, which check_secret_key compares
+// with the regenerated pk's, so that a pk stored apart from sk is not checked by it.)
+// Constant time; only the outcome is public. It costs about as much as KeyGen.
+template <ParameterSet P>
+bool check_key_pair(std::span<const std::uint8_t, Sizes<P>::pk> pk, std::span<const std::uint8_t, Sizes<P>::sk> sk) {
+    std::array<std::uint8_t, Sizes<P>::pk> pk_regenerated;
+    std::array<std::uint8_t, Sizes<P>::sk> sk_regenerated;
+    ZeroizeOnExit wipe{pk_regenerated, sk_regenerated};
+    const bool in_range = regenerate_key_pair<P>(pk_regenerated, sk_regenerated, sk);
+    const bool regenerated = (opqc_ct_memcmp(sk_regenerated.data(), sk.data(), sk.size()) |
+                              opqc_ct_memcmp(pk_regenerated.data(), pk.data(), pk.size())) == 0;
+    bool ok = in_range & regenerated;                                    // no branch on either
+    OPQC_CT_DECLASSIFY(&ok, sizeof ok);                                  // the outcome of the check is public
     return ok;
 }
 
@@ -183,15 +254,15 @@ Status hash_verify(std::span<const std::uint8_t, Sizes<P>::pk> pk, std::span<con
 
 // mu = H(BytesToBits(tr) || M', 64) for tr = H(pk, 64) and M' = 0 || |ctx| || ctx || M: the
 // message representative of ML-DSA.Sign and ML-DSA.Verify, computed outside the module that
-// holds sk (Algorithm 7, line 6)
+// holds sk (Algorithm 7, line 6). It is written straight into the caller's mu, so that no copy
+// is left behind (Section 3.6.3), and after all of M is absorbed, so that mu may overlap M.
 template <ParameterSet P>
 Status external_mu(std::span<std::uint8_t, 64> mu, std::span<const std::uint8_t, Sizes<P>::pk> pk,
                    std::span<const std::uint8_t> M, std::span<const std::uint8_t> ctx) {
     if (ctx.size() > max_context_bytes) return Status::invalid_argument;
     const std::array<std::uint8_t, 2> domain = {0, static_cast<std::uint8_t>(ctx.size())};
     const auto tr = H<64>({pk});
-    const auto m = internal::message_representative(tr, {domain, ctx, M});
-    std::copy(m.begin(), m.end(), mu.begin());
+    internal::message_representative(mu, tr, {domain, ctx, M});
     return Status::ok;
 }
 

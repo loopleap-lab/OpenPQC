@@ -1,8 +1,15 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // mlkem.cpp  --  the C API (openpqc_mlkem.h), implemented with the algorithms of scheme/
 //
 // The only compiled file of ML-KEM: it instantiates the templates of
 // scheme/ml_kem.hpp for the three parameter sets and exports them under the
 // C names. Each function turns its pointer arguments into fixed-size spans.
+// KeyGen, Encaps and Decaps run in frames of their own and overwrite the stack
+// they used before they return (scheme/ml_kem.hpp; FIPS 203, Section 3.3).
+// Compiled with OPENPQC_MLKEM_KEYGEN_PCT, KeyGen runs the pair-wise consistency
+// check of Section 7.1 (openpqc_mlkem.h).
 #include "ML/KEM/openpqc_mlkem.h"
 
 #include <cstddef>

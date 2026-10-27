@@ -1,9 +1,13 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // mlkem_internal.hpp  --  the internal algorithms of ML-KEM (FIPS 203, Section 6)
 //
 // Deterministic: all randomness (d, z, m) is an input. Section 7 (ml_kem.hpp)
-// adds the random generation of these values and the input checks. Section
-// 3.3: these interfaces should be offered to applications only for testing,
-// and a stored seed (d, z) may be expanded again with KeyGen_internal.
+// adds the random generation of these values and the input checks, and
+// overwrites the stack these algorithms used when it returns (the stack burn).
+// Section 3.3: these interfaces should be offered to applications only for
+// testing, and a stored seed (d, z) may be expanded again with KeyGen_internal.
 #pragma once
 
 #include <algorithm>
@@ -37,8 +41,9 @@ void keygen(std::span<std::uint8_t, Sizes<P>::ek> ek, std::span<std::uint8_t, Si
 template <ParameterSet P>
 void encaps(std::span<std::uint8_t, 32> K, std::span<std::uint8_t, Sizes<P>::ct> c,
             std::span<const std::uint8_t, Sizes<P>::ek> ek, std::span<const std::uint8_t, 32> m) {
-    auto [K_, r] = G({m, H({ek})});                            // 1: (K, r) <- G(m || H(ek))
+    Bytes32 K_, r;
     ZeroizeOnExit wipe{K_, r};
+    G(K_, r, {m, H({ek})});                                    // 1: (K, r) <- G(m || H(ek))
     kpke::encrypt<P>(c, ek, m, r);                             // 2
     std::copy(K_.begin(), K_.end(), K.begin());                // 3
 }
@@ -52,19 +57,19 @@ void decaps(std::span<std::uint8_t, 32> K, std::span<const std::uint8_t, Sizes<P
     const auto ek_pke = dk.template subspan<S::dk_pke, S::ek>();             // 2
     const auto h = dk.template subspan<S::dk_pke + S::ek, 32>();             // 3
     const auto z = dk.template subspan<S::dk_pke + S::ek + 32, 32>();        // 4
-    Bytes32 m_prime;
+    Bytes32 m_prime, K_prime, r_prime, K_bar;
     std::array<std::uint8_t, S::ct> c_prime;
-    ZeroizeOnExit wipe{m_prime, c_prime};
+    std::uint8_t fail;   // the implicit-reject flag of line 9: secret, destroyed as well (Section 6.3)
+    ZeroizeOnExit wipe{m_prime, K_prime, r_prime, K_bar, c_prime, fail};
 
     kpke::decrypt<P>(m_prime, dk_pke, c);                                    // 5
-    auto [K_prime, r_prime] = G({m_prime, h});                               // 6
-    Bytes32 K_bar = J({z, c});                                               // 7
-    ZeroizeOnExit wipe_keys{K_prime, r_prime, K_bar};
+    G(K_prime, r_prime, {m_prime, h});                                       // 6: (K', r') <- G(m' || h)
+    J(K_bar, {z, c});                                                        // 7: K_bar <- J(z || c)
     kpke::encrypt<P>(c_prime, ek_pke, m_prime, r_prime);                     // 8
     // 9-11: if c != c' then K' <- K_bar. Whether the ciphertext was valid must
     // not leak (it depends on secret data), so both the comparison and the
     // selection run in constant time.
-    const std::uint8_t fail = opqc_ct_memcmp(c.data(), c_prime.data(), S::ct);
+    fail = opqc_ct_memcmp(c.data(), c_prime.data(), S::ct);
     opqc_ct_cmov(K_prime.data(), K_bar.data(), 32, fail);
     std::copy(K_prime.begin(), K_prime.end(), K.begin());                    // 12
 }

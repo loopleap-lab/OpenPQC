@@ -1,9 +1,18 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // kpke.hpp  --  K-PKE, the component public-key encryption scheme (FIPS 203, Section 5)
 //
 // K-PKE is not used on its own: ML-KEM (mlkem_internal.hpp) builds on it.
 // Each function follows its algorithm line by line; the comment on a line
 // gives the line number of the pseudocode. Variables with a hat (A^, s^, ...)
 // hold NTT representations and are spelled A_hat, s_hat, ... here.
+//
+// Destruction of intermediate values (Section 3.3): the polynomials, named or
+// not, zeroize themselves (polynomials.hpp); the byte strings (sigma, the PRF
+// outputs) are zeroized by ZeroizeOnExit. What the compiler keeps in stack slots
+// of its own is overwritten when KeyGen, Encaps or Decaps returns (the stack
+// burn, ml_kem.hpp).
 #pragma once
 
 #include <algorithm>
@@ -40,8 +49,9 @@ PolyMatrix<K> sample_matrix(std::span<const std::uint8_t, 32> rho) {
 // SamplePolyCBD_eta(PRF_eta(seed, N))
 template <unsigned Eta>
 Poly sample_poly_cbd(std::span<const std::uint8_t, 32> seed, std::uint8_t N) {
-    auto bytes = PRF<Eta>(seed, N);
+    std::array<std::uint8_t, 64 * Eta> bytes;
     ZeroizeOnExit wipe{bytes};
+    PRF<Eta>(bytes, seed, N);
     Poly f;
     mlkem_sample_poly_cbd(f.data(), bytes.data(), Eta);
     return f;
@@ -53,11 +63,12 @@ void keygen(std::span<std::uint8_t, Sizes<P>::ek> ek_pke,
             std::span<std::uint8_t, Sizes<P>::dk_pke> dk_pke,
             std::span<const std::uint8_t, 32> d) {
     constexpr std::size_t k = P::k;
-    PolyVec<k> s, e, s_hat, e_hat;
+    PolyVec<k> s, e, s_hat, e_hat;                // polynomials destroy themselves (polynomials.hpp)
+    Bytes32 rho, sigma;
+    ZeroizeOnExit wipe{sigma};
 
     const std::uint8_t k_byte[1] = {static_cast<std::uint8_t>(k)};
-    auto [rho, sigma] = G({d, k_byte});                                           // 1
-    ZeroizeOnExit wipe{sigma, s, e, s_hat, e_hat};
+    G(rho, sigma, {d, k_byte});                                                   // 1: (rho, sigma) <- G(d || k)
     OPQC_CT_DECLASSIFY(rho.data(), rho.size());   // rho is public (part of ek_PKE)
     std::uint8_t N = 0;                                                           // 2
     const PolyMatrix<k> A_hat = sample_matrix<k>(rho);                            // 3-7
@@ -77,9 +88,8 @@ void encrypt(std::span<std::uint8_t, Sizes<P>::ct> c,
              std::span<const std::uint8_t, Sizes<P>::ek> ek_pke,
              std::span<const std::uint8_t, 32> m, std::span<const std::uint8_t, 32> r) {
     constexpr std::size_t k = P::k;
-    PolyVec<k> y, e1, y_hat, u;
+    PolyVec<k> y, e1, y_hat, u;                   // polynomials destroy themselves (polynomials.hpp)
     Poly e2, mu, v;
-    ZeroizeOnExit wipe{y, e1, y_hat, u, e2, mu, v};
 
     std::uint8_t N = 0;                                                           // 1
     const PolyVec<k> t_hat = byte_decode_vector<k>(ek_pke.first(384 * k), 12);    // 2
@@ -102,9 +112,8 @@ void decrypt(std::span<std::uint8_t, 32> m,
              std::span<const std::uint8_t, Sizes<P>::dk_pke> dk_pke,
              std::span<const std::uint8_t, Sizes<P>::ct> c) {
     constexpr std::size_t k = P::k;
-    PolyVec<k> s_hat;
+    PolyVec<k> s_hat;                             // polynomials destroy themselves (polynomials.hpp)
     Poly w;
-    ZeroizeOnExit wipe{s_hat, w};
 
     const auto c1 = c.first(32 * P::du * k);                                      // 1
     const auto c2 = c.subspan(32 * P::du * k);                                    // 2

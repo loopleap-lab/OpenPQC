@@ -12,11 +12,15 @@
  * branch and any memory index that depends on such a value. The library is
  * built with OPQC_CT_TESTING; it declassifies what FIPS 204 makes public: rho,
  * the public key, the challenge c~ of every attempt, whether an attempt is
- * rejected, and the signature (see ML/DSA/scheme/mldsa_internal.hpp).
+ * rejected, and the signature (see ML/DSA/scheme/mldsa_internal.hpp); and the
+ * one bit of whether a private key is well formed, and the outcome of the key
+ * checks (ML/DSA/scheme/ml_dsa.hpp).
  *
- * For every parameter set: KeyGen, Sign (hedged) with and without a context
- * string, HashML-DSA.Sign, signing with an external mu, and verification of the
- * signatures.
+ * For every parameter set: KeyGen, the key checks (check_sk, check_keypair),
+ * Sign (hedged) with and without a context string, HashML-DSA.Sign, signing
+ * with an external mu, verification of the signatures, and a malformed private
+ * key (a coefficient of s1 outside [-eta, eta]), which signing refuses and the
+ * key checks reject.
  */
 
 #include <stdio.h>
@@ -55,10 +59,19 @@ static int failures = 0;
 #define TEST_LEVEL(N)                                                                                         \
     do {                                                                                                      \
         static uint8_t pk[MLDSA##N##_PUBLICKEYBYTES], sk[MLDSA##N##_SECRETKEYBYTES], sig[MLDSA##N##_BYTES];   \
+        static uint8_t bad[MLDSA##N##_SECRETKEYBYTES];                                                        \
         static const uint8_t m[] = "constant-time test message", ctx[] = "context";                         \
         uint8_t mu[MLDSA_CRHBYTES];                                                                           \
         for (int i = 0; i < 3; i++) {                                                                         \
             CHECK(openpqc_mldsa##N##_keypair(pk, sk) == 0);                                                   \
+            CHECK(openpqc_mldsa##N##_check_sk(sk) == 0);                                                      \
+            CHECK(openpqc_mldsa##N##_check_keypair(pk, sk) == 0);                                             \
+            /* the first byte of s1 (sk[128]) as 0xFF: codes 7 (eta = 2) or 15 (eta = 4), out of range */      \
+            memcpy(bad, sk, sizeof sk);                                                                       \
+            bad[128] = 0xFF;                                                                                  \
+            CHECK(openpqc_mldsa##N##_sign(sig, m, sizeof m, NULL, 0, bad) == OPENPQC_MLDSA_ERR_INVALID_KEY);  \
+            CHECK(openpqc_mldsa##N##_check_sk(bad) == OPENPQC_MLDSA_ERR_INVALID_KEY);                         \
+            CHECK(openpqc_mldsa##N##_check_keypair(pk, bad) == OPENPQC_MLDSA_ERR_INVALID_KEY);                \
             CHECK(openpqc_mldsa##N##_sign(sig, m, sizeof m, NULL, 0, sk) == 0);                               \
             CHECK(openpqc_mldsa##N##_verify(sig, sizeof sig, m, sizeof m, NULL, 0, pk) == 0);                 \
             CHECK(openpqc_mldsa##N##_sign(sig, m, sizeof m, ctx, sizeof ctx, sk) == 0);                       \

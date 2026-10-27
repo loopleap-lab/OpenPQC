@@ -30,8 +30,11 @@ void opqc_zeroize(void *p, size_t len);
  *
  * The bytes come from the operating system (getrandom() on Linux,
  * arc4random_buf() on macOS and the BSDs, BCryptGenRandom() on Windows).
- * If the library is built with OPQC_CONFIG_EXTERNAL_RANDOMBYTES, they come
- * from the application instead, which must then provide
+ * On Linux, getrandom() is called until out is full; EINTR is retried, and
+ * an error or an answer that a working getrandom() never gives (0 bytes, or
+ * more than were asked for) is a failure. If the library is built with
+ * OPQC_CONFIG_EXTERNAL_RANDOMBYTES, the bytes come from the application
+ * instead, which must then provide
  *
  *   int randombytes(uint8_t *out, size_t outlen);   (0 on success)
  *

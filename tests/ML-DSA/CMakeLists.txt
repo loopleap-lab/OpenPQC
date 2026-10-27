@@ -38,15 +38,60 @@ set_target_properties(test_mldsa_pct PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 1
                                                 C_EXTENSIONS OFF)
 add_test(NAME mldsa_pct COMMAND test_mldsa_pct)
 
-#   mldsa_stack   no secret intermediate values left on the stack after KeyGen and Sign
-#                 (FIPS 204, Section 3.6.3); the library as built, through the C API. Linux
-#                 only: the test finds the stack in /proc/self/maps.
+#   mldsa_sk_check   private keys with s1 or s2 outside [-eta, eta] (FIPS 204, Algorithm 25), which
+#                    every signing function refuses, and keys and key pairs tampered with in range,
+#                    which check_sk and check_keypair find; the library as built, through the C and
+#                    C++ APIs
+add_executable(test_mldsa_sk_check test_mldsa_sk_check.cpp)
+target_include_directories(test_mldsa_sk_check PRIVATE ${PROJECT_SOURCE_DIR}/tests)
+target_link_libraries(test_mldsa_sk_check PRIVATE openpqc_mldsa openpqc_strict_warnings)
+target_compile_features(test_mldsa_sk_check PRIVATE cxx_std_20)
+add_test(NAME mldsa_sk_check COMMAND test_mldsa_sk_check)
+
+#   mldsa_stack   no secret intermediate values left on the stack after KeyGen, the key checks, Sign
+#                 (also hedged, HashML-DSA, external mu and at the bound of Appendix C) and Verify
+#                 (FIPS 204, Section 3.6.3), Keccak lanes included; the library as built, through the
+#                 C API (its _testrng variant, so that xi and rnd of the randomized functions are
+#                 known). Linux only: the test finds the stack in /proc/self/maps. Under
+#                 AddressSanitizer it turns the fake stack off for itself, reports itself skipped
+#                 (77) if frames are not on the stack all the same, and does not count the Keccak
+#                 lanes it finds (the sanitizer instruments Core's clearing of the permutation too).
+#   mldsa_thread_stack   every function on a thread with the stack size that openpqc_mldsa.h
+#                        documents, the stack each one uses (compared, in optimized builds, with
+#                        that size and with the function's entry in the header's table), and a
+#                        stack that is too small, which must end in a fault at the guard page
+#                        (with -fstack-clash-protection, cmake/OpenPQCWarnings.cmake);
+#                        mldsa_thread_stack_pct the same for the library built with the pair-wise
+#                        consistency test. Skipped (77) under AddressSanitizer. Linux only.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_executable(test_mldsa_stack test_mldsa_stack.cpp)
     target_include_directories(test_mldsa_stack PRIVATE ${PROJECT_SOURCE_DIR}/tests)
-    target_link_libraries(test_mldsa_stack PRIVATE openpqc_mldsa openpqc_strict_warnings)
+    target_link_libraries(test_mldsa_stack PRIVATE openpqc_mldsa_testrng openpqc_strict_warnings)
     target_compile_features(test_mldsa_stack PRIVATE cxx_std_20)
     add_test(NAME mldsa_stack COMMAND test_mldsa_stack)
+    set_tests_properties(mldsa_stack PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+
+    find_package(Threads)
+    if(Threads_FOUND)
+        add_executable(test_mldsa_thread_stack test_mldsa_thread_stack.cpp)
+        target_link_libraries(test_mldsa_thread_stack PRIVATE openpqc_mldsa openpqc_strict_warnings Threads::Threads)
+        add_executable(test_mldsa_thread_stack_pct test_mldsa_thread_stack.cpp
+                       $<TARGET_OBJECTS:openpqc_mldsa_pct_objects>)
+        target_include_directories(test_mldsa_thread_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_link_libraries(test_mldsa_thread_stack_pct PRIVATE openpqc_core openpqc_strict_warnings
+                                                                  Threads::Threads)
+        target_compile_definitions(test_mldsa_thread_stack_pct PRIVATE OPENPQC_TEST_PCT)
+        foreach(name test_mldsa_thread_stack test_mldsa_thread_stack_pct)
+            target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/tests)
+            target_compile_features(${name} PRIVATE cxx_std_20)
+            if(OPENPQC_CXX_HAS_STACK_CLASH_PROTECTION)
+                target_compile_definitions(${name} PRIVATE OPENPQC_TEST_STACK_CLASH_PROTECTION)
+            endif()
+        endforeach()
+        add_test(NAME mldsa_thread_stack COMMAND test_mldsa_thread_stack)
+        add_test(NAME mldsa_thread_stack_pct COMMAND test_mldsa_thread_stack_pct)
+        set_tests_properties(mldsa_thread_stack mldsa_thread_stack_pct PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+    endif()
 endif()
 
 # --- the reference's own test programs, against both implementations ------------------
@@ -179,7 +224,10 @@ endif()
 #              and valgrind fails on any branch or memory index that depends on a secret
 find_program(OPENPQC_VALGRIND valgrind)
 find_path(OPENPQC_VALGRIND_INCLUDE_DIR valgrind/memcheck.h)
-if(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
+if(CMAKE_C_FLAGS MATCHES "-fsanitize" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+    # valgrind cannot run a sanitizer's binary (as for Core's core_*_ct, tests/Core/CMakeLists.txt)
+    message(STATUS "sanitizer build: constant-time test of ML-DSA (mldsa_ct) disabled (valgrind cannot run it)")
+elseif(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
     add_library(openpqc_mldsa_ct_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp)
     target_include_directories(openpqc_mldsa_ct_objects PRIVATE ${PROJECT_SOURCE_DIR}/include
                                ${OPENPQC_VALGRIND_INCLUDE_DIR})

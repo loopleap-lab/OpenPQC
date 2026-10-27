@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // opqc_sycl_sponge.hpp  --  the FIPS 202 sponge in GPU kernels (SYCL device code)
 //
 // GPU kernels give every work-item its own sponge: one hash or XOF stream per

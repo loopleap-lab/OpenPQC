@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // slhdsa_internal.hpp  --  the internal functions of SLH-DSA (FIPS 205, Section 9)
 //
 //   (SK, PK) <- slh_keygen_internal(SK.seed, SK.prf, PK.seed)   Algorithm 18   internal::keygen
@@ -64,6 +67,20 @@
 #define OPENPQC_SLHDSA_NOINLINE __attribute__((noinline))
 #endif
 
+// The functions of the stack burn below (touch_stack, clear_stack) are not instrumented by AddressSanitizer, so
+// that their frames keep the layout the burn relies on: in an instrumented frame, Clang 23 puts the array at the
+// bottom, below the sanitizer's redzones (bytes it marks in its shadow memory but never writes), so that neither
+// array covered the top 288 bytes of the frames, and what an operation had left there survived the burn. Without
+// the sanitizer the attribute changes nothing.
+#if defined(__has_attribute)
+#if __has_attribute(no_sanitize)
+#define OPENPQC_SLHDSA_NO_ASAN __attribute__((no_sanitize("address")))
+#endif
+#endif
+#if !defined(OPENPQC_SLHDSA_NO_ASAN)
+#define OPENPQC_SLHDSA_NO_ASAN
+#endif
+
 namespace openpqc::slhdsa {
 
 // Results. The values are those of the OPENPQC_SLHDSA_* codes of the C API.
@@ -97,14 +114,14 @@ inline constexpr std::size_t stack_burn_bytes = 32 * 1024;
 // cannot rely on: the instantiation the linker keeps may come from a translation unit compiled without it.
 inline constexpr std::size_t touch_frame_bytes = 2048;
 template <std::size_t Bytes>
-OPENPQC_SLHDSA_NOINLINE void touch_stack() {
+OPENPQC_SLHDSA_NOINLINE OPENPQC_SLHDSA_NO_ASAN void touch_stack() {
     std::array<std::uint8_t, touch_frame_bytes> frame;
     if constexpr (Bytes > touch_frame_bytes) touch_stack<Bytes - touch_frame_bytes>();
     opqc_zeroize(frame.data(), frame.size());
 }
 
 // Overwrites the stack_burn_bytes below the caller's frame with zeros (see the top of the file)
-OPENPQC_SLHDSA_NOINLINE inline void clear_stack() {
+OPENPQC_SLHDSA_NOINLINE OPENPQC_SLHDSA_NO_ASAN inline void clear_stack() {
     std::array<std::uint8_t, stack_burn_bytes> stack;
     opqc_zeroize(stack.data(), stack.size());
 }

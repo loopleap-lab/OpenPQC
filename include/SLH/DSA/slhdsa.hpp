@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // slhdsa.hpp  --  C++ API for SLH-DSA (FIPS 205): the twelve parameter sets of Table 2
 //
 // Header-only wrapper over the C API in SLH/DSA/openpqc_slhdsa.h, so that
@@ -19,9 +22,10 @@
 // for testing. Signatures are up to 49,856 bytes (SLH-DSA-*-256f), which is a
 // lot for a stack: callers that sign on small thread stacks may prefer to hold
 // them elsewhere. Each function also needs about 35 KiB of stack below the
-// call (84 KiB for keypair with OPENPQC_SLHDSA_KEYGEN_PCT), and the signature
-// may overlap the message and the context string but not the secret key: see
-// "Buffers" and "Stack" in openpqc_slhdsa.h.
+// call (with OPENPQC_SLHDSA_KEYGEN_PCT, keypair needs a signature's size more:
+// up to 84 KiB, SLH-DSA-*-256f), and the signature may overlap the message and
+// the context string but not the secret key: see "Buffers" and "Stack" in
+// openpqc_slhdsa.h.
 #pragma once
 
 #include <array>

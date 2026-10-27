@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // mldsa.hpp  --  C++ API for ML-DSA (FIPS 204): ML-DSA-44, ML-DSA-65, ML-DSA-87
 //
 // Header-only wrapper over the C API in ML/DSA/openpqc_mldsa.h, so that
@@ -13,7 +16,10 @@
 //   DSA::prehash_sign(sig, message, PreHash::SHA2_512, sk);   // HashML-DSA
 //
 // All functions return 0 on success (for verification: a valid signature) and
-// otherwise one of the OPENPQC_MLDSA_ERR_* codes of openpqc_mldsa.h.
+// otherwise one of the OPENPQC_MLDSA_ERR_* codes of openpqc_mldsa.h. What that
+// header says about private keys (sk from a trusted source; check_sk and
+// check_keypair for a stored or imported key) and about the stack each call
+// needs applies here too.
 #pragma once
 
 #include <array>
@@ -45,6 +51,8 @@ template <int Level> struct api;
         static constexpr std::size_t signature_bytes = MLDSA##N##_BYTES;                                    \
         static constexpr auto keypair = openpqc_mldsa##N##_keypair;                                         \
         static constexpr auto keypair_derand = openpqc_mldsa##N##_keypair_derand;                           \
+        static constexpr auto check_sk = openpqc_mldsa##N##_check_sk;                                       \
+        static constexpr auto check_keypair = openpqc_mldsa##N##_check_keypair;                             \
         static constexpr auto sign = openpqc_mldsa##N##_sign;                                               \
         static constexpr auto sign_derand = openpqc_mldsa##N##_sign_derand;                                 \
         static constexpr auto verify = openpqc_mldsa##N##_verify;                                           \
@@ -91,6 +99,15 @@ struct MLDSA {
     // ML-DSA.KeyGen_internal(xi), Algorithm 6: the key pair of a stored seed
     [[nodiscard]] static int keypair_derand(public_key& pk, secret_key& sk, const seed& xi) {
         return api::keypair_derand(pk.data(), sk.data(), xi.data());
+    }
+
+    // The check of a stored or imported private key (not part of FIPS 204): 0 if sk is what KeyGen
+    // computes for its rho, s1 and s2, OPENPQC_MLDSA_ERR_INVALID_KEY otherwise
+    [[nodiscard]] static int check_sk(const secret_key& sk) { return api::check_sk(sk.data()); }
+
+    // The same for a key pair: 0 if, besides, pk is the public key regenerated from sk
+    [[nodiscard]] static int check_keypair(const public_key& pk, const secret_key& sk) {
+        return api::check_keypair(pk.data(), sk.data());
     }
 
     // ML-DSA.Sign, Algorithm 2: hedged (rnd from the operating system)

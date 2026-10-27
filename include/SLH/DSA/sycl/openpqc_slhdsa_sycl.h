@@ -62,20 +62,47 @@
  *
  * Status. Signing cannot fail on the device and has no status buffer. Verification
  * writes 0 (valid) or OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE per operation into `status`
- * (device, n int32_t, required). A signature of the wrong length cannot be passed
- * (the sizes are the parameter set's), so Alg. 20, lines 1-3 never apply. Fail
- * closed: when a verification call is refused (-1: a context string over 255 bytes,
- * a bad ph, an unaligned or missing buffer, msg NULL) or fails (-2), every status
- * entry is set to OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE as long as the context and the
- * status buffer themselves are usable, so that a caller who ignores the result never
- * reads a stale 0.
+ * (device, n int32_t, required). A signature of the wrong length cannot be passed (the
+ * sizes are the parameter set's), so Alg. 20, lines 1-3 never apply. Fail closed: a
+ * verification call first sets all n entries to OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+ * queued before its first kernel, and the kernels then overwrite each entry they
+ * decide; when a call is refused (-1: a context string over 255 bytes, a bad ph, an
+ * unaligned or missing buffer, msg NULL) or fails (-2), every entry is set to
+ * OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE again, and the call waits for that fill (and so
+ * for the work queued before it): a refused or failed call leaves no write into status
+ * behind it, and status may be read, reused or freed as soon as it returns. So an entry
+ * that no kernel decides (a call that fails part way, a device fault that only a later
+ * sync or memcpy reports) reads as invalid, never as a stale 0 left by an earlier call.
+ * The fills need a usable context and status buffer (a NULL or unaligned status buffer
+ * is refused and left alone) and a device that still accepts work. After a fault that
+ * loses the device (on CUDA an invalid address is sticky) nothing runs any more, not
+ * even a fill, and memcpy returns -2 without copying, so the host buffer keeps whatever
+ * it held: take the entries as verdicts only when the call, sync and memcpy all
+ * returned 0.
  *
  * Calls are asynchronous: they return once the work is queued (there is no rejection
  * loop in SLH-DSA, signing included), and opqc_sycl_slhdsa_sync waits for it. All
- * functions return 0 on success, -1 for invalid arguments, -2 for an exception of the
- * SYCL runtime (or, for the randomized calls, page-locked host memory that cannot be
- * allocated), or OPENPQC_SLHDSA_ERR_RNG_FAIL. (The GPU's -1 and -2 are not the CPU
- * library's OPENPQC_SLHDSA_ERR_* codes of the same values, as for ML-DSA's backend.)
+ * functions return 0 on success, -1 for invalid arguments (memcpy: also a NULL dst or
+ * src), -2 for an exception of the SYCL runtime, a context that has failed (below) or,
+ * for the randomized calls, page-locked host memory that cannot be allocated, or
+ * OPENPQC_SLHDSA_ERR_RNG_FAIL. (The GPU's -1 and -2 are not the CPU library's
+ * OPENPQC_SLHDSA_ERR_* codes of the same values, as for ML-DSA's backend.)
+ *
+ * Device failures. Most device errors (a kernel that faults, a lost device) are found
+ * after the call that caused them has returned 0: by a later call, by sync, or by a
+ * memcpy that waits (it waits for all the work queued before it). From then on the
+ * context has failed, for good: the call, sync or memcpy that finds the error returns
+ * -2, and so does every later call, sync and memcpy; the calls run no more kernels
+ * (verification still fills its status, above, and memcpy still copies, below). Nothing
+ * the context computed since the last sync that returned 0 can then be trusted, outputs
+ * of calls that returned 0 included; destroy the context and create a new one. A device
+ * error never ends the process. The first call or sync that finds the failure zeroizes
+ * the whole workspace, and destroy zeroizes it again, as far as the device still
+ * accepts work (after a sticky fault it accepts none). Under AdaptiveCpp, which keeps
+ * one list of asynchronous errors for the whole process, an asynchronous error fails
+ * every context of the process, and the contexts also take (and fail on) the
+ * asynchronous errors of the application's own SYCL queues.
+ *
  * Secret intermediate values kept in device memory between the stages of a call are
  * zeroized when the call ends, also when it fails part way (as far as the device still
  * accepts work), and so are those of verification (FIPS 205, Section 3.1); local
@@ -115,6 +142,8 @@ typedef struct opqc_sycl_slhdsa opqc_sycl_slhdsa;
  * that cannot be allocated.
  */
 int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa **ctx, int param_set, size_t max_batch, int device);
+/* Waits for the context's work, zeroizes its workspace and frees it (as far as the device
+ * still accepts work), also after a failure; NULL is ignored. */
 void opqc_sycl_slhdsa_destroy(opqc_sycl_slhdsa *ctx);
 const char *opqc_sycl_slhdsa_device_name(const opqc_sycl_slhdsa *ctx);
 
@@ -171,13 +200,19 @@ int opqc_sycl_slhdsa_prehash_verify_one_key(opqc_sycl_slhdsa *ctx, const uint8_t
 int opqc_sycl_slhdsa_verify_internal_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *mprime,
                                              const uint64_t *offsets, const uint8_t *pk, int32_t *status, size_t n);
 
-/* Waits until all queued work of the context is done. */
+/* Waits until all queued work of the context is done. Returns 0, -1 for NULL, or -2 if the
+ * context has failed, before or during the wait (Device failures, above). */
 int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa *ctx);
 
 /* Memory: device memory on the context's device, and page-locked host memory (faster
  * transfers), both 256-byte aligned and freed with opqc_sycl_slhdsa_free. Copies in any
- * direction: memcpy waits for the copy, memcpy_async queues it behind the context's
- * earlier work. */
+ * direction: memcpy waits for the copy, and so, the queue being in order, for all the
+ * work queued before it; memcpy_async queues it behind the context's earlier work. Both
+ * return -1 for a NULL context, or a NULL dst or src with bytes > 0 (nothing is queued;
+ * the context stays usable), and -2 once the context has failed: the copy is still made
+ * as far as the device allows (the status of a failed verification reaches the host
+ * filled with OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE), but what it copies cannot be
+ * trusted. */
 void *opqc_sycl_slhdsa_malloc(opqc_sycl_slhdsa *ctx, size_t bytes);
 void *opqc_sycl_slhdsa_malloc_host(opqc_sycl_slhdsa *ctx, size_t bytes);
 void opqc_sycl_slhdsa_free(opqc_sycl_slhdsa *ctx, void *p);

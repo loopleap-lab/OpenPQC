@@ -5,11 +5,24 @@
 # is reported as "skipped". Label: gpu.
 
 if(OPENPQC_HAVE_SYCL)
+    # ML-KEM: the three parameter sets, the status and error contract, fresh coins and two threads on one context,
+    # on every device
     add_executable(test_mlkem_sycl test_mlkem_sycl.cpp)
     target_link_libraries(test_mlkem_sycl PRIVATE openpqc_mlkem_sycl openpqc_mlkem)
     target_compile_features(test_mlkem_sycl PRIVATE cxx_std_20)
     add_test(NAME mlkem_sycl COMMAND test_mlkem_sycl 1000)
-    set_tests_properties(mlkem_sycl PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu)
+    set_tests_properties(mlkem_sycl PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 1800)
+
+    # ML-KEM when the device work fails part way, by fault injection: a white-box test that compiles the backend's
+    # source itself and provides the library's randombytes() (openpqc_core_testrng), so it links neither
+    # openpqc_mlkem_sycl nor openpqc_core.
+    add_executable(test_mlkem_sycl_faults test_mlkem_sycl_faults.cpp)
+    target_include_directories(test_mlkem_sycl_faults PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(test_mlkem_sycl_faults PRIVATE openpqc_mlkem_testrng openpqc_core_sycl openpqc_core_testrng)
+    target_compile_features(test_mlkem_sycl_faults PRIVATE cxx_std_20)
+    openpqc_sycl_sources(test_mlkem_sycl_faults test_mlkem_sycl_faults.cpp)
+    add_test(NAME mlkem_sycl_faults COMMAND test_mlkem_sycl_faults)
+    set_tests_properties(mlkem_sycl_faults PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 1800)
 
     add_executable(test_mldsa_sycl test_mldsa_sycl.cpp)
     target_link_libraries(test_mldsa_sycl PRIVATE openpqc_mldsa_sycl openpqc_mldsa)
@@ -26,4 +39,18 @@ if(OPENPQC_HAVE_SYCL)
     target_compile_features(test_slhdsa_sycl PRIVATE cxx_std_20)
     add_test(NAME slhdsa_sycl COMMAND test_slhdsa_sycl)
     set_tests_properties(slhdsa_sycl PROPERTIES SKIP_RETURN_CODE 77 LABELS "gpu;slow" TIMEOUT 7200)
+
+    # SLH-DSA when the device work fails, by fault injection: a white-box test that compiles the backend's source
+    # itself (two parameter sets, whatever OPENPQC_SLHDSA_SYCL_SETS says), so it does not link openpqc_slhdsa_sycl.
+    # "sticky" makes a real fault on an NVIDIA GPU, after which CUDA refuses all work of the process on that
+    # device: a process of its own (skipped without an NVIDIA device).
+    add_executable(test_slhdsa_sycl_faults test_slhdsa_sycl_faults.cpp)
+    target_include_directories(test_slhdsa_sycl_faults PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(test_slhdsa_sycl_faults PRIVATE openpqc_slhdsa openpqc_core_sycl openpqc_core)
+    target_compile_features(test_slhdsa_sycl_faults PRIVATE cxx_std_20)
+    openpqc_sycl_sources(test_slhdsa_sycl_faults test_slhdsa_sycl_faults.cpp)
+    add_test(NAME slhdsa_sycl_faults COMMAND test_slhdsa_sycl_faults)
+    add_test(NAME slhdsa_sycl_faults_sticky COMMAND test_slhdsa_sycl_faults sticky)
+    set_tests_properties(slhdsa_sycl_faults slhdsa_sycl_faults_sticky PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu
+                         TIMEOUT 1800)
 endif()

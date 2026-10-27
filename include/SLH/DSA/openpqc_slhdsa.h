@@ -52,12 +52,25 @@
  * Stack. Every function, verification included, overwrites 32 KiB of the stack
  * below its own frame when it returns (the destruction of intermediate values
  * of FIPS 205, Section 3.1; SLH/DSA/scheme/slhdsa_internal.hpp), and so needs
- * about 35 KiB of stack below the call (measured: 34.6-34.8 KiB for every set,
- * GCC 16 and Clang 23 at -O3), against about 7 KiB for the algorithms
- * themselves. Built with OPENPQC_SLHDSA_KEYGEN_PCT, keypair and keypair_derand
- * need up to 84 KiB (SLH-DSA-*-256f), as the pair-wise consistency test holds a
- * signature on the stack. On a stack that is too short they end in a fault at
- * its guard page.
+ * about 35 KiB of stack below the call (measured on x86-64: 34.3-34.9 KiB for
+ * every set and function, GCC 16 and Clang 23 at -O3), against about 7 KiB for
+ * the algorithms themselves. Built with OPENPQC_SLHDSA_KEYGEN_PCT, keypair and
+ * keypair_derand need the size of a signature more, as the pair-wise
+ * consistency test holds one on the stack: 42.4 KiB for SLH-DSA-*-128s,
+ * 50.6 KiB for -192s, 51.4 KiB for -128f, 63.8 KiB for -256s, 69.5 KiB for
+ * -192f and 83.4 KiB for -256f (the same measurement, with either compiler).
+ * On x86-64, every frame larger than a page is entered only after its pages
+ * have been touched from the top down, and every other frame is smaller than
+ * 3.5 KiB (measured: at most 2.9 KiB, -fstack-usage, GCC 16 and Clang 23 at
+ * -O2 and -O3; tests/SLH-DSA/test_slhdsa_stack.cpp checks the compiler's
+ * report of the frames in every optimized x86-64 build of the tests), so that
+ * no write lies 4 KiB or more below the writes before it (counting the 128
+ * bytes that a function may use below its stack pointer): on a stack that is
+ * too short every function ends in a fault at the stack's guard page (of 4 KiB
+ * or more) and writes nothing below it, whether or not the library is built
+ * with -fstack-clash-protection. Without optimization the frames are larger, and
+ * other architectures were not measured: build with -fstack-clash-protection
+ * there.
  * The overwriting assumes one contiguous native stack (not SafeStack, split
  * stacks or the fake stacks of AddressSanitizer's use-after-return detection).
  *

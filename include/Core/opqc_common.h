@@ -17,7 +17,7 @@
  * To stay valid in all three, the math core does not use `restrict`,
  * `[static n]` array parameters, compound literals, designated initializers,
  * implicit conversions from `void *`, variable-length arrays, recursion, or
- * inline assembly outside OPQC_VALUE_BARRIERS (see opqc_ct.h). Tables are
+ * inline assembly outside OPQC_VALUE_BARRIER_ASM (see opqc_ct.h). Tables are
  * file-scope `static const` arrays, which SYCL 2020 allows in device code.
  */
 
@@ -58,15 +58,43 @@
 #endif
 
 /*
- * OPQC_VALUE_BARRIERS is defined when value barriers (opqc_ct.h) are
- * available: plain C/C++ compilation with GCC or Clang. It is left undefined
- * in SYCL and CUDA translation units (device code cannot contain x86 or Arm
- * assembly; AdaptiveCpp compiles host and device code in a single pass) and
- * when the user defines OPQC_NO_VALUE_BARRIERS.
+ * The value barrier of opqc_ct.h, on which constant-time code depends, takes
+ * one of three forms, chosen per translation unit:
+ *
+ *   OPQC_VALUE_BARRIER_ASM
+ *       GCC and Clang, and every compiler that defines __GNUC__ or __clang__
+ *       (clang-cl, icx, MinGW): an empty inline-assembly statement.
+ *   OPQC_VALUE_BARRIER_VOLATILE
+ *       any other C or C++ compiler (MSVC's cl.exe), and any compiler when
+ *       OPQC_CONFIG_NO_ASM_VALUE_BARRIER is defined: an XOR with a volatile
+ *       variable that holds 0 (the fallback of mlkem-native).
+ *   the identity
+ *       SYCL and CUDA translation units (AdaptiveCpp compiles host and device
+ *       code in one pass): device code can contain neither assembly nor a
+ *       static variable. OpenPQC claims no constant time for GPU code.
+ *
+ * OPQC_VALUE_BARRIERS is defined when one of the first two is active. CPU
+ * code cannot be built without a barrier: OPQC_NO_VALUE_BARRIERS, which used
+ * to make the barrier the identity, stops the build outside SYCL and CUDA.
+ *
+ * Tested: the valgrind tests (core_*_ct, mlkem*_ct, mldsa_ct, slhdsa_ct)
+ * check builds by GCC and Clang on x86-64 Linux, with the asm barrier and, in
+ * core_volatile_*_ct, with the volatile one; core_ct_asm reads the assembly
+ * that Clang makes of the helpers for six other targets, with both. No other
+ * compiler (MSVC included) or operating system is tested, and no code runs on
+ * another processor.
  */
-#if !defined(OPQC_NO_VALUE_BARRIERS) && !defined(SYCL_LANGUAGE_VERSION) &&    \
-    !defined(__SYCL_DEVICE_ONLY__) && !defined(__CUDACC__) &&                 \
-    (defined(__GNUC__) || defined(__clang__))
+#if defined(SYCL_LANGUAGE_VERSION) || defined(__SYCL_DEVICE_ONLY__) ||        \
+    defined(__CUDACC__)
+/* the identity (see above) */
+#elif defined(OPQC_NO_VALUE_BARRIERS)
+#error "OPQC_NO_VALUE_BARRIERS would leave CPU code without a value barrier (see above); define OPQC_CONFIG_NO_ASM_VALUE_BARRIER for one without inline assembly"
+#elif (defined(__GNUC__) || defined(__clang__)) &&                             \
+    !defined(OPQC_CONFIG_NO_ASM_VALUE_BARRIER)
+#define OPQC_VALUE_BARRIER_ASM 1
+#define OPQC_VALUE_BARRIERS 1
+#else
+#define OPQC_VALUE_BARRIER_VOLATILE 1
 #define OPQC_VALUE_BARRIERS 1
 #endif
 

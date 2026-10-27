@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // mldsa.cpp  --  the C API (openpqc_mldsa.h), implemented with the algorithms of scheme/
 //
 // The only compiled file of ML-DSA: it instantiates the templates of
@@ -41,6 +44,12 @@ struct CApi {
     }
     static int keypair_derand(std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* seed) {
         return result(keygen_derand<P>(out<S::pk>(pk), out<S::sk>(sk), in<32>(seed)));
+    }
+    static int check_sk(const std::uint8_t* sk) {
+        return result(check_secret_key<P>(in<S::sk>(sk)) ? Status::ok : Status::invalid_key);
+    }
+    static int check_keypair(const std::uint8_t* pk, const std::uint8_t* sk) {
+        return result(check_key_pair<P>(in<S::pk>(pk), in<S::sk>(sk)) ? Status::ok : Status::invalid_key);
     }
     static int sign(std::uint8_t* sig, const std::uint8_t* m, std::size_t mlen, const std::uint8_t* ctx,
                     std::size_t ctxlen, const std::uint8_t* sk) {
@@ -113,7 +122,8 @@ static_assert(static_cast<int>(Status::invalid_signature) == OPENPQC_MLDSA_ERR_I
               static_cast<int>(Status::invalid_argument) == OPENPQC_MLDSA_ERR_INVALID_ARGUMENT &&
               static_cast<int>(Status::rng_failure) == OPENPQC_MLDSA_ERR_RNG_FAIL &&
               static_cast<int>(Status::signing_limit) == OPENPQC_MLDSA_ERR_SIGNING_LIMIT &&
-              static_cast<int>(Status::pct_failure) == OPENPQC_MLDSA_ERR_PCT_FAIL);
+              static_cast<int>(Status::pct_failure) == OPENPQC_MLDSA_ERR_PCT_FAIL &&
+              static_cast<int>(Status::invalid_key) == OPENPQC_MLDSA_ERR_INVALID_KEY);
 static_assert(static_cast<int>(PreHash::SHA2_256) == OPENPQC_MLDSA_PREHASH_SHA2_256 &&
               static_cast<int>(PreHash::SHA2_384) == OPENPQC_MLDSA_PREHASH_SHA2_384 &&
               static_cast<int>(PreHash::SHA2_512) == OPENPQC_MLDSA_PREHASH_SHA2_512 &&
@@ -135,6 +145,12 @@ static_assert(static_cast<int>(PreHash::SHA2_256) == OPENPQC_MLDSA_PREHASH_SHA2_
     }                                                                                                        \
     int openpqc_mldsa##N##_keypair_derand(uint8_t* pk, uint8_t* sk, const uint8_t* seed) {                   \
         return CApi<params::ML_DSA_##N>::keypair_derand(pk, sk, seed);                                       \
+    }                                                                                                        \
+    int openpqc_mldsa##N##_check_sk(const uint8_t* sk) {                                                     \
+        return CApi<params::ML_DSA_##N>::check_sk(sk);                                                       \
+    }                                                                                                        \
+    int openpqc_mldsa##N##_check_keypair(const uint8_t* pk, const uint8_t* sk) {                             \
+        return CApi<params::ML_DSA_##N>::check_keypair(pk, sk);                                              \
     }                                                                                                        \
     int openpqc_mldsa##N##_sign(uint8_t* sig, const uint8_t* m, size_t mlen, const uint8_t* ctx,             \
                                 size_t ctxlen, const uint8_t* sk) {                                          \

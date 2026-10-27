@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // parameter_sets.hpp  --  the ML-DSA parameter sets (FIPS 204, Section 4)
 //
 // A parameter set is a type with the constants of Table 1. The algorithms in

@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // opqc_sycl_team.hpp  --  how the kernels of the OpenPQC GPU backends share out work (SYCL device code)
 //
 // Two kinds of stages, for every scheme:
@@ -20,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <type_traits>
 
 namespace openpqc::gpu {
 
@@ -123,27 +127,40 @@ void for_each_team(sycl::queue& q, std::size_t n, std::size_t local_words, F f) 
     });
 }
 
-// OR of `value` over the team (all its work-items must call it). Uses the first
-// TeamSize words of the team's local memory, which the caller must not need any more.
+// The type of a team reduction's result: Word itself, or 32 bits for narrower words. A 32-bit result
+// would drop the high half of 64-bit words: an OR of the differences between two 64-bit lanes would then
+// compare half of each lane, and a verification built on it would accept a value that differs only
+// there. Sums are taken modulo 2^(bits of the result); 16-bit words are summed in 32 bits.
+template <class Word>
+using TeamResult = std::conditional_t<(sizeof(Word) > sizeof(std::uint32_t)), Word, std::uint32_t>;
+static_assert(std::is_same_v<TeamResult<std::uint64_t>, std::uint64_t> &&
+              std::is_same_v<TeamResult<std::uint16_t>, std::uint32_t>);
+
+// OR of `value` over the team (all its work-items must call it), over every bit of Word. Uses the
+// first TeamSize words of the team's local memory, which the caller must not need any more. There is
+// no barrier after the reads: a caller that writes those words again calls t.barrier() first (the
+// next team_or or team_sum does).
 template <class Word, unsigned TeamSize>
-std::uint32_t team_or(const Team<Word, TeamSize>& t, Word value) {
+TeamResult<Word> team_or(const Team<Word, TeamSize>& t, Word value) {
+    static_assert(std::is_unsigned_v<Word>, "team reductions take unsigned words");
     Word* scratch = t.local;
     t.barrier();
     scratch[t.g] = value;
     t.barrier();
-    std::uint32_t any = 0;
+    TeamResult<Word> any = 0;
     for (unsigned i = 0; i < TeamSize; i++) any |= scratch[i];
     return any;
 }
 
 // Sum of `value` over the team, like team_or
 template <class Word, unsigned TeamSize>
-std::uint32_t team_sum(const Team<Word, TeamSize>& t, Word value) {
+TeamResult<Word> team_sum(const Team<Word, TeamSize>& t, Word value) {
+    static_assert(std::is_unsigned_v<Word>, "team reductions take unsigned words");
     Word* scratch = t.local;
     t.barrier();
     scratch[t.g] = value;
     t.barrier();
-    std::uint32_t sum = 0;
+    TeamResult<Word> sum = 0;
     for (unsigned i = 0; i < TeamSize; i++) sum += scratch[i];
     return sum;
 }

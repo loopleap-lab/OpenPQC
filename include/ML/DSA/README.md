@@ -41,7 +41,7 @@ allowed bound on the signing loop (Appendix C, Table 3) from 814 to 821, which `
 | Algorithm 15 CoeffFromHalfByte | `mldsa_coeff_from_half_byte` |
 | Algorithms 16–19 SimpleBitPack, BitPack, SimpleBitUnpack, BitUnpack | `mldsa_simple_bit_pack`, `mldsa_bit_pack`, `mldsa_simple_bit_unpack`, `mldsa_bit_unpack`; one 8-coefficient chunk: the `…8` versions (`math/mldsa_encode.h`) |
 | Algorithms 20, 21 HintBitPack, HintBitUnpack | `mldsa_hint_bit_pack`, `mldsa_hint_bit_unpack` (with every check that makes the encoding unique, Appendix D.3) |
-| Algorithms 22–28 pkEncode … w1Encode | `pk_encode`, `pk_decode_t1`, `sk_encode`, `sk_decode`, `sig_encode`, `sig_decode`, `w1_encode`, offsets in `Layout<P>` (`scheme/encoding.hpp`) |
+| Algorithms 22–28 pkEncode … w1Encode | `pk_encode`, `pk_decode_t1`, `sk_encode`, `sk_decode`, `sig_encode`, `sig_decode`, `w1_encode`, offsets in `Layout<P>` (`scheme/encoding.hpp`); `sk_decode` also reports s1 or s2 outside [−η, η] (Algorithm 25, lines 3 and 6; Private keys, below) |
 | Algorithm 29 SampleInBall | `mldsa_sample_in_ball` (`math/mldsa_sample.h`) |
 | Algorithm 30 RejNTTPoly | `mldsa_rej_ntt_poly` |
 | Algorithm 31 RejBoundedPoly | `rej_bounded_poly` (`scheme/sampling.hpp`); lines 6–15 for one byte: `mldsa_rej_bounded_byte` |
@@ -56,7 +56,8 @@ allowed bound on the signing loop (Appendix C, Table 3) from 814 to 821, which `
 | Algorithms 1–3 ML-DSA.KeyGen, Sign, Verify | `keygen`, `sign`, `verify` and the `_derand` variants (`scheme/ml_dsa.hpp`) |
 | Algorithms 4, 5 HashML-DSA.Sign, Verify | `hash_sign`, `hash_verify`; the twelve pre-hash functions and their OIDs: `PreHash`, `prehash`, `prehash_oid` (`Core/prehash.hpp`, shared with HashSLH-DSA; also reachable as `openpqc::mldsa::PreHash` etc.), the C values `OPENPQC_MLDSA_PREHASH_*` = `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`) |
 | Algorithm 7 line 6, Algorithm 8 line 7: external μ | `external_mu`, `sign_mu`, `verify_mu` |
-| §3.6.1 randomness, §3.6.3 destruction of intermediate values | `opqc_randombytes` (`Core/opqc_platform.h`); every `Poly` zeroizes itself when its lifetime ends, unnamed temporaries included (`scheme/polynomials.hpp`), and `ZeroizeOnExit` (`Core/zeroize.hpp`) destroys the secret byte strings; `mldsa_stack` checks that KeyGen and Sign leave no secret on the stack |
+| §3.6.1 randomness, §3.6.3 destruction of intermediate values | `opqc_randombytes` (`Core/opqc_platform.h`); every `Poly` zeroizes itself when its lifetime ends, unnamed temporaries included (`scheme/polynomials.hpp`), and `ZeroizeOnExit` (`Core/zeroize.hpp`) destroys the secret byte strings, μ and the byte strings of verification; `mldsa_stack` checks that KeyGen, the key checks, Sign and Verify leave none of them on the stack, nor a lane of the last Keccak-f of a sponge that absorbs a secret |
+| §7.2 skDecode only on trusted input (a key check is not part of FIPS 204) | every signing function refuses s1 or s2 outside [−η, η] (`internal::sign_mu`, `OPENPQC_MLDSA_ERR_INVALID_KEY`); `check_secret_key` and `check_key_pair` (`scheme/ml_dsa.hpp`), `openpqc_mldsaNN_check_sk` and `openpqc_mldsaNN_check_keypair`: the whole key regenerated and compared (Private keys, below) |
 | Appendix C bound on the signing loop | `max_signing_attempts` = 821, the smallest that NIST's errata allow (Table 3 itself says 814); then `Status::signing_limit` and the signature all zeros |
 | pair-wise consistency test (FIPS 140-3) | `check_pair_wise_consistency`, run by KeyGen when built with `OPENPQC_MLDSA_KEYGEN_PCT` |
 | Table 1, Table 2 | `params::ML_DSA_44/65/87`, `Sizes<P>` (`scheme/parameter_sets.hpp`) |
@@ -84,21 +85,77 @@ the CRYSTALS-Dilithium reference (`reference/dilithium`, both its C and its AVX2
 - **Constant time.** Secret data never decides a branch or a memory index, except where FIPS 204's design makes the
   information public, as in the reference implementation (Dilithium round-3 specification, §5.5): whether a signing
   attempt is rejected, the challenge c̃ of every attempt, the z and h of the attempt that succeeds, and which bytes
-  RejBoundedPoly rejects (they say nothing about the accepted coefficients). `mldsa_ct` runs KeyGen, Sign (hedged,
-  with and without a context string, HashML-DSA, external μ) and Verify under valgrind with ξ and rnd, and so
-  everything computed from them, marked secret; the values above are released with `OPQC_CT_DECLASSIFY`, and nothing
-  else may reach a branch or a memory index.
+  RejBoundedPoly rejects (they say nothing about the accepted coefficients); besides, whether a private key is well
+  formed and the outcome of the key checks (see Private keys). `mldsa_ct` runs KeyGen, the key checks, Sign (hedged,
+  with and without a context string, HashML-DSA, external μ, and with a malformed key) and Verify under valgrind with
+  ξ and rnd, and so everything computed from them, marked secret; the values above are released with
+  `OPQC_CT_DECLASSIFY`, and nothing else may reach a branch or a memory index.
 - **Memory.** There is no heap and there are no exceptions. Every symbol of the standard is a variable, and the whole
-  matrix Â is kept, so the frames are large (GCC 16, -O3, `-fstack-usage`): Sign 123 / 176 / 251 KiB, Verify 67 / 103
-  / 153 KiB and KeyGen 52 / 83 / 128 KiB for ML-DSA-44 / -65 / -87 — fine for the 8 MiB stacks of desktop threads,
-  too much for small embedded stacks.
+  matrix Â is kept, so the stack is large. One call needs at most, below its caller's frame (the largest of GCC 16 and
+  Clang 23 at -O2, -O3 and -Os on x86-64, rounded up to whole KiB, plus 1 KiB for other compiler versions;
+  `mldsa_thread_stack` measures every function and checks it against this table):
+
+  | | ML-DSA-44 | ML-DSA-65 | ML-DSA-87 |
+  |---|---|---|---|
+  | KeyGen (`keypair`, `keypair_derand`) | 52 KiB | 80 KiB | 122 KiB |
+  | KeyGen with the pair-wise consistency test (`OPENPQC_MLDSA_KEYGEN_PCT`) | 87 KiB | 130 KiB | 190 KiB |
+  | the key checks (`check_sk`, `check_keypair`) | 56 KiB | 86 KiB | 129 KiB |
+  | Sign (every signing function) | 85 KiB | 127 KiB | 186 KiB |
+  | Verify (every verification function) | 64 KiB | 99 KiB | 147 KiB |
+
+  A thread that calls the functions of a parameter set needs `OPENPQC_MLDSA44_STACK_BYTES`, `…65…` or `…87…`
+  (128, 160 and 224 KiB, `openpqc_mldsa.h`), which leave room for the thread library's share (about 6 KiB with
+  glibc), a signal frame and the caller's first frames. This is not only a concern of small embedded targets:
+  glibc gives a thread the stack limit (usually 8 MiB), but musl, in Alpine Linux and other musl-based systems and
+  container images, gives a thread created without a stack size 128 KiB, `std::thread` included: enough, with 4 KiB
+  to spare, for every function of ML-DSA-44, for KeyGen without the pair-wise consistency test, the key checks and
+  Verify of ML-DSA-65, and for KeyGen without the test and external μ of ML-DSA-87, but not for Sign of ML-DSA-65 or
+  ML-DSA-87. Set the size with `pthread_attr_setstacksize`, or for musl's default with the linker option
+  `-Wl,-z,stack-size=N`. Unoptimized builds: GCC 16 at -O0 stays within the table, Clang 23 at -O0 needs up to
+  278 KiB (Sign of ML-DSA-87) and 282 KiB (KeyGen of ML-DSA-87 with the pair-wise consistency test). The
+  library is compiled with `-fstack-clash-protection` where the compiler has it, so that on a stack that is too
+  small a call ends in a fault at the guard page instead of writing below it into whatever is mapped there
+  (`mldsa_thread_stack` checks both, also on musl's 128 KiB). The
+  frames used to be larger (Sign of ML-DSA-87: 222 KiB with GCC 16, 299 KiB with Clang 23; now 176 KiB with both):
+  the operations on polynomials took their operands by value, two copies per operation that Clang did not overlap
+  with the rest of the frame, and s1, s2, t0 and the values of every signing attempt lived for the whole of Sign.
+  They now take const references (`scheme/polynomials.hpp`), and those variables live in blocks of their own
+  (`scheme/mldsa_internal.hpp`). Generating Â row by row, or a workspace supplied by the caller, would save more;
+  neither exists.
 - **Destruction of intermediate values.** The scheme layer computes with values (`invntt(scalar_vector_ntt(ĉ, ŝ1))`),
-  so many intermediate polynomials are unnamed temporaries and by-value parameters. When only the named variables
-  were zeroized, Sign left c ∘ s1 in the NTT domain, y, NTT(w) and w − cs2 of the accepted attempt on the stack
-  (GCC 16 and Clang 23, all parameter sets), and with them s1 and s2: c is public, so ŝ1 = (ĉ ∘ ŝ1) / ĉ. Since then
-  `Poly` zeroizes itself in its destructor, and `mldsa_stack` copies the stack after KeyGen and Sign and searches it
-  for every secret intermediate value. The extra zeroization costs about 2 % of the speed on average (between −6 %
-  and +2 % against the reference's C code in the same single-thread run, about as much as runs differ).
+  so many intermediate polynomials are unnamed temporaries. When only the named variables were zeroized, Sign left
+  c ∘ s1 in the NTT domain, y, NTT(w) and w − cs2 of the accepted attempt on the stack (GCC 16 and Clang 23, all
+  parameter sets), and with them s1 and s2: c is public, so ŝ1 = (ĉ ∘ ŝ1) / ĉ. Since then `Poly` zeroizes itself in
+  its destructor, and the values of one signing attempt are destroyed when the attempt ends. μ, which is computed
+  from the message, and Verify's w1Encode(w1′) and c̃′ are destroyed too (§3.6.3 counts messages and verification data
+  as sensitive in some applications), and `external_mu` writes μ straight into the caller's buffer. `mldsa_stack`
+  copies the stack after every kind of call (KeyGen, also randomized; the key checks; Sign, also hedged, HashML-DSA,
+  external μ and at the bound of Appendix C; ExpandMask on its own; Verify, also HashML-DSA) and searches it, at
+  every byte offset, for every secret intermediate value: ξ, rnd, the seeds, s1 and s2 also as sk packs them, the
+  values of every attempt, ExpandMask's output v, the final states of the sponges that absorb secrets or μ, μ, and
+  Verify's w1Encode(w1′) and c̃′; and, lane by lane, for the last Keccak-f permutation of each of those sponges, the
+  lanes of its last two rounds and of its output, which the permutation spills to its frame one at a time (Core
+  clears that frame after every permutation). Lanes also stay in registers after the permutation, and a caller may
+  store such a register later (GCC 16 at -O3 stored a lane of ExpandMask's last permutation in ExpandMask's frame),
+  so the functions of the scheme layer that run a sponge on secret input zero the call-used registers when they
+  return (`OPENPQC_MLDSA_CLEARS_REGISTERS`, `scheme/crypto_functions.hpp`; GCC 11 and Clang 15 or later, x86 and
+  AArch64). The extra zeroization costs about 2 % of
+  the speed on average (between −6 % and +2 % against the reference's C code in the same single-thread run, about as
+  much as runs differ).
+- **Private keys.** FIPS 204 decodes sk without checking it and runs skDecode only on input from a trusted source
+  (§7.2); a malformed sk can give coefficients of s1 and s2 outside [−η, η] (Algorithm 25, lines 3 and 6: a 3-bit code
+  above 4 gives −3 to −5, a 4-bit code above 8 gives −5 to −11). The reference signs with such a key. The signing
+  functions of the C and C++ APIs refuse it with `OPENPQC_MLDSA_ERR_INVALID_KEY` and an all-zero signature: with
+  ‖c s1‖∞ above β the rejection test no longer makes z independent of s1 (the GPU backend's signer, `sycl/`, does not
+  check sk yet and signs with such a key). The check examines every coefficient without a branch
+  on it, and only the one bit of its outcome is public (it is the same for every key that KeyGen outputs). Other
+  changes of sk are signed with, as FIPS 204 specifies: after a change of ρ or tr, or of s1 within the range, the
+  signatures do not verify, after a change of s2 or t0 some still do, and a change of K goes unnoticed, as every K
+  is valid. `openpqc_mldsaNN_check_sk` checks a stored or imported sk completely except for K, at about the cost of
+  a KeyGen: it regenerates the key from its ρ, s1 and s2 as Algorithm 6 does and compares it byte for byte, in
+  constant time. sk holds only the hash tr of its public key, so a pk kept apart from sk is checked by
+  `openpqc_mldsaNN_check_keypair`, which also requires pk to be the regenerated public key. Well-formed keys give
+  the same signatures as before.
 
 ## Usage
 
@@ -117,6 +174,15 @@ int valid = openpqc_mldsa65_verify(sig, sizeof sig, msg, msglen, ctx, sizeof ctx
 
 /* HashML-DSA: the message is hashed first, here with SHA-512 */
 openpqc_mldsa65_prehash_sign(sig, msg, msglen, ctx, sizeof ctx - 1, OPENPQC_MLDSA_PREHASH_SHA2_512, sk);
+
+/* a key pair read from storage or received from elsewhere: check it once (see Private keys above);
+   openpqc_mldsa65_check_sk(sk) checks a private key without its public key */
+if (openpqc_mldsa65_check_keypair(pk, sk) != 0) {
+    /* OPENPQC_MLDSA_ERR_INVALID_KEY: not a key pair that KeyGen gives */
+}
+
+/* a thread that signs: give it the documented stack (see Memory above) */
+pthread_attr_setstacksize(&attr, OPENPQC_MLDSA65_STACK_BYTES);
 ```
 
 C++ (`ML/DSA/mldsa.hpp`; sizes are part of the types):
@@ -383,7 +449,11 @@ arithmetic weighs more: 41–46 % of Sign in the attempts' z, r0, c·t0 and hint
 
 `include/ML/DSA/CMakeLists.txt` compiles `mldsa.cpp` once and makes two libraries of it: `openpqc_mldsa` takes its
 randomness from the operating system, `openpqc_mldsa_testrng` calls the application's `randombytes()` (tests only).
-`openpqc_mldsa_sycl` is added when a SYCL compiler is found (see the top-level README).
+`openpqc_mldsa_sycl` is added when a SYCL compiler is found (see the top-level README). Like all of OpenPQC's CPU
+code, `mldsa.cpp` is compiled with `-fstack-clash-protection` and, in the optimized configurations, with a warning
+(an error with `OPENPQC_WERROR`) for any frame larger than `OPENPQC_MAX_FRAME_BYTES`, 192 KiB (0 turns it off;
+`cmake/OpenPQCWarnings.cmake`; see Memory above). Configurations whose flags turn on AddressSanitizer get no such
+warning: its red zones make the frame of Sign of ML-DSA-87 275 to 286 KiB (GCC 16 and Clang 23, -O2 and -O3).
 
 ## Tests
 
@@ -396,12 +466,14 @@ The reference's own test programs run against this library and against the unmod
 | `mldsaNN_vectors` | the reference's `test_vectors`: keys, signatures and intermediate values; the output must hash to upstream's `SHA256SUMS` |
 | `mldsaNN_kat` | the NIST KAT generator; the output hash must be the reference's (`tests/ML-DSA/KAT.sha256`) |
 | `mldsa_acvp` | NIST ACVP vectors for keyGen, sigGen (internal, external, pre-hash, external μ) and sigVer, 1335 in all (downloaded on first use, the files pinned by SHA-256 and test count; label `network`) |
-| `mldsa_ct` | constant-time test under valgrind (when valgrind is found; otherwise configuring says that it is disabled) |
+| `mldsa_ct` | constant-time test under valgrind (when valgrind is found and the build has no sanitizer, which valgrind cannot run; otherwise configuring says that it is disabled); also the key checks and the refusal of a malformed key |
 | `mldsa_math` | the math core against direct transcriptions of FIPS 204, exhaustively where feasible (mod q for all 2³² inputs, Decompose and UseHint for every element of Z_q, CoeffFromThreeBytes for all 2²⁴ inputs), and every kind of malformed hint encoding of Algorithm 21 |
 | `mldsa_differential` | this library against the reference (C and AVX2), byte for byte: keys, deterministic and hedged signatures with context strings up to 255 bytes, the internal functions, and verification of tampered signatures, malformed hints (equal and decreasing indices included) and out-of-range z, and of signatures with a coefficient of z exactly at γ₁ − β (rejected) and one below (valid); also a failing RNG and the end of the signing loop (Appendix C) |
-| `test_mldsa_cxx` | the C++ API; HashML-DSA against Algorithm 4 written out (the twelve OIDs and pre-hash functions), signatures of the wrong length at every verification function, context strings of 255 and 256 bytes everywhere |
+| `test_mldsa_cxx` | the C++ API; HashML-DSA against Algorithm 4 written out (the twelve OIDs and pre-hash functions), signatures of the wrong length at every verification function, context strings of 255 and 256 bytes everywhere, the key checks of every key pair it generates |
 | `mldsa_pct` | the library built with the pair-wise consistency test after KeyGen (`OPENPQC_MLDSA_KEYGEN_PCT`) |
-| `mldsa_stack` | no secret intermediate value on the stack after KeyGen and Sign (FIPS 204 §3.6.3): the stack is copied after each call and searched for ρ′, K, ρ″, s1, s2, the y of the attempts and c ∘ s1, c ∘ s2, w and w − cs2 of the accepted one; with a positive control (Linux) |
+| `mldsa_sk_check` | private keys with each out-of-range code of s1 and s2 (FIPS 204, Algorithm 25), all of s1 or s2 out of range, changes within the range, and changed ρ, K, tr or t0, all made from a fixed seed: every signing function refuses the malformed ones (`OPENPQC_MLDSA_ERR_INVALID_KEY`, an all-zero signature) and `check_sk` and `check_keypair` find every change except of K; `check_keypair` also finds a changed ρ or t1 of pk, and a valid sk with the pk of another key |
+| `mldsa_stack` | no secret intermediate value on the stack (FIPS 204 §3.6.3) after KeyGen (from a seed, and randomized), the key checks, Sign (deterministic; hedged, HashML-DSA and external μ with rnd from the test's `randombytes()`; at the bound of Appendix C), ExpandMask on its own, external μ and Verify (also HashML-DSA): the stack is copied after each call and searched at every byte offset for ξ, rnd, ρ′, K, ρ″, μ, PH(M), s1 and s2 (also as sk packs them), the values of every attempt (y, ExpandMask's output v, w, c ∘ s1, c ∘ s2, w − cs2, r0, and z and w1 of the rejected ones), Verify's values (w1Encode(w1′) and c̃′ among them), the final states of the sponges that absorb secrets or μ, and, lane by lane, the last two rounds and the output of the last Keccak-f of each of those sponges; with positive controls (Linux; under AddressSanitizer the test turns the fake stack off for itself, reports itself skipped if frames are not on the stack all the same, and reports Keccak lanes it finds without counting them, as the sanitizer instruments Core's clearing too) |
+| `mldsa_thread_stack`, `mldsa_thread_stack_pct` | every function of the C API, for each parameter set, on a thread with the stack that `openpqc_mldsa.h` documents (`OPENPQC_MLDSAnn_STACK_BYTES`), and the stack it uses: below its caller's frame, which must not exceed the function's entry in the table of Memory (above) and of the header, and in all, which must leave a margin of 16 KiB to the documented size (optimized builds); on a stack that is too small, KeyGen, Sign and Verify of ML-DSA-87 must end in a fault at the guard page and write nothing below it (`-fstack-clash-protection`); on 128 KiB, musl's default, Sign of ML-DSA-44 must succeed and that of ML-DSA-65 and -87 may only fault at the guard page; `_pct` for the library with the pair-wise consistency test (Linux; skipped under AddressSanitizer) |
 | `mldsa_sycl` | the SYCL backend against this library on every SYCL device, also from two host threads at once (label `gpu`) |
 
 The tests were checked by mutation: changing the sign in SampleInBall, the norm bound of Verify, the signature-length
@@ -413,4 +485,12 @@ or loosening the length check of `hash_verify`, `verify_mu` or `verify_internal`
 loop, and ⊥ instead of false for a long context string in Verify. `mldsa_stack` fails on the code from before `Poly`
 destroyed itself (210 secret pieces left on the stack with GCC 16, 258 with Clang 23), and `mldsa_sycl` fails
 without the lock of the GPU context: the two threads then get some 1,500–1,800 wrong signatures per run (RTX 3050
-and Iris Xe, three runs each).
+and Iris Xe, three runs each). With GCC 16 at -O3, `mldsa_stack` also fails when any one of these destructions is
+taken out: of ξ (KeyGen), rnd (hedged Sign, HashML-DSA.Sign and `sign_mu`), the seeds of KeyGen, ρ″, ExpandMask's
+v, μ in Sign or in Verify, Verify's w1Encode(w1′) or c̃′, the regenerated key of the key check, the state of an
+`Xof`, or the self-destruction of `Poly`; and when `external_mu` keeps a copy of μ (with Clang 23 too, for the ones
+tried there: ξ, rnd, v, μ in Verify, c̃′ and the key check's key). Inside Sign, a v left behind is overwritten by the
+rest of the attempt (GCC 16 and Clang 23), so the test also runs ExpandMask on its own. `mldsa_sk_check` fails
+without the range check of `sk_decode` and without the comparison of the regenerated key; `mldsa_thread_stack` fails
+without `-fstack-clash-protection` (16 to 51 KB written below the guard page, also by Sign of ML-DSA-87 on musl's
+128 KiB) and, with Clang 23, with operations that take their operands by value.

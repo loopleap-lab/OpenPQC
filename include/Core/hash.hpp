@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // hash.hpp  --  C++ interface to FIPS 202 (SHA-3, SHAKE) and FIPS 180-4 (SHA-2)
 //
 // Header-only wrappers over the C11 code in Core/opqc_sha3.h and
@@ -13,6 +16,17 @@
 //   shake128_absorb(st, part2);
 //   shake128_finalize(st);
 //   shake128_squeeze(out, st);                   // any number of times
+//
+// The incremental functions follow the phases of the sponge (opqc_sha3.h):
+// init, any number of absorbs, finalize once, then any number of squeezes.
+// Each returns true when it has done its work, and false for a call out of
+// that order (an absorb after finalize, a squeeze before it, a second
+// finalize) or on a state that init never started: the state is then
+// unchanged, and a refused squeeze sets its output to zero, as the C function
+// does. squeezeblocks also returns false when out cannot hold the blocks, and
+// then writes nothing. A keccak_state destroys its state when it goes out of
+// scope, as Xof does (Core/xof.hpp), and the one-shot functions destroy
+// theirs and clear the stack their computation used (opqc_sha3.h).
 #pragma once
 
 #include <array>
@@ -20,6 +34,7 @@
 #include <cstdint>
 #include <span>
 
+#include "opqc_platform.h"
 #include "opqc_sha2.h"
 #include "opqc_sha3.h"
 
@@ -32,59 +47,62 @@ inline constexpr std::size_t SHA3_256_RATE = OPQC_SHA3_256_RATE;
 inline constexpr std::size_t SHA3_384_RATE = OPQC_SHA3_384_RATE;
 inline constexpr std::size_t SHA3_512_RATE = OPQC_SHA3_512_RATE;
 
-// State of an incremental SHAKE computation
+// State of an incremental SHAKE computation: no sponge until shake128_init or
+// shake256_init (all zero, every other call is refused); destroyed when it goes
+// out of scope (FIPS 203, Section 3.3; FIPS 204, Section 3.6.3)
 struct keccak_state {
     opqc_sponge sponge{};
+    ~keccak_state() { opqc_zeroize(&sponge, sizeof sponge); }
 };
 
 // --- SHAKE128 ----------------------------------------------------------------
 
-inline void shake128_init(keccak_state& state) {
-    opqc_sponge_init(&state.sponge, OPQC_SHAKE128_RATE);
+inline bool shake128_init(keccak_state& state) {
+    return opqc_sponge_init(&state.sponge, OPQC_SHAKE128_RATE) == OPQC_SPONGE_OK;
 }
-inline void shake128_absorb(keccak_state& state, std::span<const std::uint8_t> in) {
-    opqc_sponge_absorb(&state.sponge, in.data(), in.size());
+inline bool shake128_absorb(keccak_state& state, std::span<const std::uint8_t> in) {
+    return opqc_sponge_absorb(&state.sponge, in.data(), in.size()) == OPQC_SPONGE_OK;
 }
-inline void shake128_finalize(keccak_state& state) {
-    opqc_sponge_finalize(&state.sponge, OPQC_SHAKE_SUFFIX);
+inline bool shake128_finalize(keccak_state& state) {
+    return opqc_sponge_finalize(&state.sponge, OPQC_SHAKE_SUFFIX) == OPQC_SPONGE_OK;
 }
-inline void shake128_squeeze(std::span<std::uint8_t> out, keccak_state& state) {
-    opqc_sponge_squeeze(&state.sponge, out.data(), out.size());
+inline bool shake128_squeeze(std::span<std::uint8_t> out, keccak_state& state) {
+    return opqc_sponge_squeeze(&state.sponge, out.data(), out.size()) == OPQC_SPONGE_OK;
 }
 // init + absorb + finalize
-inline void shake128_absorb_once(keccak_state& state, std::span<const std::uint8_t> in) {
-    shake128_init(state);
-    shake128_absorb(state, in);
-    shake128_finalize(state);
+inline bool shake128_absorb_once(keccak_state& state, std::span<const std::uint8_t> in) {
+    return shake128_init(state) && shake128_absorb(state, in) && shake128_finalize(state);
 }
-// Squeezes nblocks whole blocks (nblocks * SHAKE128_RATE bytes) into the start of out
-inline void shake128_squeezeblocks(std::span<std::uint8_t> out, std::size_t nblocks,
+// Squeezes nblocks whole blocks (nblocks * SHAKE128_RATE bytes) into the start of out;
+// refused (false) without writing anything if out is shorter, and like shake128_squeeze
+// (false, the blocks set to zero) on a state that is not squeezing
+inline bool shake128_squeezeblocks(std::span<std::uint8_t> out, std::size_t nblocks,
                                    keccak_state& state) {
-    shake128_squeeze(out.first(nblocks * SHAKE128_RATE), state);
+    if (nblocks > out.size() / SHAKE128_RATE) return false;
+    return shake128_squeeze(out.first(nblocks * SHAKE128_RATE), state);
 }
 
 // --- SHAKE256 ----------------------------------------------------------------
 
-inline void shake256_init(keccak_state& state) {
-    opqc_sponge_init(&state.sponge, OPQC_SHAKE256_RATE);
+inline bool shake256_init(keccak_state& state) {
+    return opqc_sponge_init(&state.sponge, OPQC_SHAKE256_RATE) == OPQC_SPONGE_OK;
 }
-inline void shake256_absorb(keccak_state& state, std::span<const std::uint8_t> in) {
-    opqc_sponge_absorb(&state.sponge, in.data(), in.size());
+inline bool shake256_absorb(keccak_state& state, std::span<const std::uint8_t> in) {
+    return opqc_sponge_absorb(&state.sponge, in.data(), in.size()) == OPQC_SPONGE_OK;
 }
-inline void shake256_finalize(keccak_state& state) {
-    opqc_sponge_finalize(&state.sponge, OPQC_SHAKE_SUFFIX);
+inline bool shake256_finalize(keccak_state& state) {
+    return opqc_sponge_finalize(&state.sponge, OPQC_SHAKE_SUFFIX) == OPQC_SPONGE_OK;
 }
-inline void shake256_squeeze(std::span<std::uint8_t> out, keccak_state& state) {
-    opqc_sponge_squeeze(&state.sponge, out.data(), out.size());
+inline bool shake256_squeeze(std::span<std::uint8_t> out, keccak_state& state) {
+    return opqc_sponge_squeeze(&state.sponge, out.data(), out.size()) == OPQC_SPONGE_OK;
 }
-inline void shake256_absorb_once(keccak_state& state, std::span<const std::uint8_t> in) {
-    shake256_init(state);
-    shake256_absorb(state, in);
-    shake256_finalize(state);
+inline bool shake256_absorb_once(keccak_state& state, std::span<const std::uint8_t> in) {
+    return shake256_init(state) && shake256_absorb(state, in) && shake256_finalize(state);
 }
-inline void shake256_squeezeblocks(std::span<std::uint8_t> out, std::size_t nblocks,
+inline bool shake256_squeezeblocks(std::span<std::uint8_t> out, std::size_t nblocks,
                                    keccak_state& state) {
-    shake256_squeeze(out.first(nblocks * SHAKE256_RATE), state);
+    if (nblocks > out.size() / SHAKE256_RATE) return false;
+    return shake256_squeeze(out.first(nblocks * SHAKE256_RATE), state);
 }
 
 // --- One-shot functions ------------------------------------------------------

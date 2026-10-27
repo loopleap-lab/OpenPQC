@@ -11,6 +11,9 @@
  *   ML-DSA (FIPS 204, Section 5)
  *   int openpqc_mldsaNN_keypair(pk, sk);                       ML-DSA.KeyGen (Alg. 1)
  *   int openpqc_mldsaNN_keypair_derand(pk, sk, seed[32]);      the same from the seed xi (Alg. 6)
+ *   int openpqc_mldsaNN_check_sk(sk);                          check of a stored or imported sk
+ *   int openpqc_mldsaNN_check_keypair(pk, sk);                 the same for a key pair (neither is
+ *                                                              in FIPS 204; see Private keys)
  *   int openpqc_mldsaNN_sign(sig, m, mlen, ctx, ctxlen, sk);   ML-DSA.Sign, hedged (Alg. 2)
  *   int openpqc_mldsaNN_sign_derand(sig, m, mlen, ctx, ctxlen, rnd[32], sk)
  *                                                              the same with rnd given; rnd = 0^32
@@ -46,6 +49,61 @@
  * for testing, for expanding a stored seed, and for the deterministic variant
  * of signing (FIPS 204, Sections 3.4 and 6). The implementation is
  * ML/DSA/mldsa.cpp, with the algorithms in ML/DSA/scheme.
+ *
+ * Private keys. sk must come from keypair or keypair_derand, or from storage
+ * or a party that is trusted: FIPS 204 decodes sk without checking it and runs
+ * skDecode only on input from a trusted source (Section 7.2). The signing
+ * functions refuse a malformed sk, one with a coefficient of s1 or s2 outside
+ * [-eta, eta] (which such input can give, Algorithm 25, lines 3 and 6), with
+ * OPENPQC_MLDSA_ERR_INVALID_KEY and an all-zero signature; the check runs in
+ * constant time. Any other change of sk is signed with, as FIPS 204 specifies,
+ * and the result is 0: after a change of rho or tr, or of s1 within the range,
+ * the signatures do not verify, after a change of s2 or t0 some still do, and
+ * a change of K goes unnoticed, as every K is valid.
+ * check_sk checks a stored or imported sk completely except for K, in constant
+ * time and at about the cost of KeyGen: it regenerates the key from its rho, s1
+ * and s2 as KeyGen does (Algorithm 6) and returns 0 if sk is that key, and
+ * OPENPQC_MLDSA_ERR_INVALID_KEY otherwise. sk holds only the hash tr = H(pk, 64)
+ * of its public key; check_keypair also checks a pk stored or received apart
+ * from sk: 0 if, besides, pk is the public key regenerated from sk. Storing the
+ * 32-byte seed xi in place of sk and expanding it with keypair_derand avoids
+ * the question (Section 3.6.3); the seed needs the same protection as sk.
+ *
+ * Stack. The functions keep whole matrices and vectors of polynomials on the
+ * stack. One call needs at most, below the frame of its caller (the largest
+ * of GCC 16 and Clang 23 at -O2, -O3 and -Os on x86-64, rounded up to whole
+ * KiB, plus 1 KiB for other compiler versions;
+ * tests/ML-DSA/test_mldsa_thread_stack measures every function and checks it
+ * against this table):
+ *
+ *                                         ML-DSA-44   ML-DSA-65   ML-DSA-87
+ *   keypair, keypair_derand                  52 KiB      80 KiB     122 KiB
+ *     built with OPENPQC_MLDSA_KEYGEN_PCT    87 KiB     130 KiB     190 KiB
+ *   check_sk, check_keypair                  56 KiB      86 KiB     129 KiB
+ *   every signing function                   85 KiB     127 KiB     186 KiB
+ *   every verification function              64 KiB      99 KiB     147 KiB
+ *   external_mu                            under 4 KiB
+ *
+ * A thread that calls the functions of a parameter set needs a stack of
+ * OPENPQC_MLDSAnn_STACK_BYTES (below), which also covers the thread library's
+ * share of the stack (about 6 KiB with glibc), a signal frame and the first
+ * frames of the caller; deeper frames of the caller come on top. glibc gives a
+ * thread created without a stack size the stack limit (ulimit -s, usually
+ * 8 MiB), but musl (Alpine Linux, and other musl-based systems and container
+ * images) gives it 128 KiB, std::thread included: enough, with 4 KiB to spare,
+ * for every function of ML-DSA-44, for KeyGen without the pair-wise
+ * consistency test, the key checks and verification of ML-DSA-65, and for
+ * KeyGen without the test and external_mu of ML-DSA-87, but not for signing
+ * with ML-DSA-65 or ML-DSA-87. Set the size with pthread_attr_setstacksize, or
+ * for musl's default with the linker option -Wl,-z,stack-size=N; thread pools
+ * and coroutine libraries have settings of their own. Unoptimized builds: GCC
+ * 16 at -O0 stays within the table, Clang 23 at -O0 needs up to 278 KiB (Sign
+ * of ML-DSA-87) and 282 KiB (KeyGen of ML-DSA-87 with the pair-wise
+ * consistency test). The library is compiled with
+ * -fstack-clash-protection where the compiler has it
+ * (cmake/OpenPQCWarnings.cmake): on a stack that is too small a call then ends
+ * in a fault at the guard page, instead of writing below the guard page into
+ * whatever is mapped there.
  */
 
 #ifndef OPENPQC_MLDSA_H
@@ -70,12 +128,21 @@
 #define MLDSA87_SECRETKEYBYTES 4896
 #define MLDSA87_BYTES 4627
 
+/* The stack to give a thread that calls the functions of a parameter set (see
+ * Stack above), e.g. pthread_attr_setstacksize(&attr, OPENPQC_MLDSA87_STACK_BYTES) */
+#define OPENPQC_MLDSA44_STACK_BYTES (128 * 1024)
+#define OPENPQC_MLDSA65_STACK_BYTES (160 * 1024)
+#define OPENPQC_MLDSA87_STACK_BYTES (224 * 1024)
+
 #define OPENPQC_MLDSA_OK 0
 #define OPENPQC_MLDSA_ERR_INVALID_SIGNATURE (-1) /* verification failed (also: wrong siglen, ctx > 255 bytes) */
 #define OPENPQC_MLDSA_ERR_INVALID_ARGUMENT (-2)  /* signing with ctx longer than 255 bytes, unknown ph */
 #define OPENPQC_MLDSA_ERR_RNG_FAIL (-3)          /* no randomness available */
 #define OPENPQC_MLDSA_ERR_SIGNING_LIMIT (-4)     /* 821 signing attempts failed (FIPS 204, App. C, errata) */
 #define OPENPQC_MLDSA_ERR_PCT_FAIL (-5)          /* pair-wise consistency test failed */
+#define OPENPQC_MLDSA_ERR_INVALID_KEY (-6)       /* malformed sk: s1 or s2 outside [-eta, eta] (signing),
+                                                    or not a key KeyGen gives (check_sk, check_keypair);
+                                                    see Private keys */
 
 /* Pre-hash functions of HashML-DSA: the values of Core/openpqc_prehash.h, which
  * HashSLH-DSA shares. The value is the last component of the function's OID
@@ -103,6 +170,9 @@ extern "C" {
     int openpqc_mldsa##N##_keypair_derand(uint8_t pk[MLDSA##N##_PUBLICKEYBYTES],                      \
                                           uint8_t sk[MLDSA##N##_SECRETKEYBYTES],                      \
                                           const uint8_t seed[MLDSA_SEEDBYTES]);                        \
+    int openpqc_mldsa##N##_check_sk(const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                     \
+    int openpqc_mldsa##N##_check_keypair(const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES],                 \
+                                         const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                \
     int openpqc_mldsa##N##_sign(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m, size_t mlen,         \
                                 const uint8_t *ctx, size_t ctxlen,                                     \
                                 const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                         \

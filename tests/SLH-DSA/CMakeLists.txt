@@ -78,12 +78,37 @@ if(_openpqc)
     target_compile_definitions(openpqc_slhdsa_pct_fail_objects PRIVATE OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST)
     target_compile_definitions(test_slhdsa_pct_fail PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
 
+    #   slhdsa_pct_odr   slhdsa_pct_fail with an application's own copies of the scheme layer's KeyGen
+    #                    templates, compiled without the test and linked first (test_slhdsa_pct_odr.cpp): the
+    #                    linker must not let them take the place of the library's, whose KeyGen must still fail
+    add_executable(test_slhdsa_pct_odr test_slhdsa_pct_odr.cpp test_slhdsa_pct.c
+                                       $<TARGET_OBJECTS:openpqc_slhdsa_pct_fail_objects>)
+    target_include_directories(test_slhdsa_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_definitions(test_slhdsa_pct_odr PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
+    target_compile_features(test_slhdsa_pct_odr PRIVATE cxx_std_20)
+    target_link_libraries(test_slhdsa_pct_odr PRIVATE openpqc_core openpqc_strict_warnings)
+    set_target_properties(test_slhdsa_pct_odr PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                         C_EXTENSIONS OFF)
+    add_test(NAME slhdsa_pct_odr COMMAND test_slhdsa_pct_odr)
+
     #   slhdsa_stack   no secret intermediate values left on the stack after KeyGen, Sign and Verify
     #                  (FIPS 205, Section 3.1), also in the byte-swapped word images of SHA-2's message
-    #                  schedule; the library as built, through the C API (its _testrng variant, so that
-    #                  the randomness is known); the scheme layer's own destruction without the burn; and
-    #                  no writes below the guard page of a stack that is too short. Linux only: the test
-    #                  finds the stack in /proc/self/maps.
+    #                  schedule and in the words that SHA-2's compressions leave; the library as built,
+    #                  through the C API (its _testrng variant, so that the randomness is known); the
+    #                  scheme layer's own destruction without the burn; the library's own KeyGen and Sign
+    #                  without the burn, whose residue the search must find; and no writes below the guard
+    #                  page of a stack that is too short. Linux only: the test finds the stack in
+    #                  /proc/self/maps.
+    #   slhdsa_stack_pct   the same test against the library built with the pair-wise consistency test
+    #                      (OPENPQC_SLHDSA_KEYGEN_PCT) and without -fstack-clash-protection, whose probes
+    #                      would hide whether the library touches its large frames itself (an application may
+    #                      compile slhdsa.cpp without the flag): KeyGen of every set, which now signs and
+    #                      verifies, leaves neither its secrets nor the test's signature; KeyGen (with the
+    #                      test's frame of 49,856 bytes, the largest signature), Sign and Verify of
+    #                      SLH-DSA-SHA2-256f on short stacks end in a fault at the guard page, never below it;
+    #                      and in the compiler's report of the library's frames (-fstack-usage), every frame of
+    #                      3.5 KiB or more is one that the library touches before it is entered (openpqc_slhdsa.h,
+    #                      "Stack"; x86-64)
     find_package(Threads)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND Threads_FOUND)
         add_executable(test_slhdsa_stack test_slhdsa_stack.cpp)
@@ -92,6 +117,46 @@ if(_openpqc)
                                                         Threads::Threads)
         target_compile_features(test_slhdsa_stack PRIVATE cxx_std_20)
         add_test(NAME slhdsa_stack COMMAND test_slhdsa_stack)
+
+        # slhdsa_stack_pct: the library's object (slhdsa_no_stack_clash_protection.cpp) and the test's own
+        # (test_slhdsa_stack_pct.cpp, which holds copies of the library's inline functions and templates that
+        # the linker may keep instead of the library's) without -fstack-clash-protection, and without link-time
+        # optimization, so that both are compiled to code with these options when the build uses it; a file's
+        # options come after its target's, and so after those of openpqc_strict_warnings. The library's object
+        # also with -fstack-usage: the compiler writes the report of its frames next to it, and the test reads it.
+        include(CheckCompilerFlag)
+        check_compiler_flag(CXX -fno-stack-clash-protection OPENPQC_CXX_HAS_NO_STACK_CLASH_PROTECTION)
+        check_compiler_flag(CXX -fno-lto OPENPQC_CXX_HAS_NO_LTO)
+        check_compiler_flag(CXX -fstack-usage OPENPQC_CXX_HAS_STACK_USAGE)
+        set(_unprotected_options "")
+        if(OPENPQC_CXX_HAS_NO_STACK_CLASH_PROTECTION)
+            list(APPEND _unprotected_options -fno-stack-clash-protection)
+        endif()
+        if(OPENPQC_CXX_HAS_NO_LTO)
+            list(APPEND _unprotected_options -fno-lto)
+        endif()
+        set(_library_options ${_unprotected_options})
+        set(_frames "")
+        if(OPENPQC_CXX_HAS_STACK_USAGE)
+            list(APPEND _library_options -fstack-usage)
+            set(_frames --frames $<TARGET_OBJECTS:openpqc_slhdsa_pct_unprotected_objects>)
+        endif()
+        set_source_files_properties(slhdsa_no_stack_clash_protection.cpp
+                                    PROPERTIES COMPILE_OPTIONS "${_library_options}")
+        set_source_files_properties(test_slhdsa_stack_pct.cpp PROPERTIES COMPILE_OPTIONS "${_unprotected_options}")
+        add_library(openpqc_slhdsa_pct_unprotected_objects OBJECT slhdsa_no_stack_clash_protection.cpp)
+        target_include_directories(openpqc_slhdsa_pct_unprotected_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_compile_definitions(openpqc_slhdsa_pct_unprotected_objects PRIVATE OPENPQC_SLHDSA_KEYGEN_PCT)
+        target_compile_features(openpqc_slhdsa_pct_unprotected_objects PRIVATE cxx_std_20)
+        target_link_libraries(openpqc_slhdsa_pct_unprotected_objects PRIVATE openpqc_strict_warnings)
+        add_executable(test_slhdsa_stack_pct test_slhdsa_stack_pct.cpp
+                                             $<TARGET_OBJECTS:openpqc_slhdsa_pct_unprotected_objects>)
+        target_include_directories(test_slhdsa_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/tests
+                                                                 ${PROJECT_SOURCE_DIR}/include)
+        target_link_libraries(test_slhdsa_stack_pct PRIVATE openpqc_core_testrng openpqc_strict_warnings
+                                                            Threads::Threads)
+        target_compile_features(test_slhdsa_stack_pct PRIVATE cxx_std_20)
+        add_test(NAME slhdsa_stack_pct COMMAND test_slhdsa_stack_pct ${_frames})
     endif()
 
     #   slhdsa_ct   test_slhdsa_ct.c under valgrind: randombytes() marks its output as secret, the library

@@ -24,7 +24,17 @@
  *
  * Messages are byte strings. FIPS 180-4 also defines lengths that are not a
  * multiple of 8 bits; this code does not support them. The functions have no
- * data-dependent branches or memory indices, so they may hash secret data.
+ * data-dependent branches or memory indices: their timing depends on the
+ * lengths only, not on the bytes hashed.
+ *
+ * Destruction of intermediate values. A state holds the last message block
+ * and H, the digest so far, and the compression functions keep the message
+ * schedule W in their frame (or in spill slots of the compiler's), from which
+ * the block follows: any 16 consecutive words W_t give it back, by step 1 of
+ * Section 6.2.2 run backwards. The one-shot functions destroy all of it
+ * before they return (see there); with the incremental functions the state
+ * belongs to the caller, which destroys it, and a caller that hashes a secret
+ * also clears the stack below it (SLH/DSA/scheme/slhdsa_internal.hpp).
  *
  * Two levels. The compression functions proper take the block as its 16 words
  * (opqc_sha256_compress_words, opqc_sha512_compress_words); GPU kernels call
@@ -42,6 +52,154 @@
 #define OPQC_SHA2_H
 
 #include "opqc_common.h"
+
+/*
+ * Clearing what a computation leaves on the stack: OPQC_STACK_BURN,
+ * OPQC_STACK_FRAME, OPQC_BURN_STACK(), OPQC_BURN_STACK_HASH() and opqc_wipe,
+ * documented in opqc_keccak.h. The two headers define this block identically,
+ * so that each compiles alone; the first one included defines it.
+ */
+#ifndef OPQC_STACK_BURN_DEFINED
+#define OPQC_STACK_BURN_DEFINED
+#if defined(SYCL_LANGUAGE_VERSION) || defined(__SYCL_DEVICE_ONLY__) ||         \
+    defined(__CUDACC__)
+#define OPQC_STACK_BURN_DEVICE 1
+#elif defined(__GNUC__) || defined(__clang__)
+#define OPQC_STACK_BURN 1
+#define OPQC_STACK_BURN_NOINLINE static __attribute__((noinline, unused))
+#if !defined(OPQC_CONFIG_NO_ASM_VALUE_BARRIER)
+#define OPQC_STACK_BURN_ASM 1
+#endif
+#if defined(__has_attribute) &&                                                \
+    (defined(__x86_64__) || defined(__i386__) || defined(__aarch64__))
+#if __has_attribute(zero_call_used_regs)
+#define OPQC_STACK_BURN_REGS 1
+#define OPQC_STACK_FRAME_REGS __attribute__((zero_call_used_regs("all")))
+#define OPQC_STACK_FRAME_GPRS __attribute__((zero_call_used_regs("all-gpr")))
+#endif
+#endif
+#elif defined(_MSC_VER)
+#define OPQC_STACK_BURN 1
+#define OPQC_STACK_BURN_NOINLINE static inline __declspec(noinline)
+#endif
+#if !defined(OPQC_STACK_BURN_REGS)
+#define OPQC_STACK_FRAME_REGS
+#define OPQC_STACK_FRAME_GPRS
+#endif
+#if defined(OPQC_STACK_BURN)
+#define OPQC_STACK_FRAME OPQC_STACK_BURN_NOINLINE OPQC_STACK_FRAME_REGS
+#define OPQC_STACK_FRAME_GPR OPQC_STACK_BURN_NOINLINE OPQC_STACK_FRAME_GPRS
+#else
+#define OPQC_STACK_FRAME OPQC_INLINE
+#define OPQC_STACK_FRAME_GPR OPQC_INLINE
+#endif
+#if !defined(OPQC_STACK_BURN_DEVICE) && !defined(OPQC_STACK_BURN_ASM)
+#include <string.h>
+#endif
+
+#if !defined(__OPTIMIZE__) || defined(__SANITIZE_ADDRESS__)
+#define OPQC_STACK_BURN_DEEP 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) ||                                       \
+    __has_feature(undefined_behavior_sanitizer)
+#define OPQC_STACK_BURN_DEEP 1
+#endif
+#endif
+#if defined(OPQC_STACK_BURN_DEEP)
+#define OPQC_STACK_BURN_BYTES 3072
+#define OPQC_STACK_BURN_HASH_BYTES 3968
+#elif defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 4
+#define OPQC_STACK_BURN_BYTES 1024
+#define OPQC_STACK_BURN_HASH_BYTES 3072
+#else
+#define OPQC_STACK_BURN_BYTES 1024
+#define OPQC_STACK_BURN_HASH_BYTES 2048
+#endif
+
+OPQC_INLINE void opqc_wipe(void *p, size_t len)
+{
+#if defined(OPQC_STACK_BURN_DEVICE)
+    uint8_t *b = (uint8_t *)p;
+    for (size_t i = 0; i < len; i++) {
+        b[i] = 0;
+    }
+#elif defined(OPQC_STACK_BURN_ASM)
+    uint8_t *b = (uint8_t *)p;
+    for (size_t i = 0; i < len; i++) {
+        b[i] = 0;
+    }
+    __asm__ __volatile__("" : : "r"(b) : "memory");
+#else
+    /* It holds memset, but the compiler must read it at every call and
+     * cannot know what it calls (C11 6.7.3). One copy per translation unit;
+     * nothing writes to it. */
+    static void *(*const volatile set)(void *, int, size_t) = memset;
+    set(p, 0, len);
+#endif
+}
+
+#if defined(OPQC_STACK_BURN)
+#if defined(__has_attribute)
+#if __has_attribute(no_stack_protector)
+#define OPQC_STACK_BURN_NO_CANARY __attribute__((no_stack_protector))
+#endif
+#if __has_attribute(no_sanitize)
+#define OPQC_STACK_BURN_NO_ASAN __attribute__((no_sanitize("address")))
+#endif
+#endif
+#if !defined(OPQC_STACK_BURN_NO_CANARY)
+#define OPQC_STACK_BURN_NO_CANARY
+#endif
+#if !defined(OPQC_STACK_BURN_NO_ASAN)
+#define OPQC_STACK_BURN_NO_ASAN
+#endif
+OPQC_STACK_BURN_NOINLINE OPQC_STACK_BURN_NO_CANARY OPQC_STACK_BURN_NO_ASAN void
+opqc_burn_stack(void)
+{
+    uint64_t stack[OPQC_STACK_BURN_BYTES / 8];
+    opqc_wipe(stack, sizeof stack);
+}
+OPQC_STACK_BURN_NOINLINE OPQC_STACK_BURN_NO_CANARY OPQC_STACK_BURN_NO_ASAN void
+opqc_burn_stack_hash(void)
+{
+    uint64_t stack[OPQC_STACK_BURN_HASH_BYTES / 8];
+    opqc_wipe(stack, sizeof stack);
+}
+#if defined(OPQC_STACK_BURN_ASM)
+#define OPQC_STACK_BURN_FENCE() __asm__ __volatile__("")
+#else
+/* A read of a volatile object: something the caller must do after the call */
+OPQC_INLINE void opqc_burn_fence(void)
+{
+    static volatile unsigned char fence;
+    unsigned char x = fence;
+    (void)x;
+}
+#define OPQC_STACK_BURN_FENCE() opqc_burn_fence()
+#endif
+#define OPQC_BURN_STACK()                                                      \
+    do {                                                                       \
+        opqc_burn_stack();                                                     \
+        OPQC_STACK_BURN_FENCE();                                               \
+    } while (0)
+#define OPQC_BURN_STACK_HASH()                                                 \
+    do {                                                                       \
+        opqc_burn_stack_hash();                                                \
+        OPQC_STACK_BURN_FENCE();                                               \
+    } while (0)
+#else
+#define OPQC_BURN_STACK()                                                      \
+    do {                                                                       \
+    } while (0)
+#define OPQC_BURN_STACK_HASH()                                                 \
+    do {                                                                       \
+    } while (0)
+#endif
+#endif /* !OPQC_STACK_BURN_DEFINED */
+
+/* Results of opqc_sha256_finalize and opqc_sha512_finalize */
+#define OPQC_SHA2_OK 0
+#define OPQC_SHA2_ERR_INVALID_ARGUMENT (-2) /* refused: outlen above the digest size; nothing was changed */
 
 #define OPQC_SHA256_BLOCK_BYTES 64  /* SHA-224, SHA-256: 512-bit blocks */
 #define OPQC_SHA512_BLOCK_BYTES 128 /* SHA-384, SHA-512, SHA-512/t: 1024-bit blocks */
@@ -323,6 +481,24 @@ static const uint64_t opqc_sha512_H0[8] = {
     UINT64_C(0x6a09e667f3bcc908), UINT64_C(0xbb67ae8584caa73b), UINT64_C(0x3c6ef372fe94f82b),
     UINT64_C(0xa54ff53a5f1d36f1), UINT64_C(0x510e527fade682d1), UINT64_C(0x9b05688c2b3e6c1f),
     UINT64_C(0x1f83d9abfb41bd6b), UINT64_C(0x5be0cd19137e2179)};
+/* H(0) of SHA-224 (Section 5.3.2) */
+static const uint32_t opqc_sha224_H0[8] = {0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939,
+                                           0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4};
+/* H(0) of SHA-384 (Section 5.3.4) */
+static const uint64_t opqc_sha384_H0[8] = {
+    UINT64_C(0xcbbb9d5dc1059ed8), UINT64_C(0x629a292a367cd507), UINT64_C(0x9159015a3070dd17),
+    UINT64_C(0x152fecd8f70e5939), UINT64_C(0x67332667ffc00b31), UINT64_C(0x8eb44a8768581511),
+    UINT64_C(0xdb0c2e0d64f98fa7), UINT64_C(0x47b5481dbefa4fa4)};
+/* H(0) of SHA-512/224 (Section 5.3.6.1): the output of the SHA-512/t IV generation function for t = 224 */
+static const uint64_t opqc_sha512_224_H0[8] = {
+    UINT64_C(0x8C3D37C819544DA2), UINT64_C(0x73E1996689DCD4D6), UINT64_C(0x1DFAB7AE32FF9C82),
+    UINT64_C(0x679DD514582F9FCF), UINT64_C(0x0F6D2B697BD44DA8), UINT64_C(0x77E36F7304C48942),
+    UINT64_C(0x3F9D85A86A1D36C8), UINT64_C(0x1112E6AD91D692A1)};
+/* H(0) of SHA-512/256 (Section 5.3.6.2): the same for t = 256 */
+static const uint64_t opqc_sha512_256_H0[8] = {
+    UINT64_C(0x22312194FC2BF72C), UINT64_C(0x9F555FA3C84C64C2), UINT64_C(0x2393B86B6F53B151),
+    UINT64_C(0x963877195940EABD), UINT64_C(0x96283EE2A88EFFE3), UINT64_C(0xBE5E1E2553863992),
+    UINT64_C(0x2B0199FC2C85B8AA), UINT64_C(0x0EB72DDC81C52CA2)};
 
 OPQC_INLINE void opqc_sha256_set_iv(opqc_sha256_state *s, const uint32_t iv[8])
 {
@@ -342,9 +518,7 @@ OPQC_INLINE void opqc_sha512_set_iv(opqc_sha512_state *s, const uint64_t iv[8])
 /* Section 5.3.2 */
 OPQC_INLINE void opqc_sha224_init(opqc_sha256_state *s)
 {
-    static const uint32_t iv[8] = {0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939,
-                                   0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4};
-    opqc_sha256_set_iv(s, iv);
+    opqc_sha256_set_iv(s, opqc_sha224_H0);
 }
 /* Section 5.3.3 */
 OPQC_INLINE void opqc_sha256_init(opqc_sha256_state *s)
@@ -354,34 +528,22 @@ OPQC_INLINE void opqc_sha256_init(opqc_sha256_state *s)
 /* Section 5.3.4 */
 OPQC_INLINE void opqc_sha384_init(opqc_sha512_state *s)
 {
-    static const uint64_t iv[8] = {
-        UINT64_C(0xcbbb9d5dc1059ed8), UINT64_C(0x629a292a367cd507), UINT64_C(0x9159015a3070dd17),
-        UINT64_C(0x152fecd8f70e5939), UINT64_C(0x67332667ffc00b31), UINT64_C(0x8eb44a8768581511),
-        UINT64_C(0xdb0c2e0d64f98fa7), UINT64_C(0x47b5481dbefa4fa4)};
-    opqc_sha512_set_iv(s, iv);
+    opqc_sha512_set_iv(s, opqc_sha384_H0);
 }
 /* Section 5.3.5 */
 OPQC_INLINE void opqc_sha512_init(opqc_sha512_state *s)
 {
     opqc_sha512_set_iv(s, opqc_sha512_H0);
 }
-/* Section 5.3.6.1: the output of the SHA-512/t IV generation function for t = 224 */
+/* Section 5.3.6.1 */
 OPQC_INLINE void opqc_sha512_224_init(opqc_sha512_state *s)
 {
-    static const uint64_t iv[8] = {
-        UINT64_C(0x8C3D37C819544DA2), UINT64_C(0x73E1996689DCD4D6), UINT64_C(0x1DFAB7AE32FF9C82),
-        UINT64_C(0x679DD514582F9FCF), UINT64_C(0x0F6D2B697BD44DA8), UINT64_C(0x77E36F7304C48942),
-        UINT64_C(0x3F9D85A86A1D36C8), UINT64_C(0x1112E6AD91D692A1)};
-    opqc_sha512_set_iv(s, iv);
+    opqc_sha512_set_iv(s, opqc_sha512_224_H0);
 }
-/* Section 5.3.6.2: the same for t = 256 */
+/* Section 5.3.6.2 */
 OPQC_INLINE void opqc_sha512_256_init(opqc_sha512_state *s)
 {
-    static const uint64_t iv[8] = {
-        UINT64_C(0x22312194FC2BF72C), UINT64_C(0x9F555FA3C84C64C2), UINT64_C(0x2393B86B6F53B151),
-        UINT64_C(0x963877195940EABD), UINT64_C(0x96283EE2A88EFFE3), UINT64_C(0xBE5E1E2553863992),
-        UINT64_C(0x2B0199FC2C85B8AA), UINT64_C(0x0EB72DDC81C52CA2)};
-    opqc_sha512_set_iv(s, iv);
+    opqc_sha512_set_iv(s, opqc_sha512_256_H0);
 }
 
 /* --- Absorbing and finishing ----------------------------------------------- */
@@ -442,11 +604,16 @@ OPQC_INLINE void opqc_sha512_absorb(opqc_sha512_state *s, const uint8_t *in, siz
 /*
  * Pads the message (Section 5.1.1: a 1 bit, zeros up to 448 mod 512 bits,
  * then the message length in bits as a 64-bit integer), processes the last
- * block(s), and writes the first outlen bytes of H(N) to out
- * (outlen <= 32; 28 for SHA-224, Section 6.3).
+ * block(s), and writes the first outlen bytes of H(N) to out (28 for SHA-224,
+ * Section 6.3; 32 for SHA-256). Returns OPQC_SHA2_OK, or
+ * OPQC_SHA2_ERR_INVALID_ARGUMENT for outlen > 32, more than H(N) has: the call
+ * is then refused, and neither the state nor out is changed.
  */
-OPQC_INLINE void opqc_sha256_finalize(opqc_sha256_state *s, uint8_t *out, unsigned outlen)
+OPQC_INLINE int opqc_sha256_finalize(opqc_sha256_state *s, uint8_t *out, unsigned outlen)
 {
+    if (outlen > OPQC_SHA256_BYTES) {
+        return OPQC_SHA2_ERR_INVALID_ARGUMENT;
+    }
     unsigned pos = (unsigned)(s->length % OPQC_SHA256_BLOCK_BYTES);
     s->block[pos++] = 0x80;
     if (pos > OPQC_SHA256_BLOCK_BYTES - 8) { /* no room for the length in this block */
@@ -460,15 +627,19 @@ OPQC_INLINE void opqc_sha256_finalize(opqc_sha256_state *s, uint8_t *out, unsign
     for (unsigned i = 0; i < outlen; i++) {
         out[i] = (uint8_t)(s->H[i / 4] >> (24 - 8 * (i % 4)));
     }
+    return OPQC_SHA2_OK;
 }
 
 /*
  * Section 5.1.2: the same with 1024-bit blocks and a 128-bit length field
- * (outlen <= 64; 48 for SHA-384, 28 and 32 for SHA-512/224 and SHA-512/256,
- * Sections 6.5-6.7).
+ * (48 bytes of H(N) for SHA-384, 64 for SHA-512, 28 and 32 for SHA-512/224
+ * and SHA-512/256, Sections 6.4-6.7). Refuses outlen > 64 as above.
  */
-OPQC_INLINE void opqc_sha512_finalize(opqc_sha512_state *s, uint8_t *out, unsigned outlen)
+OPQC_INLINE int opqc_sha512_finalize(opqc_sha512_state *s, uint8_t *out, unsigned outlen)
 {
+    if (outlen > OPQC_SHA512_BYTES) {
+        return OPQC_SHA2_ERR_INVALID_ARGUMENT;
+    }
     unsigned pos = (unsigned)(s->length % OPQC_SHA512_BLOCK_BYTES);
     s->block[pos++] = 0x80;
     if (pos > OPQC_SHA512_BLOCK_BYTES - 16) {
@@ -483,51 +654,78 @@ OPQC_INLINE void opqc_sha512_finalize(opqc_sha512_state *s, uint8_t *out, unsign
     for (unsigned i = 0; i < outlen; i++) {
         out[i] = (uint8_t)(s->H[i / 8] >> (56 - 8 * (i % 8)));
     }
+    return OPQC_SHA2_OK;
 }
 
 /* --- One-shot functions ---------------------------------------------------- */
 
+/*
+ * The one-shot functions hash in a state of their own and destroy, before they
+ * return, everything the computation left that the caller cannot reach (FIPS
+ * 204, Section 3.6.3 and FIPS 205, Section 3.1 count messages as potentially
+ * sensitive; see the top of the file for what the state and the schedule
+ * hold). opqc_sha256_hash and opqc_sha512_hash run the computation from H(0) =
+ * iv and destroy the state; on CPUs (OPQC_STACK_BURN) they run in a frame of
+ * their own, and the stack where it and the compression functions' frames were
+ * is cleared after they return (OPQC_BURN_STACK_HASH, the size for one-shot
+ * hashes: on i686, GCC 16 at -O3 keeps the compression out of this frame and
+ * the three frames reach 1.25 KiB below the caller), with the message schedule
+ * and whatever the compiler spilled. In device code only the state is cleared.
+ */
+OPQC_STACK_FRAME void opqc_sha256_hash(uint8_t *out, unsigned outlen, const uint32_t iv[8],
+                                       const uint8_t *in, size_t inlen)
+{
+    opqc_sha256_state s;
+    opqc_sha256_set_iv(&s, iv);
+    opqc_sha256_absorb(&s, in, inlen);
+    opqc_sha256_finalize(&s, out, outlen);
+    opqc_wipe(&s, sizeof s);
+}
+OPQC_STACK_FRAME void opqc_sha512_hash(uint8_t *out, unsigned outlen, const uint64_t iv[8],
+                                       const uint8_t *in, size_t inlen)
+{
+    opqc_sha512_state s;
+    opqc_sha512_set_iv(&s, iv);
+    opqc_sha512_absorb(&s, in, inlen);
+    opqc_sha512_finalize(&s, out, outlen);
+    opqc_wipe(&s, sizeof s);
+}
+
+/* SHA-224(M), Section 6.3 */
 OPQC_INLINE void opqc_sha224(uint8_t out[OPQC_SHA224_BYTES], const uint8_t *in, size_t inlen)
 {
-    opqc_sha256_state s;
-    opqc_sha224_init(&s);
-    opqc_sha256_absorb(&s, in, inlen);
-    opqc_sha256_finalize(&s, out, OPQC_SHA224_BYTES);
+    opqc_sha256_hash(out, OPQC_SHA224_BYTES, opqc_sha224_H0, in, inlen);
+    OPQC_BURN_STACK_HASH();
 }
+/* SHA-256(M), Section 6.2 */
 OPQC_INLINE void opqc_sha256(uint8_t out[OPQC_SHA256_BYTES], const uint8_t *in, size_t inlen)
 {
-    opqc_sha256_state s;
-    opqc_sha256_init(&s);
-    opqc_sha256_absorb(&s, in, inlen);
-    opqc_sha256_finalize(&s, out, OPQC_SHA256_BYTES);
+    opqc_sha256_hash(out, OPQC_SHA256_BYTES, opqc_sha256_H0, in, inlen);
+    OPQC_BURN_STACK_HASH();
 }
+/* SHA-384(M), Section 6.5 */
 OPQC_INLINE void opqc_sha384(uint8_t out[OPQC_SHA384_BYTES], const uint8_t *in, size_t inlen)
 {
-    opqc_sha512_state s;
-    opqc_sha384_init(&s);
-    opqc_sha512_absorb(&s, in, inlen);
-    opqc_sha512_finalize(&s, out, OPQC_SHA384_BYTES);
+    opqc_sha512_hash(out, OPQC_SHA384_BYTES, opqc_sha384_H0, in, inlen);
+    OPQC_BURN_STACK_HASH();
 }
+/* SHA-512(M), Section 6.4 */
 OPQC_INLINE void opqc_sha512(uint8_t out[OPQC_SHA512_BYTES], const uint8_t *in, size_t inlen)
 {
-    opqc_sha512_state s;
-    opqc_sha512_init(&s);
-    opqc_sha512_absorb(&s, in, inlen);
-    opqc_sha512_finalize(&s, out, OPQC_SHA512_BYTES);
+    opqc_sha512_hash(out, OPQC_SHA512_BYTES, opqc_sha512_H0, in, inlen);
+    OPQC_BURN_STACK_HASH();
 }
+/* SHA-512/224(M), Section 6.6 */
 OPQC_INLINE void opqc_sha512_224(uint8_t out[OPQC_SHA512_224_BYTES], const uint8_t *in, size_t inlen)
 {
-    opqc_sha512_state s;
-    opqc_sha512_224_init(&s);
-    opqc_sha512_absorb(&s, in, inlen);
-    opqc_sha512_finalize(&s, out, OPQC_SHA512_224_BYTES);
+    opqc_sha512_hash(out, OPQC_SHA512_224_BYTES, opqc_sha512_224_H0, in, inlen);
+    OPQC_BURN_STACK_HASH();
 }
+/* SHA-512/256(M), Section 6.7 */
 OPQC_INLINE void opqc_sha512_256(uint8_t out[OPQC_SHA512_256_BYTES], const uint8_t *in, size_t inlen)
 {
-    opqc_sha512_state s;
-    opqc_sha512_256_init(&s);
-    opqc_sha512_absorb(&s, in, inlen);
-    opqc_sha512_finalize(&s, out, OPQC_SHA512_256_BYTES);
+    opqc_sha512_hash(out, OPQC_SHA512_256_BYTES, opqc_sha512_256_H0, in, inlen);
+    OPQC_BURN_STACK_HASH();
 }
 
 #endif /* !OPQC_SHA2_H */

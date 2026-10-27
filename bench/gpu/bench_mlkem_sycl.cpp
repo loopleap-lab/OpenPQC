@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // bench_mlkem_sycl.cpp  --  throughput and latency of OpenPQC ML-KEM on a SYCL device
 //
 // usage: bench_mlkem_sycl [levels=512,768,1024] [batches=1,32,...,65536] [trials=15]
@@ -85,14 +88,14 @@ void bench_level(int level, const std::vector<std::size_t>& batches, int trials,
     std::memcpy(h_ec.p, ec.data(), ec.size());
     check(opqc_sycl_mlkem_memcpy(ctx, d_kc.p, h_kc.p, kc.size()), "copy");
     check(opqc_sycl_mlkem_memcpy(ctx, d_ec.p, h_ec.p, ec.size()), "copy");
-    // valid keys and ciphertexts as inputs of Encaps and Decaps
+    // valid keys and ciphertexts as inputs of Encaps and Decaps (which require a status buffer)
+    auto* status = reinterpret_cast<std::int32_t*>(d_status.p);
     check(opqc_sycl_mlkem_keypair_derand(ctx, d_pk.p, d_sk.p, d_kc.p, nmax), "keypair");
-    check(opqc_sycl_mlkem_enc_derand(ctx, d_ct.p, d_ss.p, d_pk.p, d_ec.p, nullptr, nmax), "encaps");
+    check(opqc_sycl_mlkem_enc_derand(ctx, d_ct.p, d_ss.p, d_pk.p, d_ec.p, status, nmax), "encaps");
     check(opqc_sycl_mlkem_memcpy(ctx, h_pk.p, d_pk.p, s.pk * nmax), "copy");
     check(opqc_sycl_mlkem_memcpy(ctx, h_sk.p, d_sk.p, s.sk * nmax), "copy");
     check(opqc_sycl_mlkem_memcpy(ctx, h_ct.p, d_ct.p, s.ct * nmax), "copy");
 
-    auto* status = reinterpret_cast<std::int32_t*>(d_status.p);
     const auto sync = [&] { check(opqc_sycl_mlkem_sync(ctx), "sync"); };
     for (const std::size_t n : batches) {
         const auto keygen = [&] { opqc_sycl_mlkem_keypair_derand(ctx, d_pk.p, d_sk.p, d_kc.p, n); };

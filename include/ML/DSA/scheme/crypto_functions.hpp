@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // crypto_functions.hpp  --  the hash functions of ML-DSA (FIPS 204, Section 3.7) and IntegerToBytes
 //
 //   H(str, l) = SHAKE256(str, 8 l)      and the incremental H.Init / H.Absorb / H.Squeeze
@@ -8,6 +11,17 @@
 // IntegerToBytes(l, 1), 128). FIPS 204 hashes bit strings BytesToBits(tr) || M';
 // all of ML-DSA's inputs are byte strings, for which H on the bytes is the
 // same (Section 3.7). Every XOF state is destroyed after use (Section 3.6.3).
+//
+// Registers. Keccak-f computes in registers and returns with lanes of its last
+// round still in call-used ones, out of reach of the clearing of its frame
+// (Core/opqc_keccak.h); an optimizing compiler may later store such a register
+// into the caller's frame (GCC 16 at -O3 stored a lane of the last round's B of
+// ExpandMask's last permutation, left in r11, into ExpandMask's frame right
+// after the call). So the functions of the scheme layer that run a sponge on
+// secret input (H here, RejBoundedPoly, the message representative) are
+// OPENPQC_MLDSA_CLEARS_REGISTERS: never inlined, and their call-used registers
+// are zeroed when they return, where the compiler can (zero_call_used_regs:
+// GCC 11 and Clang 15 or later, on x86 and AArch64).
 #pragma once
 
 #include <array>
@@ -23,18 +37,27 @@ namespace openpqc::mldsa {
 using openpqc::ByteStrings;
 using openpqc::Xof;
 
+#if defined(__has_attribute) && (defined(__x86_64__) || defined(__i386__) || defined(__aarch64__))
+#if __has_attribute(zero_call_used_regs)
+#define OPENPQC_MLDSA_CLEARS_REGISTERS __attribute__((noinline, zero_call_used_regs("all")))
+#endif
+#endif
+#if !defined(OPENPQC_MLDSA_CLEARS_REGISTERS)
+#define OPENPQC_MLDSA_CLEARS_REGISTERS
+#endif
+
+// out <- H(str, |out|), written in place: for secret outputs (the seeds rho', K and rho''),
+// of which a returned copy could be left behind (Section 3.6.3)
+OPENPQC_MLDSA_CLEARS_REGISTERS inline void H(std::span<std::uint8_t> out, ByteStrings str) {
+    openpqc::sponge(OPQC_SHAKE256_RATE, OPQC_SHAKE_SUFFIX, out, str);
+}
+
 // H(str, L) = SHAKE256(str, 8 L): L bytes
 template <std::size_t L>
 std::array<std::uint8_t, L> H(ByteStrings str) {
     std::array<std::uint8_t, L> out;
-    openpqc::sponge(OPQC_SHAKE256_RATE, OPQC_SHAKE_SUFFIX, out, str);
+    H(out, str);
     return out;
-}
-
-// out <- H(str, |out|), written in place: for secret outputs (the seeds rho', K and rho''),
-// of which a returned copy could be left behind (Section 3.6.3)
-inline void H(std::span<std::uint8_t> out, ByteStrings str) {
-    openpqc::sponge(OPQC_SHAKE256_RATE, OPQC_SHAKE_SUFFIX, out, str);
 }
 
 // ctx <- H.Init()

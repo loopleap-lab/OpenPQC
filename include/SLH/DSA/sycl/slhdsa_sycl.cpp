@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // slhdsa_sycl.cpp  --  batched SLH-DSA (FIPS 205) on GPUs with SYCL 2020
 //
 // Runs many independent SLH-DSA operations at once on a SYCL device (NVIDIA and Intel GPUs,
@@ -70,8 +73,9 @@
 // Public, but zeroized all the same, as Verify's intermediate values are (FIPS 205, Section 3.1): the
 // PK.seed states, the digest and its parts, the roots (PK_FORS, the d layer roots and the k FORS roots,
 // all of which a verifier recomputes from the signature), the WOTS+ digits and Verify's chain ends.
-// Every section a call used is zeroized after every chunk, and all of them if a chunk fails; destroy
-// wipes the whole workspace; the tree stages clear their local memory before they end.
+// Every section a call used is zeroized after every chunk; the whole workspace once the context has
+// failed (the first call or sync that finds the failure: Core/sycl/opqc_sycl_context.hpp, Context::check)
+// and on destroy; the tree stages clear their local memory before they end.
 //
 // What is public, and what the kernels branch on. Secret: SK.seed, SK.prf, addrnd, the PRF outputs,
 // the chain values below the signed digits, the FORS leaves and nodes that the signature does not
@@ -1430,24 +1434,17 @@ extern "C" int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa** out, int param_set, st
     });
 }
 
-extern "C" void opqc_sycl_slhdsa_destroy(opqc_sycl_slhdsa* ctx) {
-    if (!ctx) return;
-    ctx->release();   // waits, wipes the whole workspace and frees it
-    delete ctx;
-}
+// Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device still accepts
+// work; a device error never ends the process here (Core/sycl/opqc_sycl_context.hpp, destroy)
+extern "C" void opqc_sycl_slhdsa_destroy(opqc_sycl_slhdsa* ctx) { openpqc::gpu::destroy(ctx); }
 
 extern "C" const char* opqc_sycl_slhdsa_device_name(const opqc_sycl_slhdsa* ctx) {
     return ctx ? ctx->device_name.c_str() : "";
 }
 
-extern "C" int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa* ctx) {
-    if (!ctx) return -1;
-    const Lock lock(ctx->mutex);
-    return guarded([&] {
-        ctx->queue.wait_and_throw();
-        return 0;
-    });
-}
+// Waits for all the work queued on the context: 0, or -2 if the context has failed, before or during the wait
+// (the first time, the whole workspace is zeroized); -1 for NULL (Core/sycl/opqc_sycl_context.hpp, sync)
+extern "C" int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa* ctx) { return openpqc::gpu::sync(ctx); }
 
 extern "C" int opqc_sycl_slhdsa_keypair_derand(opqc_sycl_slhdsa* ctx, std::uint8_t* pk, std::uint8_t* sk,
                                                const std::uint8_t* seeds, std::size_t n) {
@@ -1505,14 +1502,17 @@ CallMessages messages_from(const CallMessages& m, const MessageInfo& info, std::
     return r;
 }
 
-// put_context for the call: ctx, and for the pre-hash versions the OID after it
+// put_context for the call: ctx, and for the pre-hash versions the OID after it. Called with the lock held,
+// on a context that has not failed. An exception fails the context (Context::guard: what was queued cannot be
+// trusted), and check() then zeroizes the whole workspace once.
 int put_context(opqc_sycl_slhdsa* ctx, const CallMessages& m, const MessageInfo& info) {
-    return guarded([&] {
+    const int rc = ctx->guard([&] {
         if (m.form == Form::prehash)
             openpqc::gpu::put_context(ctx->queue, ctx->ws.ctx, m.ctxstr, m.ctxlen, info.oid.data(), info.oid.size());
         else openpqc::gpu::put_context(ctx->queue, ctx->ws.ctx, m.ctxstr, m.ctxlen);
         return 0;
     });
+    return rc == 0 ? 0 : ctx->check();
 }
 
 // The messages of the chunk off .. off + count - 1 in the kernels' form; for the pre-hash versions, the
@@ -1536,7 +1536,8 @@ gpu::MessageForm chunk_messages(opqc_sycl_slhdsa* ctx, const CallMessages& m, co
 int sign_checked(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const CallMessages& m, const MessageInfo& info,
                  const std::uint8_t* addrnd, const std::uint8_t* sk, bool one_key, std::size_t n) {
     const Lock lock(ctx->mutex);
-    const int rc = put_context(ctx, m, info);
+    int rc = ctx->check();   // a context that has failed queues nothing: -2
+    if (rc == 0) rc = put_context(ctx, m, info);
     if (rc != 0) return rc;
     return chunked(ctx, gpu::Kind::sign, n, [&](auto p, std::size_t off, std::size_t count) {
         using P = decltype(p);
@@ -1553,28 +1554,44 @@ int sign_any(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const CallMessages& m, co
     return sign_checked(ctx, sig, m, info, addrnd, sk, one_key, n);
 }
 
-// Fail closed (openpqc_slhdsa_sycl.h): sets the n results of a refused or failed verification call to
-// "invalid", if the context and the status buffer can be used
-void fail_closed(opqc_sycl_slhdsa* ctx, std::int32_t* status, std::size_t n) {
-    if (!ctx || !status || !openpqc::gpu::aligned(alignof(std::int32_t), status) || n == 0) return;
-    const Lock lock(ctx->mutex);
-    guarded([&] {
-        ctx->queue.fill(status, std::int32_t{OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE}, n);
-        return 0;
-    });
+// Fail closed (openpqc_slhdsa_sycl.h, Status): queues the fill of the n results of a verification call with
+// OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE (Core's fill_status), also on a context that has failed, as far as the
+// device still accepts work. A status buffer that cannot be used (NULL, or not 4-byte aligned: -1) is left
+// alone. `done`: also waits for the fill, and so for the work queued before it, so that a refused or failed
+// call leaves no write into the caller's status behind it: the caller may read, reuse or free status as soon
+// as the call returns (sycl::free does not wait, and on a host device a pending fill would write into freed
+// memory). Called with the lock held. An exception fails the context, and check() then zeroizes the whole
+// workspace once.
+int fail_closed(opqc_sycl_slhdsa* ctx, std::int32_t* status, std::size_t n, bool done) {
+    int rc = openpqc::gpu::fill_status(ctx, status, std::int32_t{OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE}, n);
+    if (rc == 0 && done && status && n > 0) {
+        rc = ctx->guard([&] {
+            ctx->queue.wait();
+            return 0;
+        });
+    }
+    return rc == -2 ? ctx->check() : rc;
 }
 
-// Verification in every form, under a public key per signature or (one_key) one public key for all
+// Verification in every form, under a public key per signature or (one_key) one public key for all. The
+// only device write of a verdict is verify_ht's, in a call's last stage: every entry is set to "invalid"
+// first, on the in-order queue before put_context and the first kernel, so that an entry that the kernels
+// never reach (a call that fails part way, a device fault found only by a later sync or copy) reads as
+// invalid instead of keeping what an earlier call left there, which may be a 0 ("valid"). A refused call
+// (-1) and a failed one (-2) set every entry to "invalid" (again), and return once that is done.
 int verify_any(opqc_sycl_slhdsa* ctx, const std::uint8_t* sig, const CallMessages& m, const std::uint8_t* pk,
                bool one_key, std::int32_t* status, std::size_t n) {
+    if (!ctx) return -1;
     MessageInfo info;
-    if (!ctx || !sig || !pk || !status || !check_messages(m, info) || !aligned(sig, pk) ||
+    const Lock lock(ctx->mutex);
+    if (!sig || !pk || !status || !check_messages(m, info) || !aligned(sig, pk) ||
         !openpqc::gpu::aligned(alignof(std::int32_t), status)) {
-        fail_closed(ctx, status, n);
+        fail_closed(ctx, status, n, true);
         return -1;
     }
-    const Lock lock(ctx->mutex);
-    int rc = put_context(ctx, m, info);
+    int rc = ctx->check();   // a context that has failed runs no kernel: -2, and the fill below
+    if (rc == 0) rc = fail_closed(ctx, status, n, false);
+    if (rc == 0) rc = put_context(ctx, m, info);
     if (rc == 0) {
         rc = chunked(ctx, gpu::Kind::verify, n, [&](auto p, std::size_t off, std::size_t count) {
             using P = decltype(p);
@@ -1584,7 +1601,7 @@ int verify_any(opqc_sycl_slhdsa* ctx, const std::uint8_t* sig, const CallMessage
                            status + off, count);
         });
     }
-    if (rc != 0) fail_closed(ctx, status, n);
+    if (rc != 0) fail_closed(ctx, status, n, true);   // behind the kernels that did run
     return rc;
 }
 
@@ -1771,10 +1788,12 @@ extern "C" void opqc_sycl_slhdsa_free(opqc_sycl_slhdsa* ctx, void* p) {
     if (ctx) openpqc::gpu::device_free(ctx->queue, p);
 }
 
+// The copies: -1 for NULL (a context, or dst or src with bytes > 0; nothing queued), -2 once the context has
+// failed (the copy is still made as far as the device allows)
 extern "C" int opqc_sycl_slhdsa_memcpy(opqc_sycl_slhdsa* ctx, void* dst, const void* src, std::size_t bytes) {
-    return ctx ? openpqc::gpu::copy(ctx->queue, dst, src, bytes, true) : -1;
+    return openpqc::gpu::copy(ctx, dst, src, bytes, true);
 }
 
 extern "C" int opqc_sycl_slhdsa_memcpy_async(opqc_sycl_slhdsa* ctx, void* dst, const void* src, std::size_t bytes) {
-    return ctx ? openpqc::gpu::copy(ctx->queue, dst, src, bytes, false) : -1;
+    return openpqc::gpu::copy(ctx, dst, src, bytes, false);
 }

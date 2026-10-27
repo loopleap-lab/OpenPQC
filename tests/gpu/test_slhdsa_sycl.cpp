@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // test_slhdsa_sycl.cpp  --  SLH-DSA on SYCL devices vs the CPU library: byte-identical outputs
 //
 // For each parameter set of FIPS 205, Table 2 (or those given), three configurations of random inputs --
@@ -36,11 +39,18 @@
 //                         its unusable status buffer writes nothing
 //   randomized            keypair, sign, prehash_sign, sign_one_key and prehash_sign_one_key on the device,
 //                         verified by the CPU (in chunks too: the second configuration)
+//   fresh randomness      what verification cannot see: two keypair calls give keys that equal keypair_derand
+//                         of the seeds in their sk, whose SK.seed, SK.prf and PK.seed are never zero and all
+//                         differ, and none of which is the key of the all-zero seeds; the four randomized
+//                         signing forms, signing one message n times under one key, give signatures whose R
+//                         (which then changes with addrnd alone) all differ, within a call and between calls,
+//                         and never equal the R of addrnd = 0^n or of the deterministic variant
 //   threads               (first configuration) two host threads, started together, each signing four times
 //                         through one context (max_batch 1: every call is n launches) with its own context
 //                         string, get the signatures of their own strings every time
-// Not tested: the refusal of a device with too little local memory, and the fail-closed path after a SYCL
-// exception (-2), which cannot be provoked from here.
+// Not tested here: the refusal of a device with too little local memory; the failure paths (-2, fail-closed
+// verification after a device fault, the failed context), which test_slhdsa_sycl_faults provokes by fault
+// injection.
 //
 // Usage: test_slhdsa_sycl [sets: all (default) or ids 1-12, e.g. 3,4]
 //                         [devices: all (default) or indices, e.g. 2 or 0,3]
@@ -187,8 +197,21 @@ struct Oracle {
             expected1_int;
     std::size_t valid = 0;
     Bytes ctx_a, ctx_b, want_a, want_b;
+    // fresh randomness (test_device): one message and its pre-hash PH(M), which the randomized calls sign n times
+    // under key 0; the R values of the four signatures of them under key 0 with addrnd = 0^n and with the
+    // deterministic variant (opt_rand = PK.seed); the public key of the all-zero seeds
+    Bytes one_msg, one_ph, zero_pk;
+    std::vector<Bytes> fixed_r;
     double seconds = 0;
 };
+
+// The number of values in v that equal another one
+std::size_t repeats(std::vector<Bytes> v) {
+    std::sort(v.begin(), v.end());
+    std::size_t r = 0;
+    for (std::size_t i = 1; i < v.size(); i++) r += v[i] == v[i - 1];
+    return r;
+}
 
 Oracle make_oracle(const CpuApi& api, std::size_t n, std::size_t max_batch, std::size_t ctxlen, bool first,
                    openpqc::PreHash ph) {
@@ -335,6 +358,32 @@ Oracle make_oracle(const CpuApi& api, std::size_t n, std::size_t max_batch, std:
     });
     for (std::size_t i = 0; i < n; i++) o.valid += o.expected[i] == 0;
     CHECK(o.valid >= (n + KINDS - 1) / KINDS);   // at least the unchanged ones
+
+    // fresh randomness: R = SIG[0 : n] (Algorithm 19, line 4) of M and of PH(M) under key 0, for addrnd = 0^n and
+    // for the deterministic variant (addrnd = NULL: opt_rand = PK.seed, line 2); and KeyGen of the all-zero seeds
+    o.one_msg = random_bytes(33);
+    {
+        std::array<std::uint8_t, openpqc::max_prehash_bytes> d{};
+        openpqc::prehash(d, ph, std::span<const std::uint8_t>(o.one_msg.data(), o.one_msg.size()));
+        o.one_ph.assign(d.begin(), d.begin() + static_cast<std::ptrdiff_t>(o.phlen));
+    }
+    o.fixed_r.assign(4, Bytes(S));
+    o.zero_pk.resize(api.pk);
+    {
+        const Bytes zero_rnd(N, 0), zero_seeds(api.seed, 0);
+        Bytes zero_sk(api.sk);
+        const std::uint8_t* m = o.one_msg.data();
+        const std::size_t mlen = o.one_msg.size();
+        parallel_for(5, [&](std::size_t i) {
+            const std::uint8_t* rnd = i % 2 == 0 ? zero_rnd.data() : nullptr;
+            if (i < 2) CHECK(api.sign_derand(o.fixed_r[i].data(), m, mlen, o.ctx.data(), ctxlen, rnd, &o.sk[0]) == 0);
+            else if (i < 4)
+                CHECK(api.prehash_sign_derand(o.fixed_r[i].data(), m, mlen, o.ctx.data(), ctxlen, phv, rnd,
+                                              &o.sk[0]) == 0);
+            else CHECK(api.keypair_derand(o.zero_pk.data(), zero_sk.data(), zero_seeds.data()) == 0);
+        });
+        for (auto& r : o.fixed_r) r.resize(N);
+    }
     o.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     return o;
 }
@@ -618,6 +667,93 @@ void test_device(int device, const Oracle& o) {
             CHECK(bad_random == 0);
         }
 
+        // Fresh randomness, which the checks above cannot see: keys and signatures made from zero, repeated or
+        // shared coins are valid all the same. FIPS 205, Section 3.1: SK.seed, SK.prf and PK.seed are fresh random
+        // values for every key pair (Algorithm 21); Section 9.2: addrnd is a fresh random value for every hedged
+        // signature (Algorithms 22 and 23).
+        //   keys  two keypair calls (in chunks in the second configuration): every key equals keypair_derand of
+        //         the seeds at the start of its sk (SK.seed || SK.prf || PK.seed, so PK.root comes from them),
+        //         none of these 3n values of a key is zero, all 6n of the two calls differ, and no PK.root is
+        //         that of the all-zero seeds
+        //   R     a signature starts with R = PRF_msg(SK.prf, addrnd, M') (Algorithm 19, lines 3-4), which for
+        //         one M' under one key changes with addrnd alone: each of the four randomized signing forms signs
+        //         one message (pure, or its pre-hash) n times under key 0, and a call of one operation adds one
+        //         more; the 4n + 1 R values all differ, none is the R of addrnd = 0^n or of the deterministic
+        //         variant, and the CPU verifies every signature
+        std::size_t bad_coins = 0;
+        {
+            std::vector<Bytes> seeds;   // SK.seed, SK.prf and PK.seed of every key
+            Bytes k_pk(o.pk.size()), k_sk(o.sk.size());
+            for (int call = 0; call < 2; call++) {
+                CHECK(opqc_sycl_slhdsa_keypair(c, d_pk.p, d_sk.p, n) == 0);
+                CHECK(opqc_sycl_slhdsa_sync(c) == 0);
+                d_pk.get(k_pk);
+                d_sk.get(k_sk);
+                std::vector<std::uint8_t> wrong(n, 0);
+                parallel_for(n, [&](std::size_t i) {
+                    const std::uint8_t* sk = &k_sk[i * api.sk];
+                    const std::uint8_t* pk = &k_pk[i * api.pk];
+                    Bytes cpu_pk(api.pk), cpu_sk(api.sk);
+                    const bool same = api.keypair_derand(cpu_pk.data(), cpu_sk.data(), sk) == 0 &&
+                                      std::memcmp(cpu_pk.data(), pk, api.pk) == 0 &&
+                                      std::memcmp(cpu_sk.data(), sk, api.sk) == 0;
+                    wrong[i] = !same || std::memcmp(pk + N, &o.zero_pk[N], N) == 0;   // PK = PK.seed || PK.root
+                });
+                for (std::size_t i = 0; i < n; i++) {
+                    bad_coins += wrong[i];
+                    for (std::size_t part = 0; part < 3; part++) {
+                        const std::uint8_t* v = &k_sk[i * api.sk + part * N];
+                        bad_coins += std::all_of(v, v + N, [](std::uint8_t b) { return b == 0; });
+                        seeds.emplace_back(v, v + N);
+                    }
+                }
+            }
+            bad_coins += repeats(seeds);
+
+            Batch one;
+            Bytes one_ph, one_sk;
+            for (std::size_t i = 0; i < n; i++) {
+                one.add(o.one_msg);
+                one_ph.insert(one_ph.end(), o.one_ph.begin(), o.one_ph.end());
+                one_sk.insert(one_sk.end(), o.sk.begin(), o.sk.begin() + static_cast<std::ptrdiff_t>(api.sk));
+            }
+            DeviceBuffer r_msg(c, one.bytes.size()), r_off(c, 8 * (n + 1)), r_ph(c, one_ph.size()),
+                    r_sk(c, one_sk.size());
+            r_msg.put(one.bytes);
+            r_off.put(one.offsets);
+            r_ph.put(one_ph);
+            r_sk.put(one_sk);
+            const auto* r_offsets = r_off.as<const std::uint64_t>();
+            std::vector<Bytes> rs;
+            const auto hedged = [&](int rc, bool prehash, std::size_t count) {   // R of the call's signatures
+                CHECK(rc == 0);
+                CHECK(opqc_sycl_slhdsa_sync(c) == 0);
+                Bytes sigs(S * count);
+                CHECK(opqc_sycl_slhdsa_memcpy(c, sigs.data(), d_sig.p, sigs.size()) == 0);
+                std::vector<std::uint8_t> invalid(count, 0);
+                const std::uint8_t* m = o.one_msg.data();
+                const std::size_t mlen = o.one_msg.size();
+                parallel_for(count, [&](std::size_t i) {
+                    const std::uint8_t* s = &sigs[i * S];
+                    invalid[i] = (prehash ? api.prehash_verify(s, S, m, mlen, ctx, ctxlen, phv, &o.pk[0])
+                                          : api.verify(s, S, m, mlen, ctx, ctxlen, &o.pk[0])) != 0;
+                });
+                for (std::size_t i = 0; i < count; i++) {
+                    bad_coins += invalid[i];
+                    Bytes r(&sigs[i * S], &sigs[i * S] + N);
+                    bad_coins += std::find(o.fixed_r.begin(), o.fixed_r.end(), r) != o.fixed_r.end();
+                    rs.push_back(std::move(r));
+                }
+            };
+            hedged(opqc_sycl_slhdsa_sign(c, d_sig.p, r_msg.p, r_offsets, ctx, ctxlen, r_sk.p, n), false, n);
+            hedged(opqc_sycl_slhdsa_sign_one_key(c, d_sig.p, r_msg.p, r_offsets, ctx, ctxlen, r_sk.p, n), false, n);
+            hedged(opqc_sycl_slhdsa_prehash_sign(c, d_sig.p, r_ph.p, ctx, ctxlen, phv, r_sk.p, n), true, n);
+            hedged(opqc_sycl_slhdsa_prehash_sign_one_key(c, d_sig.p, r_ph.p, ctx, ctxlen, phv, r_sk.p, n), true, n);
+            hedged(opqc_sycl_slhdsa_prehash_sign_one_key(c, d_sig.p, r_ph.p, ctx, ctxlen, phv, r_sk.p, 1), true, 1);
+            bad_coins += repeats(rs);
+            CHECK(bad_coins == 0);
+        }
+
         // Two host threads, started together, sign four times each through one context, with different
         // context strings: the calls take turns (the context's lock), so each gets the signatures of its own
         // context string every time. The context has max_batch 1, so that every call is n launches and the
@@ -663,11 +799,11 @@ void test_device(int device, const Oracle& o) {
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         std::printf("  %-10s %3zu ops in chunks of %3zu, |ctx| = %3zu, PH %2d (%zu B): mismatches pk %zu sk %zu "
                     "sig %zu det %zu ph %zu internal %zu e2e %zu one_key %zu verify %zu verify_ctx %zu verify_ph %zu "
-                    "verify_internal %zu args %zu random %zu threads %zu; %zu valid of %zu verified; %.1f s (CPU "
-                    "oracle %.1f s)\n",
+                    "verify_internal %zu args %zu random %zu coins %zu threads %zu; %zu valid of %zu verified; %.1f s "
+                    "(CPU oracle %.1f s)\n",
                     api.name, n, o.max_batch, o.ctxlen, phv, o.phlen, bad_pk, bad_sk, bad_sig, bad_det, bad_ph,
                     bad_int, bad_e2e, bad_one, bad_verify, bad_verify_ctx, bad_verify_ph, bad_verify_int, bad_args,
-                    bad_random, bad_threads, o.valid, n, seconds, o.seconds);
+                    bad_random, bad_coins, bad_threads, o.valid, n, seconds, o.seconds);
         std::fflush(stdout);
     }
     opqc_sycl_slhdsa_destroy(c);

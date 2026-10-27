@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // opqc_sycl_messages.hpp  --  the messages of a batched signature call, and M' as kernels read it (SYCL)
 //
 // The signature backends (ML/DSA/sycl, SLH/DSA/sycl) take the n messages of a call as one device buffer

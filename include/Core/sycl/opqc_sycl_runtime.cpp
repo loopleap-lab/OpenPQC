@@ -1,6 +1,10 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // opqc_sycl_runtime.cpp  --  see opqc_sycl_runtime.hpp and openpqc_sycl.h
 #include "Core/sycl/opqc_sycl_runtime.hpp"
 
+#include <atomic>
 #include <cstdlib>
 #include <string>
 
@@ -26,6 +30,18 @@ bool select_device(int index, sycl::device& out) {
     if (static_cast<std::size_t>(index) >= devices.size()) return false;
     out = devices[static_cast<std::size_t>(index)];
     return true;
+}
+
+namespace {
+std::atomic<std::uint64_t> asynchronous_error_count{0};   // one per process: this library is linked statically
+}
+
+std::uint64_t asynchronous_errors() noexcept {
+    return asynchronous_error_count.load(std::memory_order_acquire);
+}
+
+void count_asynchronous_errors(std::size_t n) noexcept {
+    asynchronous_error_count.fetch_add(n, std::memory_order_acq_rel);
 }
 
 } // namespace openpqc::gpu

@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // test_mlkem_differential.cpp  --  OpenPQC ML-KEM against the reference, byte for byte
 //
 // For many random seeds per parameter set, OpenPQC (openpqc_mlkemNNN_*) and the
@@ -11,6 +14,12 @@
 //   rejection), and with decapsulation keys whose dk_PKE holds 12-bit values >= q
 //   encapsulation keys failing the modulus check            (Section 7.2)
 //   decapsulation keys failing the hash check               (Section 7.3)
+//
+// Linked against the library built with the pair-wise consistency check of KeyGen
+// (OPENPQC_MLKEM_KEYGEN_PCT), it runs as mlkem_differential_pct: a key pair that passes
+// the check is the one without it. The check draws its m from the RNG after d || z;
+// the stream restarts before every randomized call, so that this extra draw does not
+// change what Encaps draws.
 //
 // Usage: test_mlkem_differential [iterations per parameter set, default 1000]
 #include <array>
@@ -144,13 +153,18 @@ void run(const Level& L, int iterations) {
         r2 = L.reference.dec(ss4.data(), ct2.data(), bad_sk.data());
         check(r1 == r2 && r1 == OPENPQC_MLKEM_ERR_INVALID_SK, L.name, "dec (invalid sk)", it);
 
-        // randomized API: both libraries draw from the same deterministic stream
+        // randomized API: both libraries draw from the same deterministic stream, which restarts before
+        // each call, so that what Encaps draws does not depend on how much KeyGen drew (with the
+        // pair-wise consistency check, OpenPQC's KeyGen draws the check's m after d || z:
+        // mlkem_differential_pct)
         if (it % 10 == 0) {
             randombytes_reset();
             r1 = L.openpqc.keypair(pk1.data(), sk1.data());
+            randombytes_reset();
             r1 |= L.openpqc.enc(ct1.data(), ss1.data(), pk1.data());
             randombytes_reset();
             r2 = L.reference.keypair(pk2.data(), sk2.data());
+            randombytes_reset();
             r2 |= L.reference.enc(ct2.data(), ss2.data(), pk2.data());
             check(r1 == 0 && r2 == 0 && pk1 == pk2 && sk1 == sk2 && ct1 == ct2 && ss1 == ss2,
                   L.name, "keypair/enc (randomized)", it);

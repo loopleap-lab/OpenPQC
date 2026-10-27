@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // zeroize.hpp  --  scoped destruction of secret intermediate values
 //
 // FIPS 203, Section 3.3 ("Destruction of intermediate values") requires that

@@ -25,6 +25,32 @@
  * (see Core/opqc_platform.h). The *_derand functions are meant for testing
  * and for expanding a stored seed (FIPS 203, Section 3.3).
  *
+ * Pair-wise consistency test (FIPS 140-3). If mlkem.cpp is compiled with the
+ * definition OPENPQC_MLKEM_KEYGEN_PCT (there is no CMake option for it; the
+ * tests compile their own copy, tests/ML-KEM), keypair and keypair_derand
+ * check every new key pair as FIPS 203, Section 7.1, item 4 describes: a key
+ * encapsulated to pk with a random m must decapsulate with sk to the same key.
+ * keypair_derand then takes 32 bytes from the operating system as well, for
+ * that m. If they are not available (OPENPQC_MLKEM_ERR_RNG_FAIL) or the check
+ * fails (OPENPQC_MLKEM_ERR_PCT_FAIL), pk and sk are zeroized. A key pair that
+ * passes is not changed: keypair_derand gives the same keys for the same coins
+ * with and without the check. The check is a property of the compiled library:
+ * an application that includes the scheme headers (ML/KEM/scheme) without the
+ * definition gets its own copies of key generation under other names, which
+ * cannot take the place of the library's.
+ *
+ * Destruction of intermediate values (FIPS 203, Section 3.3). keypair,
+ * keypair_derand, enc, enc_derand and dec destroy their intermediate values
+ * before they return: the code zeroizes what it names, and then the stack the
+ * operation used is overwritten with zeros, which removes what the compiler
+ * kept in stack slots of its own. Registers are not cleared. ML/KEM/README.md
+ * says what that covers.
+ *
+ * Stack. For that, keypair, keypair_derand, enc, enc_derand and dec need about
+ * 48, 58 and 68 KiB of stack below their caller for ML-KEM-512, -768 and -1024
+ * (the 44, 54 and 64 KiB they overwrite, and the frames above it; 56, 68 and
+ * 79 KiB with AddressSanitizer); check_pk and check_sk need at most about 9 KiB.
+ *
  * The function and size names are those of earlier OpenPQC versions, which
  * were built on mlkem-native; the return codes have the values of
  * mlkem-native's MLK_ERR_* codes. The implementation is ML/KEM/mlkem.cpp,
@@ -53,7 +79,8 @@
 #define OPENPQC_MLKEM_ERR_RNG_FAIL (-3)   /* no randomness available */
 #define OPENPQC_MLKEM_ERR_INVALID_PK (-4) /* pk failed the check of Section 7.2 */
 #define OPENPQC_MLKEM_ERR_INVALID_SK (-5) /* sk failed the check of Section 7.3 */
-#define OPENPQC_MLKEM_ERR_PCT_FAIL (-6)   /* pair-wise consistency test failed */
+#define OPENPQC_MLKEM_ERR_PCT_FAIL (-6)   /* pair-wise consistency test failed
+                                             (only with OPENPQC_MLKEM_KEYGEN_PCT) */
 
 #ifdef __cplusplus
 extern "C" {

@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // opqc_sycl_sha2.hpp  --  SHA-256 and SHA-512 (FIPS 180-4) in GPU kernels (SYCL device code), with HMAC and MGF1
 //
 // The SHA-2 analogue of opqc_sycl_sponge.hpp. Every work-item hashes its own messages. The compression

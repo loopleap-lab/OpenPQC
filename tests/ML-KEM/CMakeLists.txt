@@ -24,6 +24,17 @@
 #   mlkem_math                the C11 math core (ML/KEM/math), exhaustively where feasible
 #   mlkem_differential        OpenPQC == reference, byte for byte, on random and
 #                             malformed inputs
+#   mlkem_pct, mlkem_pct_fail the library built with the pair-wise consistency test
+#                             (OPENPQC_MLKEM_KEYGEN_PCT), and built so that the test fails
+#   mlkem_pct_odr             an application's KeyGen without the test cannot replace the
+#                             library's
+#   mlkemNNN_pct_func, _kat, _rng_fail, mlkem_differential_pct
+#                             mlkem-native's tests and the differential test against the
+#                             library with the test
+#   mlkem_stack, mlkem_stack_pct, mlkem_stack_O0, _O1, _O2, _Os
+#                             no secret intermediate values left on the stack, without and
+#                             with the pair-wise consistency test, and with the library
+#                             compiled at other optimization levels (Linux)
 #
 # The ACVP and Wycheproof clients (unmodified) look for the programs in
 # test/build/mlkemNNN/bin relative to their working directory, run/<target>.
@@ -184,3 +195,114 @@ target_compile_features(test_mlkem_differential PRIVATE cxx_std_20)
 target_compile_options(test_mlkem_differential PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:$<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>>)
 add_test(NAME mlkem_differential COMMAND test_mlkem_differential)
+
+#   mlkem_pct        the library built with the pair-wise consistency test after KeyGen
+#                    (OPENPQC_MLKEM_KEYGEN_PCT, FIPS 140-3; FIPS 203 Section 7.1, item 4), so that this
+#                    configuration is compiled and its KeyGen exercised: randomized and from a seed, the
+#                    RNG calls (keypair_derand draws the check's m), working keys, and a failing RNG
+#   mlkem_pct_fail   the same with OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST, which breaks the check: KeyGen
+#                    must fail with OPENPQC_MLKEM_ERR_PCT_FAIL and zeroize both keys. This shows that the
+#                    check is compiled in and that its result is used, which mlkem_pct alone cannot show.
+foreach(variant pct pct_fail)
+    add_library(openpqc_mlkem_${variant}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
+    target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_definitions(openpqc_mlkem_${variant}_objects PRIVATE OPENPQC_MLKEM_KEYGEN_PCT)
+    target_compile_features(openpqc_mlkem_${variant}_objects PRIVATE cxx_std_20)
+    target_link_libraries(openpqc_mlkem_${variant}_objects PRIVATE openpqc_strict_warnings)
+    add_executable(test_mlkem_${variant} test_mlkem_pct.c $<TARGET_OBJECTS:openpqc_mlkem_${variant}_objects>)
+    target_include_directories(test_mlkem_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(test_mlkem_${variant} PRIVATE openpqc_core_testrng openpqc_strict_warnings)
+    set_target_properties(test_mlkem_${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                           C_EXTENSIONS OFF)
+    add_test(NAME mlkem_${variant} COMMAND test_mlkem_${variant})
+endforeach()
+target_compile_definitions(openpqc_mlkem_pct_fail_objects PRIVATE OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST)
+target_compile_definitions(test_mlkem_pct_fail PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
+
+#   mlkem_pct_odr    mlkem_pct_fail with an application's own copies of the scheme layer's KeyGen
+#                    templates, compiled without the check and linked first (test_mlkem_pct_odr.cpp): the
+#                    linker must not let them take the place of the library's, whose KeyGen must still fail
+add_executable(test_mlkem_pct_odr test_mlkem_pct_odr.cpp test_mlkem_pct.c
+                                  $<TARGET_OBJECTS:openpqc_mlkem_pct_fail_objects>)
+target_include_directories(test_mlkem_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_compile_definitions(test_mlkem_pct_odr PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
+target_compile_features(test_mlkem_pct_odr PRIVATE cxx_std_20)
+target_link_libraries(test_mlkem_pct_odr PRIVATE openpqc_core_testrng openpqc_strict_warnings)
+set_target_properties(test_mlkem_pct_odr PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                    C_EXTENSIONS OFF)
+add_test(NAME mlkem_pct_odr COMMAND test_mlkem_pct_odr)
+
+#   mlkemNNN_pct_func, mlkemNNN_pct_kat, mlkemNNN_pct_rng_fail, mlkem_differential_pct
+#                    mlkem-native's functional, known-answer and RNG-failure tests, and the differential
+#                    test, against the library with the check: the KAT hash must be the one in META.yml
+#                    and the outputs those of mlkem-native (a passing check leaves the keys as they are),
+#                    and the check's RNG call in keypair_derand must fail cleanly
+add_library(openpqc_mlkem_pct STATIC $<TARGET_OBJECTS:openpqc_mlkem_pct_objects>)
+target_link_libraries(openpqc_mlkem_pct PUBLIC openpqc_core_testrng)
+set_target_properties(openpqc_mlkem_pct PROPERTIES LINKER_LANGUAGE CXX)
+foreach(level 512 768 1024)
+    mlkem_test(openpqc test_mlkem ${level} SUFFIX _pct LIBRARY openpqc_mlkem_pct SOURCES ${_src}/src/test_mlkem.c)
+    mlkem_test(openpqc gen_KAT ${level} SUFFIX _pct LIBRARY openpqc_mlkem_pct SOURCES ${_src}/src/gen_KAT.c)
+    mlkem_test(openpqc test_rng_fail ${level} SUFFIX _pct LIBRARY openpqc_mlkem_pct
+               SOURCES ${_src}/src/test_rng_fail.c NO_RNG)
+    add_test(NAME mlkem${level}_pct_func COMMAND test_mlkem${level}_pct)
+    add_test(NAME mlkem${level}_pct_rng_fail COMMAND test_rng_fail${level}_pct)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME mlkem${level}_pct_kat
+                 COMMAND sh -c "\"$<TARGET_FILE:gen_KAT${level}_pct>\" | \"${Python3_EXECUTABLE}\" META.py --scheme ${level}"
+                 WORKING_DIRECTORY ${_src})
+    endif()
+endforeach()
+add_executable(test_mlkem_differential_pct test_mlkem_differential.cpp
+               ${_src}/notrandombytes/notrandombytes.c)
+target_link_libraries(test_mlkem_differential_pct PRIVATE openpqc_mlkem_pct openpqc_reference_mlkem)
+target_compile_features(test_mlkem_differential_pct PRIVATE cxx_std_20)
+target_compile_options(test_mlkem_differential_pct PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:$<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>>)
+add_test(NAME mlkem_differential_pct COMMAND test_mlkem_differential_pct)
+
+#   mlkem_stack   no secret intermediate values left on the stack after KeyGen, Encaps and Decaps (also
+#                 of a rejected ciphertext), FIPS 203 Section 3.3; the library as built, through the C API
+#                 (its _testrng variant, so that the randomness is known): the secrets of the calls are
+#                 searched for, and (x86-64) nothing below a call may depend on its data. Linux only: the
+#                 test finds the stack in /proc/self/maps.
+#   mlkem_stack_pct   the same against the library with the pair-wise consistency test, whose Encaps and
+#                     Decaps inside KeyGen must leave nothing either
+#   mlkem_stack_O0, mlkem_stack_O1, mlkem_stack_O2, mlkem_stack_Os
+#                 the same against the library compiled at these optimization levels, whatever the build
+#                 type: what the compiler spills to the stack, and so what the stack burn of
+#                 scheme/ml_kem.hpp must overwrite, changes with the level (GCC 16 at -O2 left bits of m
+#                 in slots where it had spilled vector registers)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(test_mlkem_stack test_mlkem_stack.cpp)
+    target_include_directories(test_mlkem_stack PRIVATE ${PROJECT_SOURCE_DIR}/tests)
+    target_link_libraries(test_mlkem_stack PRIVATE openpqc_mlkem_testrng openpqc_strict_warnings)
+    target_compile_features(test_mlkem_stack PRIVATE cxx_std_20)
+    add_test(NAME mlkem_stack COMMAND test_mlkem_stack)
+
+    add_executable(test_mlkem_stack_pct test_mlkem_stack.cpp)
+    target_compile_definitions(test_mlkem_stack_pct PRIVATE OPENPQC_TEST_PCT)
+    target_include_directories(test_mlkem_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/tests ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(test_mlkem_stack_pct PRIVATE openpqc_mlkem_pct openpqc_strict_warnings)
+    target_compile_features(test_mlkem_stack_pct PRIVATE cxx_std_20)
+    add_test(NAME mlkem_stack_pct COMMAND test_mlkem_stack_pct)
+
+    add_library(test_mlkem_stack_objects OBJECT test_mlkem_stack.cpp)
+    target_include_directories(test_mlkem_stack_objects PRIVATE ${PROJECT_SOURCE_DIR}/tests
+                                                                ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(test_mlkem_stack_objects PRIVATE openpqc_strict_warnings)
+    target_compile_features(test_mlkem_stack_objects PRIVATE cxx_std_20)
+    foreach(opt O0 O1 O2 Os)
+        # a target's options come after those of the build type, so -${opt} wins
+        add_library(openpqc_mlkem_${opt}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
+        target_include_directories(openpqc_mlkem_${opt}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_compile_options(openpqc_mlkem_${opt}_objects PRIVATE -${opt})
+        target_compile_features(openpqc_mlkem_${opt}_objects PRIVATE cxx_std_20)
+        target_link_libraries(openpqc_mlkem_${opt}_objects PRIVATE openpqc_strict_warnings)
+        add_executable(test_mlkem_stack_${opt} $<TARGET_OBJECTS:test_mlkem_stack_objects>
+                                               $<TARGET_OBJECTS:openpqc_mlkem_${opt}_objects>)
+        target_link_libraries(test_mlkem_stack_${opt} PRIVATE openpqc_core_testrng)
+        set_target_properties(test_mlkem_stack_${opt} PROPERTIES LINKER_LANGUAGE CXX)
+        add_test(NAME mlkem_stack_${opt} COMMAND test_mlkem_stack_${opt})
+    endforeach()
+endif()

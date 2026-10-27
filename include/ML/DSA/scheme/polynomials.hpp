@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // polynomials.hpp  --  polynomials, vectors and matrices over Z_q (FIPS 204, Sections 2.4, 7.4, 7.6)
 //
 // The C++ view of the C11 math core (ML/DSA/math): value types for the
@@ -15,9 +18,19 @@
 //
 // Destruction of intermediate values (Section 3.6.3). Expressions such as
 // invntt(scalar_vector_ntt(c_hat, s1_hat)) pass their results through unnamed
-// temporaries and by-value parameters, which no ZeroizeOnExit can name; left
-// on the stack, c^ o s1^ or y of a signing attempt would give away s1. So
-// every polynomial zeroizes itself when its lifetime ends, named or not.
+// temporaries, which no ZeroizeOnExit can name; left on the stack, c^ o s1^ or
+// y of a signing attempt would give away s1. So every polynomial zeroizes
+// itself when its lifetime ends, named or not.
+//
+// Stack. A vector of polynomials takes up to 8 KiB, and every temporary of an
+// expression is another one in the caller's frame. The operations below take
+// their operands by const reference and build their result in the object they
+// return, so that an expression costs one temporary per intermediate result and
+// none for copies of its operands. By-value parameters (a copy of the operand,
+// modified and returned) cost two, which compilers do not always overlap with
+// the rest of the frame: with them, Clang 23 gave ML-DSA-87's Sign a frame of
+// 299 KiB, which is 175 KiB this way (see openpqc_mldsa.h for the stack each
+// operation needs).
 #pragma once
 
 #include <array>
@@ -44,52 +57,64 @@ template <std::size_t N> using PolyVec = std::array<Poly, N>;                   
 template <std::size_t K, std::size_t L> using PolyMatrix = std::array<PolyVec<L>, K>;  // A[r][s], k x l
 
 // --- addition (Algorithms 44 and 46) and negation ----------------------------------
+// (operands by const reference, the result built in the returned object: see Stack above)
 
-inline Poly operator+(Poly f, const Poly& g) {
-    mldsa_poly_add(f.data(), g.data());
-    return f;
+inline Poly operator+(const Poly& f, const Poly& g) {
+    Poly h = f;
+    mldsa_poly_add(h.data(), g.data());
+    return h;
 }
-inline Poly operator-(Poly f, const Poly& g) {
-    mldsa_poly_sub(f.data(), g.data());
-    return f;
+inline Poly operator-(const Poly& f, const Poly& g) {
+    Poly h = f;
+    mldsa_poly_sub(h.data(), g.data());
+    return h;
 }
-inline Poly operator-(Poly f) {
-    for (auto& c : f) c = mldsa_neg(c);
-    return f;
-}
-template <std::size_t N>
-PolyVec<N> operator+(PolyVec<N> u, const PolyVec<N>& v) {
-    for (std::size_t i = 0; i < N; i++) u[i] = u[i] + v[i];
-    return u;
+inline Poly operator-(const Poly& f) {
+    Poly h;
+    for (unsigned i = 0; i < MLDSA_N; i++) h[i] = mldsa_neg(f[i]);
+    return h;
 }
 template <std::size_t N>
-PolyVec<N> operator-(PolyVec<N> u, const PolyVec<N>& v) {
-    for (std::size_t i = 0; i < N; i++) u[i] = u[i] - v[i];
-    return u;
+PolyVec<N> operator+(const PolyVec<N>& u, const PolyVec<N>& v) {
+    PolyVec<N> w = u;
+    for (std::size_t i = 0; i < N; i++) mldsa_poly_add(w[i].data(), v[i].data());
+    return w;
 }
 template <std::size_t N>
-PolyVec<N> operator-(PolyVec<N> v) {
-    for (auto& f : v) f = -f;
-    return v;
+PolyVec<N> operator-(const PolyVec<N>& u, const PolyVec<N>& v) {
+    PolyVec<N> w = u;
+    for (std::size_t i = 0; i < N; i++) mldsa_poly_sub(w[i].data(), v[i].data());
+    return w;
+}
+template <std::size_t N>
+PolyVec<N> operator-(const PolyVec<N>& v) {
+    PolyVec<N> w;
+    for (std::size_t i = 0; i < N; i++)
+        for (unsigned j = 0; j < MLDSA_N; j++) w[i][j] = mldsa_neg(v[i][j]);
+    return w;
 }
 
 // --- NTT (Algorithms 41 and 42), entry-wise on vectors (Section 2.5) ----------------
 
-inline Poly ntt(Poly f) {
-    mldsa_ntt(f.data());
-    return f;
+inline Poly ntt(const Poly& f) {
+    Poly f_hat = f;
+    mldsa_ntt(f_hat.data());
+    return f_hat;
 }
-inline Poly invntt(Poly f) {
+inline Poly invntt(const Poly& f_hat) {
+    Poly f = f_hat;
     mldsa_invntt(f.data());
     return f;
 }
 template <std::size_t N>
-PolyVec<N> ntt(PolyVec<N> v) {
-    for (auto& f : v) mldsa_ntt(f.data());
-    return v;
+PolyVec<N> ntt(const PolyVec<N>& v) {
+    PolyVec<N> v_hat = v;
+    for (auto& f : v_hat) mldsa_ntt(f.data());
+    return v_hat;
 }
 template <std::size_t N>
-PolyVec<N> invntt(PolyVec<N> v) {
+PolyVec<N> invntt(const PolyVec<N>& v_hat) {
+    PolyVec<N> v = v_hat;
     for (auto& f : v) mldsa_invntt(f.data());
     return v;
 }

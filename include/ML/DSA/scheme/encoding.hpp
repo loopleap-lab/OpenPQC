@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // encoding.hpp  --  encodings of ML-DSA keys and signatures (FIPS 204, Section 7.2)
 //
 //   pk    = rho || SimpleBitPack(t1[0], 2^10 - 1) || ... || SimpleBitPack(t1[k-1], ...)       (Algorithms 22, 23)
@@ -76,10 +79,17 @@ void sk_encode(std::span<std::uint8_t, Sizes<P>::sk> sk, std::span<const std::ui
 }
 
 // Algorithm 25: (rho, K, tr, s1, s2, t0) <- skDecode(sk); rho, K and tr are the
-// first 128 bytes of sk. sk must come from a trusted source: for malformed input,
-// s1 and s2 may lie outside [-eta, eta] (lines 3 and 6).
+// first 128 bytes of sk. Returns false if a coefficient of s1 or s2 lies outside
+// [-eta, eta] (lines 3 and 6: "this may lie outside [-eta, eta] if input is
+// malformed"). BitUnpack(., eta, eta) maps each bitlen(2 eta)-bit code v to eta - v,
+// so the codes above 2 eta (5..7 for eta = 2, 9..15 for eta = 4) give -eta - 1 and
+// below. FIPS 204 runs skDecode only on input from a trusted source (Section 7.2)
+// and checks nothing; this check is for keys that were corrupted or tampered with
+// all the same. Every coefficient is examined, without a branch on it (infnorm_geq);
+// the result is as secret as sk until the caller declassifies it. t0 is always in
+// range (line 9).
 template <ParameterSet P>
-void sk_decode(PolyVec<P::l>& s1, PolyVec<P::k>& s2, PolyVec<P::k>& t0,
+bool sk_decode(PolyVec<P::l>& s1, PolyVec<P::k>& s2, PolyVec<P::k>& t0,
                std::span<const std::uint8_t, Sizes<P>::sk> sk) {
     using Lay = Layout<P>;
     constexpr unsigned c_eta = Sizes<P>::eta_bits, c_t0 = Sizes<P>::t0_bits;
@@ -89,6 +99,7 @@ void sk_decode(PolyVec<P::l>& s1, PolyVec<P::k>& s2, PolyVec<P::k>& t0,
         mldsa_bit_unpack(s2[i].data(), sk.data() + Lay::sk_s2 + Lay::eta_poly * i, P::eta, c_eta);
     for (unsigned i = 0; i < P::k; i++)                                             // 8-9
         mldsa_bit_unpack(t0[i].data(), sk.data() + Lay::sk_t0 + Lay::t0_poly * i, 1u << (MLDSA_D - 1), c_t0);
+    return (infnorm_geq(s1, P::eta + 1) | infnorm_geq(s2, P::eta + 1)) == 0;       // 3, 6: in [-eta, eta]
 }
 
 // Algorithm 26: sigma <- sigEncode(c~, z mod± q, h). z is stored mod q; BitPack's

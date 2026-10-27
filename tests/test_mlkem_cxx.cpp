@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // test_mlkem_cxx.cpp  --  C++ ML-KEM API: round trips, determinism, implicit rejection
 #include "check.hpp"
 #include "ML/KEM/mlkem.hpp"

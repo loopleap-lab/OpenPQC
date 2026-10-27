@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // parameter_sets.hpp  --  the ML-KEM parameter sets (FIPS 203, Section 8)
 //
 // A parameter set is a type with five constants (Table 2). The algorithms in

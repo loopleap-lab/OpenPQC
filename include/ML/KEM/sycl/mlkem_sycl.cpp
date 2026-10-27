@@ -1,8 +1,11 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // mlkem_sycl.cpp  --  batched ML-KEM (FIPS 203) on GPUs with SYCL 2020
 //
-// Runs many independent ML-KEM operations at once on a SYCL device (NVIDIA and
-// AMD GPUs, Intel GPUs, CPUs), compiled with Intel DPC++ or AdaptiveCpp. The
-// results are byte-identical to the CPU library.
+// Runs many independent ML-KEM operations at once on a SYCL device, compiled with
+// Intel DPC++ or AdaptiveCpp (tested on NVIDIA and Intel GPUs and on CPUs; AMD GPUs
+// should work but are untested). The results are byte-identical to the CPU library.
 //
 // The mathematics is the C11 math core -- Core/opqc_keccak.h and ML/KEM/math --
 // the same functions the CPU library runs. This file decides who computes what:
@@ -18,9 +21,11 @@
 //    all coefficient-wise steps, and performs butterflies g, g+32, g+64, g+96 of
 //    every NTT layer.
 //
-// Between the stages, intermediate values wait in a workspace in device
-// memory. The secret ones (seeds, PRF outputs, m', K-bar, coins) are zeroized at
-// the end of every call (FIPS 203, Section 3.3); the matrix A^ is public. The
+// Between the stages, intermediate values wait in a workspace in device memory,
+// held by the context with its queue and its lock (Core/sycl/opqc_sycl_context.hpp;
+// the C API at the end of this file). The secret ones (seeds, PRF outputs, m',
+// K-bar, coins) are zeroized after every launch, and the whole workspace when a call
+// or the device fails (FIPS 203, Section 3.3); the matrix A^ is public. The
 // arithmetic stages also clear their local memory before they end.
 //
 // The noise is stored as PRF output (64 eta bytes per polynomial) rather than as
@@ -31,14 +36,21 @@
 
 #include <sycl/sycl.hpp>
 
+#include <array>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
+#include <initializer_list>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Core/opqc_platform.h"
+#include "Core/opqc_sha3.h"
+#include "Core/sycl/opqc_sycl_context.hpp"
 #include "Core/sycl/opqc_sycl_runtime.hpp"
 #include "Core/sycl/opqc_sycl_sponge.hpp"
 #include "Core/sycl/opqc_sycl_team.hpp"
@@ -46,7 +58,13 @@
 #include "ML/KEM/math/mlkem_field.h"
 #include "ML/KEM/math/mlkem_ntt.h"
 #include "ML/KEM/math/mlkem_sample.h"
+#include "ML/KEM/openpqc_mlkem.h"
 #include "ML/KEM/scheme/parameter_sets.hpp"
+#include "ML/KEM/sycl/mlkem_sycl_self_test.hpp"
+
+static_assert(OPQC_SYCL_MLKEM_RNG_FAIL == OPENPQC_MLKEM_ERR_RNG_FAIL &&
+              OPQC_SYCL_MLKEM_INVALID_PK == OPENPQC_MLKEM_ERR_INVALID_PK &&
+              OPQC_SYCL_MLKEM_INVALID_SK == OPENPQC_MLKEM_ERR_INVALID_SK);
 
 namespace openpqc::mlkem::gpu {
 namespace {
@@ -73,6 +91,13 @@ static_assert(prf_stride<params::ML_KEM_512> == prf_stride_of_level(512) &&
               prf_stride<params::ML_KEM_768> == prf_stride_of_level(768) &&
               prf_stride<params::ML_KEM_1024> == prf_stride_of_level(1024));
 
+// The largest launch has TEAM work-items per operation, in work-groups of TEAMS operations: with
+// OPQC_SYCL_MLKEM_MAX_BATCH operations it stays below 2^31 work-items, as the SYCL compilers assume
+// of the index space (DPC++: -fsycl-id-queries-fit-in-int, its default)
+static_assert(OPQC_SYCL_MLKEM_MAX_BATCH % TEAMS == 0 &&
+              OPQC_SYCL_MLKEM_MAX_BATCH / TEAMS * (TEAMS * TEAM) <= static_cast<std::size_t>(INT_MAX) &&
+              (OPQC_SYCL_MLKEM_MAX_BATCH / TEAMS + 1) * (TEAMS * TEAM) > static_cast<std::size_t>(INT_MAX));
+
 // Device workspace: struct of arrays over the operations of one launch.
 struct Workspace {
     std::uint8_t* seeds;      // 64 B per op: (rho, sigma), (K, r) or (K', r')      secret
@@ -83,7 +108,21 @@ struct Workspace {
     std::uint8_t* hek;        // 32 B per op: H(ek) of Encaps                       public
     std::int32_t* dk_check;   // per op: result of the Section 7.3 check            public
     std::uint8_t* coins;      // 64 B per op: coins of the randomized calls         secret
+    std::uint32_t* zero;      // one word that holds 0: the opaque term of the Decaps mask (encrypt)
 };
+
+// The sections of the workspace and their sizes in bytes per operation
+enum Section : unsigned { SEEDS, MATRIX, PRF, MSG, KBAR, HEK, DK_CHECK, COINS, SECTIONS };
+template <class P>
+constexpr std::array<std::size_t, SECTIONS> section_bytes() {
+    constexpr std::size_t k = P::k;
+    return {64, 2 * MLKEM_N * k * k, (2 * k + 1) * prf_stride<P>, 32, 32, 32, 4, 64};
+}
+
+// The secret sections that each operation uses (bit i = section i); COINS is the randomized calls'
+constexpr unsigned bit(Section s) { return 1u << s; }
+constexpr unsigned KEYGEN_SECRETS = bit(SEEDS) | bit(PRF), ENCAPS_SECRETS = bit(SEEDS) | bit(PRF),
+                   DECAPS_SECRETS = bit(SEEDS) | bit(PRF) | bit(MSG) | bit(KBAR);
 
 // ------------------------------------------------------------------ launching
 
@@ -308,9 +347,12 @@ void encaps_seed(sycl::queue& q, const Workspace& ws, const std::uint8_t* m, std
 
 // Decaps hashing: the hash check of Section 7.3, (K', r') <- G(m' || h) and
 // K-bar <- J(z || c)                                    (Algorithm 18, lines 6-7)
+// The check's result goes to the workspace, and the last kernel (encrypt) writes it to status
+// with K; status is not written here (the parameter stays for bench/gpu/profile_stages_sycl.cpp,
+// which calls the stages one by one).
 template <class P>
 void decaps_hash(sycl::queue& q, const Workspace& ws, const std::uint8_t* dk_base,
-                 const std::uint8_t* c_base, std::int32_t* status, std::size_t n) {
+                 const std::uint8_t* c_base, std::int32_t* /* status */, std::size_t n) {
     using S = Sizes<P>;
     const Workspace w = ws;
     for_each_item(q, n, [=](std::size_t op) {
@@ -328,7 +370,6 @@ void decaps_hash(sycl::queue& q, const Workspace& ws, const std::uint8_t* dk_bas
         for (unsigned i = 0; i < 4; i++) diff |= s[i] ^ load64(h + 8 * i);
         const std::int32_t check = diff == 0 ? 0 : OPQC_SYCL_MLKEM_INVALID_SK;   // public
         w.dk_check[op] = check;
-        if (status) status[op] = check;
 
         absorb<SHA3_512_RATE_WORDS, 8>(s, [&](unsigned i) {
             return i < 4 ? load64(w.msg + op * 32 + 8 * i) : load64(h + 8 * (i - 4));
@@ -415,11 +456,15 @@ void keygen_arith(sycl::queue& q, const Workspace& ws, const std::uint8_t* coins
 }
 
 // K-PKE.Encrypt (Algorithm 14, lines 2-24) for every operation:
-//  * Encaps (Decaps = false): writes c, and K from the seeds, or zeros and
-//    status INVALID_PK if ek fails the modulus check of Section 7.2;
+//  * Encaps (Decaps = false): writes c and K from the seeds, or, if ek fails the
+//    modulus check of Section 7.2, zeros in place of both and status INVALID_PK;
 //  * Decaps (Decaps = true): the re-encryption of Algorithm 18, line 8, which
 //    compares c' with the input c and selects K' or K-bar in constant time
 //    (lines 9-11); zeros if dk failed the hash check (decaps_hash).
+// This is the last kernel of both operations, and it writes each operation's status
+// with its outputs: an entry that no longer reads OPQC_SYCL_MLKEM_FAILED (the fill
+// before the first kernel, status_call) says that this kernel ran for that operation,
+// and so wrote its c and K (Encaps) or its K (Decaps).
 // Each value is computed from its input in device memory just before it is
 // used -- t^ at line 21, e1 and e2 just before lines 22 and 23 -- rather than in
 // the order of Algorithm 14: values held across the NTTs would occupy registers
@@ -460,7 +505,7 @@ void encrypt(sycl::queue& q, const Workspace& ws, const std::uint8_t* ek_base, c
         }
         // line 21, first part: t^T o y^, with line 2: t^ <- ByteDecode12(ek[0 : 384k]) and the
         // modulus check of Section 7.2 (ByteEncode12(ByteDecode12(ek)) must give ek back)
-        std::uint16_t bad = 0;
+        [[maybe_unused]] std::uint16_t bad = 0;   // read by Encaps only
         {
             std::uint16_t t_hat[k][8];
 #pragma unroll
@@ -473,6 +518,14 @@ void encrypt(sycl::queue& q, const Workspace& ws, const std::uint8_t* ek_base, c
         }
         t.barrier();
         invntt(t, u, k + 1);   // NTT^-1 of u[0..k-1] and of v (which follows u)
+
+        // Encaps: whether ek passed the check (public, as ek is). Section 7.2: Encaps is not to run
+        // on a key that fails it, so such an operation releases neither a ciphertext nor a key
+        // computed from that key: its c and K are zeros. Known before the first byte of c is
+        // written; the team's reduction uses the local memory of y^, whose last use is above.
+        bool invalid = false;
+        if constexpr (!Decaps) invalid = team_or(t, bad) != 0;
+        [[maybe_unused]] const auto c_mask = static_cast<std::uint8_t>(invalid ? 0x00 : 0xFF);
 
         // line 19, end: u <- ... + e1, with lines 13-16: e1 <- SamplePolyCBD_eta2(PRF_eta2(r, N))
         // line 22: c1 <- ByteEncode_du(Compress_du(u)); Decaps compares instead of writing
@@ -492,7 +545,7 @@ void encrypt(sycl::queue& q, const Workspace& ws, const std::uint8_t* ek_base, c
                 if constexpr (Decaps) {
                     diff |= static_cast<std::uint16_t>(bytes[b] ^ out[b]);
                 } else if (t.active) {
-                    out[b] = bytes[b];
+                    out[b] = static_cast<std::uint8_t>(bytes[b] & c_mask);
                 }
             }
         }
@@ -517,30 +570,35 @@ void encrypt(sycl::queue& q, const Workspace& ws, const std::uint8_t* ek_base, c
                 if constexpr (Decaps) {
                     diff |= static_cast<std::uint16_t>(bytes[b] ^ out[b]);
                 } else if (t.active) {
-                    out[b] = bytes[b];
+                    out[b] = static_cast<std::uint8_t>(bytes[b] & c_mask);
                 }
             }
         }
 
         const std::uint8_t* K = w.seeds + t.op * 64;   // K (Encaps) or K' (Decaps)
         if constexpr (!Decaps) {
-            const bool invalid = team_or(t, bad) != 0;   // public: ek is public
             if (t.active && g < 8) {
                 const std::uint32_t kw = reinterpret_cast<const std::uint32_t*>(K)[g];
                 reinterpret_cast<std::uint32_t*>(ss + t.op * 32)[g] = invalid ? 0u : kw;
             }
             if (t.active && g == 0 && status) status[t.op] = invalid ? OPQC_SYCL_MLKEM_INVALID_PK : 0;
         } else {
-            // lines 9-11: K' <- K-bar if c != c', selected with masks: whether c was
-            // valid is secret
+            // lines 9-11: K' <- K-bar if c != c'. Whether c was valid is secret (Section 6.3), so
+            // both words are loaded and one is selected with a mask. The compilers see that a mask
+            // made from a comparison is all ones or all zeros, and both CUDA toolchains turned this
+            // select into a choice between the addresses of K' and K-bar and a single load: a
+            // memory access that depends on the secret. XORed with a word of device memory that
+            // holds 0 (w.zero, which no compiler can know), the mask may be any value, and only the
+            // bitwise combination of both loaded words computes the result.
             const std::uint32_t equal = team_or(t, diff) == 0 ? 1u : 0u;
-            const std::uint32_t select = 0u - equal;                                  // all ones iff c = c'
+            const std::uint32_t select = (0u - equal) ^ w.zero[0];                     // all ones iff c = c'
             const std::uint32_t keep = 0u - static_cast<std::uint32_t>(w.dk_check[t.op] == 0);   // public
             if (t.active && g < 8) {
                 const std::uint32_t kp = reinterpret_cast<const std::uint32_t*>(K)[g];
                 const std::uint32_t kb = reinterpret_cast<const std::uint32_t*>(w.kbar + t.op * 32)[g];
                 reinterpret_cast<std::uint32_t*>(ss + t.op * 32)[g] = ((kp & select) | (kb & ~select)) & keep;
             }
+            if (t.active && g == 0 && status) status[t.op] = w.dk_check[t.op];   // 0 or INVALID_SK
         }
         clear_local(t, 2 * k + 1);   // y^, u, v
     });
@@ -635,7 +693,7 @@ void decaps(sycl::queue& q, const Workspace& ws, std::uint8_t* ss, const std::ui
     sample_matrix<P, true>(q, ek + 384 * P::k, S::dk, ws.matrix, n);    // A^T
     prf<P, P::eta1>(q, ws, 0, 0, P::k, n);                              // y
     prf<P, P::eta2>(q, ws, P::k, P::k, P::k + 1, n);                    // e1, e2
-    encrypt<P, true>(q, ws, ek, ws.msg, const_cast<std::uint8_t*>(c), ss, nullptr, n);
+    encrypt<P, true>(q, ws, ek, ws.msg, const_cast<std::uint8_t*>(c), ss, status, n);   // K, status
 }
 
 } // namespace
@@ -644,49 +702,56 @@ void decaps(sycl::queue& q, const Workspace& ws, std::uint8_t* ss, const std::ui
 // ====================================================================== C API
 
 using namespace openpqc::mlkem;
+using openpqc::mlkem::gpu::Section;
 using openpqc::mlkem::gpu::Workspace;
 
-struct opqc_sycl_mlkem {
-    sycl::queue queue;
+// The queue, the workspace and the lock (Core/sycl/opqc_sycl_context.hpp). Every call holds the
+// lock while it queues its work, so that the calls of several threads on one context take turns:
+// an in-order queue runs commands in the order they arrive, and without the lock the stages of two
+// calls interleave over the one workspace (one call's kernels then read the other's seeds, coins
+// or m', or the zeros of the other's wipe). The page-locked host buffer of the coins and the
+// failed state are Context's; `allocations` remembers the size of every buffer that
+// opqc_sycl_mlkem_malloc and _malloc_host have handed out, so that opqc_sycl_mlkem_free can wipe it.
+struct opqc_sycl_mlkem : openpqc::gpu::Context<openpqc::mlkem::gpu::SECTIONS> {
+    struct Allocation {
+        std::size_t bytes;
+        bool host;   // page-locked host memory
+    };
     int level;
-    std::size_t max_batch;
-    std::uint8_t* mem;
-    std::size_t mem_bytes;
-    Workspace ws;
-    std::size_t secret_offset[5], secret_bytes[5];   // secret workspace sections, bytes per op
-    std::string device_name;
+    Workspace ws{};
+    std::unordered_map<void*, Allocation> allocations;   // under the lock
+
+    opqc_sycl_mlkem(const sycl::device& dev, int lvl, std::size_t batch)
+        : openpqc::gpu::Context<openpqc::mlkem::gpu::SECTIONS>(dev, batch), level(lvl) {}
 };
 
 namespace {
 
 using openpqc::gpu::guarded;
+using openpqc::gpu::Lock;
+using openpqc::mlkem::gpu::DECAPS_SECRETS;
+using openpqc::mlkem::gpu::ENCAPS_SECRETS;
+using openpqc::mlkem::gpu::KEYGEN_SECRETS;
 
-// The secret workspace sections (bit i = section i of secret_offset/secret_bytes)
-enum Section : unsigned { SEEDS = 1, PRF = 2, MSG = 4, KBAR = 8, COINS = 16 };
-constexpr unsigned KEYGEN_SECRETS = SEEDS | PRF, ENCAPS_SECRETS = SEEDS | PRF,
-                   DECAPS_SECRETS = SEEDS | PRF | MSG | KBAR;
-
-// Zeroizes the given secret workspace sections of the first n operations; the
-// memsets are queued behind the operation that used them.
-void zeroize_workspace(opqc_sycl_mlkem* ctx, std::size_t n, unsigned sections) {
-    for (unsigned i = 0; i < 5; i++) {
-        if (sections & (1u << i)) ctx->queue.memset(ctx->mem + ctx->secret_offset[i], 0, ctx->secret_bytes[i] * n);
-    }
+// Zeroizes the given secret workspace sections of the first `ops` operations; the memsets are
+// queued behind the operation that used them.
+void zeroize_workspace(opqc_sycl_mlkem* ctx, std::size_t ops, unsigned sections) {
+    ctx->zeroize(sections, ops);
 }
 
-// Runs f(offset, count) over chunks of at most max_batch operations, zeroizing the
-// secret sections the operation used after each chunk.
+// Runs f(offset, count) over chunks of at most max_batch operations (Core's chunked): nothing on a
+// context that has failed; after every chunk the secret sections it used are zeroized, and the
+// whole workspace if a chunk fails part way or the device fails, as far as the device still
+// accepts work (FIPS 203, Section 3.3). Called with the lock held. Returns 0 or -2.
 template <class F>
 int chunked(opqc_sycl_mlkem* ctx, std::size_t n, unsigned sections, F f) {
-    if (!ctx) return -1;
-    return guarded([&] {
-        for (std::size_t off = 0; off < n; off += ctx->max_batch) {
-            const std::size_t m = n - off < ctx->max_batch ? n - off : ctx->max_batch;
-            f(off, m);
-            zeroize_workspace(ctx, m, sections);
-        }
-        return 0;
-    });
+    return openpqc::gpu::chunked(
+            ctx, n, sections,
+            [&](std::size_t off, std::size_t m) {
+                f(off, m);
+                return std::size_t{0};
+            },
+            [&](std::size_t ops, std::size_t, unsigned mask) { zeroize_workspace(ctx, ops, mask); });
 }
 
 template <class F>
@@ -698,82 +763,75 @@ void with_level(int level, F f) {
     }
 }
 
-// The kernels rely on the caller's buffers being aligned (openpqc::gpu::buffer)
-template <class... T>
-bool aligned(const T*... p) {
-    return openpqc::gpu::aligned(openpqc::gpu::BUFFER_ALIGN, p...);
-}
-
-} // namespace
-
-extern "C" int opqc_sycl_mlkem_create(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int device) {
-    if (!out || (level != 512 && level != 768 && level != 1024) || max_batch == 0) return -1;
-    *out = nullptr;
-    return guarded([&] {
-        sycl::device dev;
-        if (!openpqc::gpu::select_device(device, dev)) return -1;
-        auto* ctx = new opqc_sycl_mlkem{sycl::queue(dev, sycl::property::queue::in_order()), level, max_batch,
-                                        nullptr, 0, {}, {}, {}, dev.get_info<sycl::info::device::name>()};
-        const std::size_t k = static_cast<std::size_t>(level / 256);
-        // per op: seeds, matrix, prf, msg, kbar, hek, dk_check, coins
-        const std::size_t per_op[8] = {64, 2 * 256 * k * k, (2 * k + 1) * gpu::prf_stride_of_level(level), 32, 32, 32, 4, 64};
-        std::size_t offset[8], total = 0;
-        for (int i = 0; i < 8; i++) {
-            offset[i] = total;
-            total += (per_op[i] * max_batch + 255) / 256 * 256;   // 256-byte aligned sections
-        }
-        ctx->mem = sycl::aligned_alloc_device<std::uint8_t>(openpqc::gpu::WORKSPACE_ALIGN, total, ctx->queue);
-        if (!ctx->mem) {
-            delete ctx;
-            return -1;
-        }
-        ctx->mem_bytes = total;
-        ctx->queue.memset(ctx->mem, 0, total).wait();
-        std::uint8_t* base = ctx->mem;
-        ctx->ws = Workspace{base + offset[0],
-                            reinterpret_cast<std::uint16_t*>(base + offset[1]),
-                            base + offset[2],
-                            base + offset[3],
-                            base + offset[4],
-                            base + offset[5],
-                            reinterpret_cast<std::int32_t*>(base + offset[6]),
-                            base + offset[7]};
-        const int secret[5] = {0, 2, 3, 4, 7};   // seeds, prf, msg, kbar, coins
-        for (int i = 0; i < 5; i++) {
-            ctx->secret_offset[i] = offset[secret[i]];
-            ctx->secret_bytes[i] = per_op[secret[i]];
-        }
-        *out = ctx;
-        return 0;
+// The byte sizes of the context's parameter set
+struct LevelSizes {
+    std::size_t ek, dk, ct;
+};
+LevelSizes sizes_of(int level) {
+    LevelSizes s{};
+    with_level(level, [&](auto p) {
+        using S = Sizes<decltype(p)>;
+        s = {S::ek, S::dk, S::ct};
     });
+    return s;
 }
 
-extern "C" void opqc_sycl_mlkem_destroy(opqc_sycl_mlkem* ctx) {
-    if (!ctx) return;
-    guarded([&] {
+// Whether p can be a buffer of the kernels: not NULL, aligned to `alignment` (the kernels rely on
+// it, openpqc::gpu::buffer), and USM memory of the context's SYCL context, which its device can
+// use (device, shared or page-locked host memory). A NULL pointer or memory the device cannot use
+// (pageable host memory, another device's memory) would make the device fault, or, as on Intel GPUs
+// under Level Zero, be read as zeros, and the call would report results computed from them.
+bool usable(const opqc_sycl_mlkem* ctx, const void* p, std::size_t alignment) {
+    if (!p || !openpqc::gpu::aligned(alignment, p)) return false;
+    try {
+        return sycl::get_pointer_type(p, ctx->queue.get_context()) != sycl::usm::alloc::unknown;
+    } catch (...) {
+        return false;
+    }
+}
+bool usable(const opqc_sycl_mlkem* ctx, const void* p) {
+    return usable(ctx, p, openpqc::gpu::BUFFER_ALIGN);
+}
+
+// Whether n operations' buffers fit in size_t (dk is the largest per-operation buffer)
+bool count_fits(const opqc_sycl_mlkem* ctx, std::size_t n) {
+    return n <= SIZE_MAX / sizes_of(ctx->level).dk;
+}
+
+// An output of a call: n operations of `bytes` bytes each, from p
+struct Output {
+    void* p;
+    std::size_t bytes;
+};
+
+// Fail closed (openpqc_mlkem_sycl.h): queues the fill of the call's n status entries with
+// OPQC_SYCL_MLKEM_FAILED (Core's fill_status; status is NULL for KeyGen, which has none) and the
+// zeroization of its outputs behind the work the call has queued, also on a context that has
+// failed, as far as the device still accepts work; then waits for them, so that the call leaves no
+// write into the caller's buffers behind it (they may be read, reused or freed at once: sycl::free
+// does not wait). Called with the lock held. An exception fails the context, and check() then
+// zeroizes the whole workspace once.
+void fail_closed(opqc_sycl_mlkem* ctx, std::int32_t* status, std::size_t n, std::initializer_list<Output> outputs) {
+    openpqc::gpu::fill_status(ctx, status, std::int32_t{OPQC_SYCL_MLKEM_FAILED}, n);
+    for (const Output& o : outputs) {
+        if (o.p && n > 0) {
+            ctx->guard([&] {
+                ctx->queue.memset(o.p, 0, o.bytes * n);
+                return 0;
+            });
+        }
+    }
+    ctx->guard([&] {
         ctx->queue.wait();
-        ctx->queue.memset(ctx->mem, 0, ctx->mem_bytes).wait();
-        sycl::free(ctx->mem, ctx->queue);
         return 0;
     });
-    delete ctx;
+    ctx->check();
 }
 
-extern "C" const char* opqc_sycl_mlkem_device_name(const opqc_sycl_mlkem* ctx) {
-    return ctx ? ctx->device_name.c_str() : "";
-}
-
-extern "C" int opqc_sycl_mlkem_sync(opqc_sycl_mlkem* ctx) {
-    if (!ctx) return -1;
-    return guarded([&] {
-        ctx->queue.wait_and_throw();
-        return 0;
-    });
-}
-
-extern "C" int opqc_sycl_mlkem_keypair_derand(opqc_sycl_mlkem* ctx, std::uint8_t* pk, std::uint8_t* sk,
-                                              const std::uint8_t* coins, std::size_t n) {
-    if (!aligned(pk, sk, coins)) return -1;
+// The work of the three operations, queued in chunks; called with the lock held, on checked
+// arguments. Each returns 0 or -2.
+int keygen_chunks(opqc_sycl_mlkem* ctx, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* coins,
+                  std::size_t n) {
     return chunked(ctx, n, KEYGEN_SECRETS, [&](std::size_t off, std::size_t m) {
         with_level(ctx->level, [&](auto p) {
             using P = decltype(p);
@@ -781,131 +839,331 @@ extern "C" int opqc_sycl_mlkem_keypair_derand(opqc_sycl_mlkem* ctx, std::uint8_t
         });
     });
 }
-
-extern "C" int opqc_sycl_mlkem_enc_derand(opqc_sycl_mlkem* ctx, std::uint8_t* ct, std::uint8_t* ss,
-                                          const std::uint8_t* pk, const std::uint8_t* coins, std::int32_t* status,
-                                          std::size_t n) {
-    if (!aligned(ct, ss, pk, coins)) return -1;
+int encaps_chunks(opqc_sycl_mlkem* ctx, std::uint8_t* ct, std::uint8_t* ss, const std::uint8_t* pk,
+                  const std::uint8_t* coins, std::int32_t* status, std::size_t n) {
     return chunked(ctx, n, ENCAPS_SECRETS, [&](std::size_t off, std::size_t m) {
         with_level(ctx->level, [&](auto p) {
             using P = decltype(p);
             gpu::encaps<P>(ctx->queue, ctx->ws, ct + off * Sizes<P>::ct, ss + off * 32, pk + off * Sizes<P>::ek,
-                           coins + off * 32, status ? status + off : nullptr, m);
+                           coins + off * 32, status + off, m);
         });
     });
 }
-
-extern "C" int opqc_sycl_mlkem_dec(opqc_sycl_mlkem* ctx, std::uint8_t* ss, const std::uint8_t* ct,
-                                   const std::uint8_t* sk, std::int32_t* status, std::size_t n) {
-    if (!aligned(ss, ct, sk)) return -1;
+int decaps_chunks(opqc_sycl_mlkem* ctx, std::uint8_t* ss, const std::uint8_t* ct, const std::uint8_t* sk,
+                  std::int32_t* status, std::size_t n) {
     return chunked(ctx, n, DECAPS_SECRETS, [&](std::size_t off, std::size_t m) {
         with_level(ctx->level, [&](auto p) {
             using P = decltype(p);
             gpu::decaps<P>(ctx->queue, ctx->ws, ss + off * 32, ct + off * Sizes<P>::ct, sk + off * Sizes<P>::dk,
-                           status ? status + off : nullptr, m);
+                           status + off, m);
         });
     });
 }
 
-// Randomized calls: coins from the operating system, copied into the workspace
-// (zeroized at the end of the call, like the other secrets), then the
-// derandomized operation.
-namespace {
+// The randomized calls (Core's with_random_coins): per chunk, coin_bytes x m bytes from the
+// operating system into the context's page-locked host buffer, copied into the workspace and
+// wiped on the host at once; run(off, m, coins) queues the derandomized operation on them, and the
+// coins in the workspace are zeroized behind it, whatever happened. Takes the lock (it is held
+// already). Returns 0, -2 or OPQC_SYCL_MLKEM_RNG_FAIL.
+template <class Run>
+int with_random_coins(opqc_sycl_mlkem* ctx, std::size_t coin_bytes, std::size_t n, Run run) {
+    return openpqc::gpu::with_random_coins(ctx, n, coin_bytes, ctx->ws.coins, OPQC_SYCL_MLKEM_RNG_FAIL, 0, run,
+                                           [&](std::size_t m) {
+                                               ctx->queue.memset(ctx->ws.coins, 0, coin_bytes * m);
+                                           });
+}
 
-template <class F>
-int with_random_coins(opqc_sycl_mlkem* ctx, std::size_t per_op, std::size_t n, F f) {
-    if (!ctx) return -1;
-    std::vector<std::uint8_t> host(per_op * (n < ctx->max_batch ? n : ctx->max_batch));
+// KeyGen, derandomized (coins != NULL) or randomized: checks the arguments, queues the work, and
+// zeroizes the outputs if the call fails
+int keygen_call(opqc_sycl_mlkem* ctx, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* coins, bool random,
+                std::size_t n) {
+    if (!ctx || !count_fits(ctx, n)) return -1;
+    if (n > 0 && (!usable(ctx, pk) || !usable(ctx, sk) || (!random && !usable(ctx, coins)))) return -1;
+    const Lock lock(ctx->mutex);
+    const LevelSizes s = sizes_of(ctx->level);
     int rc = 0;
-    for (std::size_t off = 0; off < n && rc == 0; off += ctx->max_batch) {
-        const std::size_t m = n - off < ctx->max_batch ? n - off : ctx->max_batch;
-        if (opqc_randombytes(host.data(), per_op * m) != 0) {
-            rc = -3;
-            break;
+    if (random) {
+        rc = with_random_coins(ctx, 64, n, [&](std::size_t off, std::size_t m, const std::uint8_t* c) {
+            return keygen_chunks(ctx, pk + off * s.ek, sk + off * s.dk, c, m);
+        });
+    } else {
+        rc = keygen_chunks(ctx, pk, sk, coins, n);
+    }
+    if (rc != 0) fail_closed(ctx, nullptr, n, {{pk, s.ek}, {sk, s.dk}});
+    return rc;
+}
+
+// Encaps and Decaps (status required): `args_ok` says whether the buffers other than status are
+// usable; run() queues the work and returns 0 or the call's error. The status entries are set to
+// OPQC_SYCL_MLKEM_FAILED before the first kernel, so that an entry whose last kernel (encrypt,
+// which writes it with the operation's outputs) never runs, in a call or on a device that fails
+// part way, never reads as a result left there by an earlier call; and again, with the outputs
+// zeroized, if the call fails or is refused (openpqc_mlkem_sycl.h).
+template <class Run>
+int status_call(opqc_sycl_mlkem* ctx, std::int32_t* status, std::size_t n, bool args_ok,
+                std::initializer_list<Output> outputs, Run run) {
+    if (!ctx || !count_fits(ctx, n)) return -1;
+    const bool status_ok = n == 0 || usable(ctx, status, alignof(std::int32_t));
+    const Lock lock(ctx->mutex);
+    if (!status_ok || !args_ok) {
+        if (status_ok) fail_closed(ctx, status, n, {});   // refused: status says so; nothing else is written
+        return -1;
+    }
+    int rc = ctx->check();   // a context that has failed runs nothing: -2
+    if (rc == 0) rc = openpqc::gpu::fill_status(ctx, status, std::int32_t{OPQC_SYCL_MLKEM_FAILED}, n);
+    if (rc == 0) rc = run();
+    if (rc != 0) fail_closed(ctx, status, n, outputs);
+    return rc;
+}
+
+int encaps_call(opqc_sycl_mlkem* ctx, std::uint8_t* ct, std::uint8_t* ss, const std::uint8_t* pk,
+                const std::uint8_t* coins, bool random, std::int32_t* status, std::size_t n) {
+    if (!ctx) return -1;
+    const LevelSizes s = sizes_of(ctx->level);
+    const bool ok =
+            n == 0 || (usable(ctx, ct) && usable(ctx, ss) && usable(ctx, pk) && (random || usable(ctx, coins)));
+    return status_call(ctx, status, n, ok, {{ct, s.ct}, {ss, 32}}, [&] {
+        if (!random) return encaps_chunks(ctx, ct, ss, pk, coins, status, n);
+        return with_random_coins(ctx, 32, n, [&](std::size_t off, std::size_t m, const std::uint8_t* c) {
+            return encaps_chunks(ctx, ct + off * s.ct, ss + off * 32, pk + off * s.ek, c, status + off, m);
+        });
+    });
+}
+
+// The self-test of create (openpqc_mlkem_sycl.h, Self-test): KeyGen of the inputs of
+// mlkem_sycl_self_test.hpp, Encaps under its key, and, in one call, the Decaps of the ciphertext and
+// of a tampered copy, on the context's device; the hashes of ek, dk and c and the keys must be the
+// CPU library's answers, and every status 0. Its device memory holds no secret. All of it but the
+// inputs is set to a pattern first (0xA5: no answer, and no status 0), so that only what the
+// kernels write can pass: device memory is not cleared when it is allocated, and the memory of an
+// earlier self-test, with its answers, can come back at the same address (it does under Level
+// Zero), where a device that ran no kernel would read them. It is zeroed before it is freed.
+// Returns 0, OPQC_SYCL_MLKEM_SELF_TEST_FAIL, -1 (no device memory) or -2.
+int self_test(opqc_sycl_mlkem* ctx) {
+    namespace st = openpqc::mlkem::gpu::self_test;
+    const st::Answers* answers = nullptr;
+    for (const st::Answers& a : st::answers) {
+        if (a.level == ctx->level) answers = &a;
+    }
+    if (!answers) return OPQC_SYCL_MLKEM_SELF_TEST_FAIL;
+    const LevelSizes s = sizes_of(ctx->level);
+    // device memory: coins (d || z, then m) | ek | dk twice | c and its tampered copy | K | K' twice | status x 3
+    const std::size_t o_ek = 96, o_dk = o_ek + s.ek, o_c = o_dk + 2 * s.dk, o_k = o_c + 2 * s.ct, o_st = o_k + 96,
+                      total = o_st + 16;
+    // the device memory's host copy: the inputs, then the pattern (may throw: before the device memory exists)
+    std::vector<std::uint8_t> h(total, std::uint8_t{0xA5});
+    auto* d = static_cast<std::uint8_t*>(openpqc::gpu::device_malloc(ctx->queue, total));
+    if (!d) return -1;
+    for (std::size_t i = 0; i < 96; i++) h[i] = st::coin(i);
+    auto* status = reinterpret_cast<std::int32_t*>(d + o_st);
+    const auto put = [&](std::size_t off, std::size_t bytes) {
+        return openpqc::gpu::copy(ctx, d + off, h.data() + off, bytes, true);
+    };
+    const auto get = [&](std::size_t off, std::size_t bytes) {
+        return openpqc::gpu::copy(ctx, h.data() + off, d + off, bytes, true);
+    };
+    int rc = 0;
+    {
+        const Lock lock(ctx->mutex);
+        rc = put(0, total);   // the inputs, and the pattern everywhere else
+        if (rc == 0) rc = keygen_chunks(ctx, d + o_ek, d + o_dk, d, 1);
+        if (rc == 0) rc = encaps_chunks(ctx, d + o_c, d + o_k, d + o_ek, d + 64, status, 1);
+        if (rc == 0) rc = get(o_dk, s.dk);
+        if (rc == 0) rc = get(o_c, s.ct);
+        if (rc == 0) {
+            std::memcpy(&h[o_dk + s.dk], &h[o_dk], s.dk);                              // the same dk for both
+            std::memcpy(&h[o_c + s.ct], &h[o_c], s.ct);
+            h[o_c + s.ct + st::TAMPERED_BYTE] ^= 1;                                     // the tampered c
+            rc = put(o_dk + s.dk, s.dk);
         }
-        rc = guarded([&] {
-            ctx->queue.memcpy(ctx->ws.coins, host.data(), per_op * m).wait();
+        if (rc == 0) rc = put(o_c + s.ct, s.ct);
+        if (rc == 0) rc = decaps_chunks(ctx, d + o_k + 32, d + o_c, d + o_dk, status + 1, 2);
+        if (rc == 0) rc = get(o_ek, s.ek);
+        if (rc == 0) rc = get(o_k, 96);
+        if (rc == 0) rc = get(o_st, 12);
+        const int wiped = ctx->guard([&] {   // before the free, which does not wait
+            ctx->queue.memset(d, 0, total).wait();
             return 0;
         });
-        opqc_zeroize(host.data(), host.size());
-        if (rc == 0) rc = f(off, m, ctx->ws.coins);
-        if (rc == 0) {
-            rc = guarded([&] {
-                zeroize_workspace(ctx, m, COINS);
-                return 0;
-            });
-        }
+        if (rc == 0) rc = wiped;
     }
-    opqc_zeroize(host.data(), host.size());
-    return rc;
+    openpqc::gpu::device_free(ctx->queue, d);
+    if (rc != 0) return rc;
+    std::uint8_t hash[32];
+    bool ok = true;
+    opqc_sha3_256(hash, &h[o_ek], s.ek);
+    ok = ok && std::memcmp(hash, answers->ek.data(), 32) == 0;
+    opqc_sha3_256(hash, &h[o_dk], s.dk);
+    ok = ok && std::memcmp(hash, answers->dk.data(), 32) == 0;
+    opqc_sha3_256(hash, &h[o_c], s.ct);
+    ok = ok && std::memcmp(hash, answers->c.data(), 32) == 0;
+    ok = ok && std::memcmp(&h[o_k], answers->K.data(), 32) == 0;          // Encaps
+    ok = ok && std::memcmp(&h[o_k + 32], answers->K.data(), 32) == 0;     // Decaps of c
+    ok = ok && std::memcmp(&h[o_k + 64], answers->K_bar.data(), 32) == 0; // Decaps of the tampered c
+    std::int32_t st_values[3];
+    std::memcpy(st_values, &h[o_st], sizeof st_values);
+    ok = ok && st_values[0] == 0 && st_values[1] == 0 && st_values[2] == 0;
+    return ok ? 0 : OPQC_SYCL_MLKEM_SELF_TEST_FAIL;
+}
+
+// The device of create (openpqc_mlkem_sycl.h): index `device`, or for -1 the index that
+// OPENPQC_SYCL_DEVICE names, or SYCL's default device when it is unset or empty. The variable must
+// be a decimal index, nothing else: atoi would read "gpu" or a typo as 0 and "1abc" as 1, and a
+// service would run on a device nobody chose.
+bool resolve_device(int device, sycl::device& out) {
+    if (device < -1) return false;
+    if (device == -1) {
+        const char* env = std::getenv("OPENPQC_SYCL_DEVICE");
+        if (!env || *env == '\0') {
+            out = sycl::device(sycl::default_selector_v);
+            return true;
+        }
+        long long index = 0;
+        for (const char* c = env; *c != '\0'; c++) {
+            if (*c < '0' || *c > '9') return false;
+            index = index * 10 + (*c - '0');
+            if (index > INT_MAX) return false;
+        }
+        device = static_cast<int>(index);
+    }
+    return openpqc::gpu::select_device(device, out);
 }
 
 } // namespace
 
-extern "C" int opqc_sycl_mlkem_keypair(opqc_sycl_mlkem* ctx, std::uint8_t* pk, std::uint8_t* sk, std::size_t n) {
-    return with_random_coins(ctx, 64, n, [&](std::size_t off, std::size_t m, const std::uint8_t* coins) {
-        int rc = 0;
-        with_level(ctx->level, [&](auto p) {
-            using P = decltype(p);
-            rc = opqc_sycl_mlkem_keypair_derand(ctx, pk + off * Sizes<P>::ek, sk + off * Sizes<P>::dk, coins, m);
-        });
-        return rc;
+extern "C" int opqc_sycl_mlkem_create(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int device) {
+    if (!out) return -1;
+    *out = nullptr;
+    if ((level != 512 && level != 768 && level != 1024) || max_batch == 0 || max_batch > OPQC_SYCL_MLKEM_MAX_BATCH)
+        return -1;
+    return guarded([&] {
+        sycl::device dev;
+        if (!resolve_device(device, dev)) return -1;
+        // destroyed on every way out but the last (an exception included: no leak of device memory)
+        std::unique_ptr<opqc_sycl_mlkem, void (*)(opqc_sycl_mlkem*)> ctx(
+                new opqc_sycl_mlkem(dev, level, max_batch), [](opqc_sycl_mlkem* c) { openpqc::gpu::destroy(c); });
+        std::array<std::size_t, gpu::SECTIONS> per_op{};
+        with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
+        // 256-byte aligned sections, then the zero word of the Decaps mask
+        std::uint8_t* extra = ctx->allocate(per_op, openpqc::gpu::WORKSPACE_ALIGN);
+        if (!extra) return -1;
+        const auto at = [&](Section s) { return ctx->section(s); };
+        ctx->ws = Workspace{at(gpu::SEEDS),
+                            reinterpret_cast<std::uint16_t*>(at(gpu::MATRIX)),
+                            at(gpu::PRF),
+                            at(gpu::MSG),
+                            at(gpu::KBAR),
+                            at(gpu::HEK),
+                            reinterpret_cast<std::int32_t*>(at(gpu::DK_CHECK)),
+                            at(gpu::COINS),
+                            reinterpret_cast<std::uint32_t*>(extra)};
+        const int rc = self_test(ctx.get());
+        if (rc != 0) return rc;
+        *out = ctx.release();
+        return 0;
     });
+}
+
+// Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device
+// still accepts work; a device error never ends the process here (Core/sycl/opqc_sycl_context.hpp)
+extern "C" void opqc_sycl_mlkem_destroy(opqc_sycl_mlkem* ctx) { openpqc::gpu::destroy(ctx); }
+
+extern "C" const char* opqc_sycl_mlkem_device_name(const opqc_sycl_mlkem* ctx) {
+    return ctx ? ctx->device_name.c_str() : "";
+}
+
+// Waits for all the work queued on the context: 0, or -2 if the context has failed, before or
+// during the wait (the first time, the whole workspace is zeroized); -1 for NULL
+extern "C" int opqc_sycl_mlkem_sync(opqc_sycl_mlkem* ctx) { return openpqc::gpu::sync(ctx); }
+
+extern "C" int opqc_sycl_mlkem_keypair_derand(opqc_sycl_mlkem* ctx, std::uint8_t* pk, std::uint8_t* sk,
+                                              const std::uint8_t* coins, std::size_t n) {
+    return keygen_call(ctx, pk, sk, coins, false, n);
+}
+
+extern "C" int opqc_sycl_mlkem_keypair(opqc_sycl_mlkem* ctx, std::uint8_t* pk, std::uint8_t* sk, std::size_t n) {
+    return keygen_call(ctx, pk, sk, nullptr, true, n);
+}
+
+extern "C" int opqc_sycl_mlkem_enc_derand(opqc_sycl_mlkem* ctx, std::uint8_t* ct, std::uint8_t* ss,
+                                          const std::uint8_t* pk, const std::uint8_t* coins, std::int32_t* status,
+                                          std::size_t n) {
+    return encaps_call(ctx, ct, ss, pk, coins, false, status, n);
 }
 
 extern "C" int opqc_sycl_mlkem_enc(opqc_sycl_mlkem* ctx, std::uint8_t* ct, std::uint8_t* ss, const std::uint8_t* pk,
                                    std::int32_t* status, std::size_t n) {
-    return with_random_coins(ctx, 32, n, [&](std::size_t off, std::size_t m, const std::uint8_t* coins) {
-        int rc = 0;
-        with_level(ctx->level, [&](auto p) {
-            using P = decltype(p);
-            rc = opqc_sycl_mlkem_enc_derand(ctx, ct + off * Sizes<P>::ct, ss + off * 32, pk + off * Sizes<P>::ek,
-                                            coins, status ? status + off : nullptr, m);
-        });
-        return rc;
-    });
+    return encaps_call(ctx, ct, ss, pk, nullptr, true, status, n);
 }
 
-extern "C" void* opqc_sycl_mlkem_malloc(opqc_sycl_mlkem* ctx, std::size_t bytes) {
-    if (!ctx) return nullptr;
-    void* p = nullptr;
-    guarded([&] {
-        p = sycl::aligned_alloc_device(openpqc::gpu::WORKSPACE_ALIGN, bytes, ctx->queue);
-        return 0;
-    });
+extern "C" int opqc_sycl_mlkem_dec(opqc_sycl_mlkem* ctx, std::uint8_t* ss, const std::uint8_t* ct,
+                                   const std::uint8_t* sk, std::int32_t* status, std::size_t n) {
+    if (!ctx) return -1;
+    const bool ok = n == 0 || (usable(ctx, ss) && usable(ctx, ct) && usable(ctx, sk));
+    return status_call(ctx, status, n, ok, {{ss, 32}}, [&] { return decaps_chunks(ctx, ss, ct, sk, status, n); });
+}
+
+// Memory (Core/sycl/opqc_sycl_context.hpp). Every buffer handed out is remembered with its size,
+// so that free can overwrite it: a buffer that held dk, K or coins would otherwise come back with
+// them from the next allocation of the same size (device memory is not cleared when it is
+// allocated, and freed memory is pooled).
+namespace {
+
+void* remember(opqc_sycl_mlkem* ctx, void* p, std::size_t bytes, bool host) {
+    if (!p) return nullptr;
+    const Lock lock(ctx->mutex);
+    try {
+        ctx->allocations.emplace(p, opqc_sycl_mlkem::Allocation{bytes, host});
+    } catch (...) {
+        openpqc::gpu::device_free(ctx->queue, p);
+        return nullptr;
+    }
     return p;
+}
+
+} // namespace
+
+extern "C" void* opqc_sycl_mlkem_malloc(opqc_sycl_mlkem* ctx, std::size_t bytes) {
+    return ctx ? remember(ctx, openpqc::gpu::device_malloc(ctx->queue, bytes), bytes, false) : nullptr;
 }
 
 extern "C" void* opqc_sycl_mlkem_malloc_host(opqc_sycl_mlkem* ctx, std::size_t bytes) {
-    if (!ctx) return nullptr;
-    void* p = nullptr;
-    guarded([&] {
-        p = sycl::aligned_alloc_host(openpqc::gpu::WORKSPACE_ALIGN, bytes, ctx->queue);
-        return 0;
-    });
-    return p;
+    return ctx ? remember(ctx, openpqc::gpu::host_malloc(ctx->queue, bytes), bytes, true) : nullptr;
 }
 
+// Waits for the work queued on the context (it may still use p: sycl::free does not wait), then
+// overwrites p with zeros (device memory by a memset on the queue, page-locked host memory on the
+// host, as far as the device and the runtime allow), then frees it
 extern "C" void opqc_sycl_mlkem_free(opqc_sycl_mlkem* ctx, void* p) {
     if (!ctx || !p) return;
-    guarded([&] {
-        sycl::free(p, ctx->queue);
-        return 0;
-    });
+    const Lock lock(ctx->mutex);
+    const auto it = ctx->allocations.find(p);
+    if (it != ctx->allocations.end()) {
+        const opqc_sycl_mlkem::Allocation a = it->second;
+        ctx->allocations.erase(it);
+        ctx->guard([&] {
+            ctx->queue.wait();
+            return 0;
+        });
+        if (a.host) {
+            opqc_zeroize(p, a.bytes);
+        } else if (a.bytes > 0) {
+            ctx->guard([&] {
+                ctx->queue.memset(p, 0, a.bytes).wait();
+                return 0;
+            });
+        }
+        ctx->check();
+    }
+    openpqc::gpu::device_free(ctx->queue, p);
 }
 
+// The copies: -1 for NULL (a context, or dst or src with bytes > 0; nothing queued), -2 once the
+// context has failed (the copy is still made as far as the device allows)
 extern "C" int opqc_sycl_mlkem_memcpy(opqc_sycl_mlkem* ctx, void* dst, const void* src, std::size_t bytes) {
-    if (!ctx) return -1;
-    return guarded([&] {
-        ctx->queue.memcpy(dst, src, bytes).wait();
-        return 0;
-    });
+    return openpqc::gpu::copy(ctx, dst, src, bytes, true);
 }
 
 extern "C" int opqc_sycl_mlkem_memcpy_async(opqc_sycl_mlkem* ctx, void* dst, const void* src, std::size_t bytes) {
-    if (!ctx) return -1;
-    return guarded([&] {
-        ctx->queue.memcpy(dst, src, bytes);
-        return 0;
-    });
+    return openpqc::gpu::copy(ctx, dst, src, bytes, false);
 }

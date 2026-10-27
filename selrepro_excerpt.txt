@@ -1,0 +1,9 @@
+# selrepro.cpp (F063): the masked K'/K-bar select of mlkem_sycl.cpp:536-542 in a one-line kernel, DPC++ nightly 2026-10-11 -O3, sm_86,
+# PTX from -save-temps, SASS from ptxas (CUDA 13.4) + cuobjdump. VARIANT 0 = the code as in the library; VARIANT 1 = the mask passed
+# through asm volatile("" : "+r"(mask)) (an opaque value barrier for the NVPTX target).
+
+## VARIANT 0 PTX (kernel decaps_select)
+## VARIANT 0 SASS
+
+## VARIANT 1 PTX (kernel decaps_select)
+## VARIANT 1 SASS

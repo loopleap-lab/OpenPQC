@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // sampling.hpp  --  ExpandA, ExpandS, ExpandMask and RejBoundedPoly (FIPS 204, Section 7.3)
 //
 // The vectors and the matrix of ML-DSA, sampled from seeds:
@@ -43,8 +46,9 @@ PolyMatrix<P::k, P::l> expand_a(std::span<const std::uint8_t, 32> rho) {
 }
 
 // Algorithm 31: a <- RejBoundedPoly(rho), rho of 66 bytes given as the concatenation `rho`
+// (its registers are cleared when it returns: crypto_functions.hpp)
 template <unsigned Eta>
-Poly rej_bounded_poly(ByteStrings rho) {
+OPENPQC_MLDSA_CLEARS_REGISTERS Poly rej_bounded_poly(ByteStrings rho) {
     Poly a;
     unsigned j = 0;                                                         // 1
     Xof ctx = H_init();                                                     // 2
@@ -77,7 +81,7 @@ PolyVec<P::l> expand_mask(std::span<const std::uint8_t, 64> rho, unsigned mu) {
     ZeroizeOnExit wipe{v};
     for (unsigned r = 0; r < P::l; r++) {                                   // 2
         const auto suffix = integer_to_bytes<2>(mu + r);                    // 3: rho' = rho || IntegerToBytes(mu + r, 2)
-        openpqc::sponge(OPQC_SHAKE256_RATE, OPQC_SHAKE_SUFFIX, v, {rho, suffix});  // 4: v <- H(rho', 32c)
+        H(v, {rho, suffix});                                                // 4: v <- H(rho', 32c)
         mldsa_bit_unpack(y[r].data(), v.data(), P::gamma1, c);              // 5: BitUnpack(v, gamma1 - 1, gamma1)
     }
     return y;

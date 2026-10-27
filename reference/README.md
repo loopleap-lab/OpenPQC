@@ -59,18 +59,25 @@ Licence: public domain (CC0), or Apache-2.0, or GPL-2.0 (`dilithium/LICENSE`); t
 `sphincsplus/` is an unmodified copy of [sphincs/sphincsplus](https://github.com/sphincs/sphincsplus), the
 implementation of SLH-DSA by the designers of SPHINCS+, from its branch `bas/fips205` (FIPS 205 with context strings,
 HashSLH-DSA and the internal functions), without the repository's hidden files and without `acvp/` (NIST's ACVP
-vectors, 66 MB, which `tests/SLH-DSA/acvp` downloads from NIST and pins by SHA-256 instead). The branch and commit are
-recorded in `sphincsplus/UPSTREAM.txt`. It has portable C for the twelve parameter sets in `ref/`, AVX2 code for the
-six SHA2 sets in `sha2-avx2/` and for the six SHAKE sets in `shake-avx2/` (most of their files are symbolic links into
-`ref/`, kept as links), and AArch64 code in `shake-a64/`, which is not built.
+vectors, 66 MB, which `tests/SLH-DSA/acvp` downloads from NIST and pins by SHA-256 instead). The branch and commit
+(`ef36d20`) are recorded in `sphincsplus/UPSTREAM.txt`. It has portable C for the twelve parameter sets in `ref/`,
+AVX2 code for the six SHA2 sets in `sha2-avx2/` and for the six SHAKE sets in `shake-avx2/` (most of their files are
+symbolic links into `ref/`, kept as links), and AArch64 code in `shake-a64/`, which is not built.
 
+- `tests/SLH-DSA/test_slhdsa_differential` compares OpenPQC SLH-DSA with `ref/` and with the AVX2 code, byte for
+  byte, for all twelve sets: keys, signatures (deterministic, with addrnd given and hedged, with context strings up to
+  255 bytes, HashSLH-DSA with each of the twelve pre-hash functions, the internal functions) and verification
+  results, also for tampered signatures.
 - Its test programs (`ref/test/spx.c`, compiled with upstream's `SPX_TEST_INVALIDSIG`, and the NIST KAT generator
-  `ref/PQCgenKAT_sign.c`) run against both implementations; OpenPQC's side is the adapter in
-  `tests/SLH-DSA/targets/openpqc`. The KAT output of both must hash to the value in upstream's `SHA256SUMS` (which
+  `ref/PQCgenKAT_sign.c`) run against both implementations, as twin tests for every set (`slhdsa_<set>_func` and
+  `reference_slhdsa_<set>_func`, `slhdsa_<set>_kat` and `reference_slhdsa_<set>_kat`); OpenPQC's side is the adapter
+  in `tests/SLH-DSA/targets/openpqc`. The KAT output of both must hash to the value in upstream's `SHA256SUMS` (which
   separates hash and name by one space, so `sha256sum -c` cannot read it). `ref/test/fors.c` calls the reference's
-  internal FORS functions and runs on the reference only.
+  internal FORS functions and runs on the reference only (`reference_slhdsa_<set>_fors`).
 - The NIST ACVP vectors run through OpenPQC (`slhdsa_acvp`) and through the reference (`reference_slhdsa_acvp`, and
   `reference_slhdsa_avx2_acvp` for the AVX2 code), with the same client and driver (`tests/SLH-DSA/acvp`).
+- `bench/cpu/bench_slhdsa_cpu_mt` measures OpenPQC against `ref/` and the AVX2 code (and checks that both give
+  OpenPQC's keys and signatures).
 
 sphincsplus compiles one parameter set per build (`-DPARAMS=sphincs-<family>-<size>`), and its API (`crypto_sign_*`)
 and its SHA-2 functions carry no prefix, so two sets cannot be linked into one program as shipped. The libraries below

@@ -13,11 +13,15 @@
 
 #include <string.h>
 
+#if defined(_WIN32)
+/* SecureZeroMemory (opqc_zeroize), whichever source of randomness the build uses */
+#include <windows.h>
+#endif
+
 #if defined(OPQC_CONFIG_EXTERNAL_RANDOMBYTES)
 /* provided by the application, see opqc_platform.h */
 int randombytes(uint8_t *out, size_t outlen);
 #elif defined(_WIN32)
-#include <windows.h>
 #include <bcrypt.h>
 #elif defined(__linux__)
 #include <errno.h>
@@ -64,8 +68,16 @@ static int opqc_system_random(uint8_t *out, size_t len)
         ssize_t n = getrandom(out, len, 0);
         if (n < 0) {
             if (errno == EINTR) {
-                continue;
+                continue; /* a signal arrived before any byte was written */
             }
+            return -1;
+        }
+        /* A working getrandom() returns between 1 and len bytes (fewer than
+         * len when a signal interrupts a large request). Anything else, such
+         * as the 0 of a seccomp filter with SECCOMP_RET_ERRNO(0) or of a
+         * broken interposer, would make this loop run forever or past the
+         * buffer: fail instead. */
+        if (n == 0 || (size_t)n > len) {
             return -1;
         }
         out += n;

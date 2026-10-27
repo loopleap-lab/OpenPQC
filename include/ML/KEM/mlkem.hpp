@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // mlkem.hpp  --  C++ API for ML-KEM (FIPS 203): ML-KEM-512, ML-KEM-768, ML-KEM-1024
 //
 // Header-only wrapper over the C API in ML/KEM/openpqc_mlkem.h, so that
@@ -78,7 +81,9 @@ struct MLKEM {
     using ciphertext = std::array<std::uint8_t, ciphertext_bytes>;
     using shared_secret = std::array<std::uint8_t, shared_secret_bytes>;
 
-    // ML-KEM.KeyGen_internal(d, z), FIPS 203 Algorithm 16
+    // ML-KEM.KeyGen_internal(d, z), FIPS 203 Algorithm 16. If the library is built with
+    // OPENPQC_MLKEM_KEYGEN_PCT, the pair-wise consistency test follows, which draws its m from
+    // randombytes() and can fail (see openpqc_mlkem.h); keys that pass it are the same as without it.
     [[nodiscard]] static int keypair_derand(std::span<std::uint8_t, public_key_bytes> pk,
                                             std::span<std::uint8_t, secret_key_bytes> sk,
                                             std::span<const std::uint8_t, keypair_coins_bytes> coins) {

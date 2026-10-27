@@ -45,8 +45,12 @@
  * Calls are asynchronous: they return once the work is queued, and
  * opqc_sycl_mldsa_sync waits for it -- except signing, which waits for each
  * round of the rejection loop to learn which signatures are still unfinished.
- * All functions return 0 on success and a negative value on error (a SYCL
- * exception, invalid arguments, or OPENPQC_MLDSA_ERR_RNG_FAIL). Secret
+ * All functions return 0 on success and a negative value on error: -1 for
+ * invalid arguments (from create also for a device or device memory that is
+ * not available), -2 for an exception of the SYCL runtime or, for the
+ * randomized calls (keypair, sign, sign_one_key), when the page-locked host
+ * memory that their random coins pass through cannot be allocated, or
+ * OPENPQC_MLDSA_ERR_RNG_FAIL. Secret
  * intermediate values kept in device memory between the stages of a call are
  * zeroized when the call ends, also when it fails part way (as far as the device
  * still accepts work).

@@ -1,4 +1,8 @@
-// test_mldsa_cxx.cpp  --  C++ ML-DSA API: round trips, determinism, context strings, HashML-DSA, external mu
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
+// test_mldsa_cxx.cpp  --  C++ ML-DSA API: round trips, determinism, context strings, HashML-DSA, external mu,
+//                         the key checks (malformed keys: tests/ML-DSA/test_mldsa_sk_check.cpp)
 #include "check.hpp"
 #include "ML/DSA/mldsa.hpp"
 
@@ -25,6 +29,8 @@ void test_dsa() {
         typename DSA::secret_key sk{};
         typename DSA::signature sig{};
         CHECK_EQ(DSA::keypair(pk, sk), 0);
+        CHECK_EQ(DSA::check_sk(sk), 0);
+        CHECK_EQ(DSA::check_keypair(pk, sk), 0);
 
         // ML-DSA, with and without a context string
         CHECK_EQ(DSA::sign(sig, message, sk), 0);
