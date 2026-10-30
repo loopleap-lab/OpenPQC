@@ -3,7 +3,7 @@ project(OpenPQC VERSION 0.3.0 LANGUAGES C CXX)
 
 option(OPENPQC_BUILD_TESTS      "Build the OpenPQC tests"                ${PROJECT_IS_TOP_LEVEL})
 option(OPENPQC_BUILD_BENCHMARKS "Build the OpenPQC benchmarks"           ${PROJECT_IS_TOP_LEVEL})
-option(OPENPQC_BUILD_EXAMPLES   "Build the demos in examples/"            ${PROJECT_IS_TOP_LEVEL})
+option(OPENPQC_BUILD_EXAMPLES   "Build the demos and examples in examples/ and applications/" ${PROJECT_IS_TOP_LEVEL})
 option(OPENPQC_NATIVE           "Use the SIMD/assembly backends of the reference (mlkem-native)" ON)
 option(OPENPQC_WERROR           "Treat warnings in OpenPQC's own code as errors" ${PROJECT_IS_TOP_LEVEL})
 
@@ -135,6 +135,11 @@ if(OPENPQC_BUILD_BENCHMARKS)
     add_subdirectory(bench)
 endif()
 
+# Demos and example programs (examples/) and application demos (applications/); the example
+# programs and the applications are also CTest tests: label examples or applications, plus gpu for
+# those that need a SYCL device
 if(OPENPQC_BUILD_EXAMPLES)
+    enable_testing()
     add_subdirectory(examples)
+    add_subdirectory(applications)
 endif()
