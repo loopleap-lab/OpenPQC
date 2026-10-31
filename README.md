@@ -60,8 +60,13 @@ tests/       C++ tests; tests/Core; tests/ML-KEM, tests/ML-DSA, tests/SLH-DSA (t
              against both implementations, differential, math-core and constant-time tests, ACVP); tests/gpu
              (SYCL vs CPU, every device)
 bench/       CPU and GPU benchmarks, run_benchmarks.sh, compare_gpu.py
-examples/    demo_cpu, demo_gpu: how to use ML-KEM, ML-DSA and SLH-DSA, on the CPU and on a GPU
-                                                                                    -> examples/README.md
+examples/    demo_cpu, demo_gpu, live_demo: ML-KEM, ML-DSA and SLH-DSA on the CPU and on a GPU; and small programs,
+             one part of the API each: ML-KEM, ML-DSA and SLH-DSA with the C and C++ APIs, hashing, and the three
+             on a GPU                                                               -> examples/README.md
+applications/  demos built on ML-KEM, ML-DSA and SLH-DSA: a TLS 1.3-like handshake, a file encryption and signing
+             tool, a handshake server batching on a GPU, a repository of signed packages verified on a GPU, secure
+             boot with an SLH-DSA root key, a time-stamping service signing in GPU batches
+                                                                                    -> applications/README.md
 scripts/     vendor_mlkem_native.py, vendor_dilithium.py, vendor_sphincsplus.py (update reference/ and the test
              programs from upstream)
 cmake/       warning flags, native-backend detection for the reference
@@ -108,7 +113,7 @@ machine.
 | `OPENPQC_SYCL_TARGETS`, `OPENPQC_SYCL_FLAGS`       | empty          | DPC++: devices to compile for, and extra flags for the SYCL code (e.g. `-DOPQC_SHA2_UNROLL_PASSES=1`, which keeps the SHA-2 rounds in loops: the same results, a DPC++ link of SLH-DSA's backend in about 2 instead of 10 minutes, SHA-256 on the GPUs measured 6–10 % slower) |
 | `OPENPQC_SLHDSA_SYCL_SETS`                         | empty          | development only: the SLH-DSA parameter-set ids (1–12, e.g. `3,4`) that the SYCL backend contains; empty: all twelve. DPC++ generates the device code of every set at each link of a program that uses the backend, about 10 minutes and 1.2 GiB for all twelve                |
 | `OPENPQC_NATIVE`                                   | ON             | build the reference (mlkem-native) with its SIMD/assembly backends where the CPU supports them                                                                                                                                                                                 |
-| `OPENPQC_BUILD_TESTS`, `_BENCHMARKS`               | ON (top level) |                                                                                                                                                                                                                                                                                |
+| `OPENPQC_BUILD_TESTS`, `_BENCHMARKS`, `_EXAMPLES`  | ON (top level) | tests, benchmarks, and the demos, examples and application demos (`ctest -L examples`, `-L applications`) |
 | `OPENPQC_WERROR`                                   | ON (top level) | `-Werror` for OpenPQC's own code                                                                                                                                                                                                                                               |
 | `OPENPQC_BENCH_CYCLES`                             | PERF           | cycle counter for the single-thread CPU benchmarks: NO, PERF, PMU, MAC                                                                                                                                                                                                         |
 | `OPENPQC_VALGRIND`, `OPENPQC_VALGRIND_INCLUDE_DIR` | found on PATH  | valgrind for the constant-time tests `mlkemNNN_ct`, `mldsa_ct`, `slhdsa_ct`                                                                                                                                                                                                    |
@@ -148,6 +153,9 @@ openpqc_slhdsa_sha2_128f_sign(sig, msg, msglen, ctx, ctxlen, sk);              /
 openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, msglen, ctx, ctxlen, pk); /* 0: valid */
 ```
 
+[examples/](examples/README.md) has complete programs for each API, the GPU ones included, and
+[applications/](applications/README.md) has demos that put ML-KEM, ML-DSA and SLH-DSA together.
+
 C++: `openpqc::mlkem::MLKEM768` (`ML/KEM/mlkem.hpp`), `openpqc::mldsa::MLDSA65` (`ML/DSA/mldsa.hpp`),
 `openpqc::slhdsa::SLHDSA_SHA2_128f` (`SLH/DSA/slhdsa.hpp`), `openpqc::fips202` and `openpqc::sha2` (`Core/hash.hpp`),
 or the algorithms of the standards themselves as templates (`ML/KEM/scheme/ml_kem.hpp`, `ML/DSA/scheme/ml_dsa.hpp`,
@@ -172,7 +180,10 @@ The GPU designs: [include/ML/KEM/README.md](include/ML/KEM/README.md#gpu-backend
 [include/SLH/DSA/README.md](include/SLH/DSA/README.md#gpu-backend-sycl), with the experiments behind them.
 `bench/run_benchmarks.sh OUT_DIR` measures the CPU and GPU performance on your machine; ML-DSA's and SLH-DSA's results
 on one laptop are in [include/ML/DSA/README.md](include/ML/DSA/README.md#performance) and
-[include/SLH/DSA/README.md](include/SLH/DSA/README.md#performance).
+[include/SLH/DSA/README.md](include/SLH/DSA/README.md#performance). On HiPerGator (University of Florida),
+[bench/hipergator](bench/hipergator/README.md) builds and runs ML-KEM's and ML-DSA's benchmarks, the cuPQC baselines
+included, and has the results for an Intel Xeon Platinum 8570, an AMD EPYC 9655P, an NVIDIA L4 and an NVIDIA B200;
+`bench/plot_platforms.py` puts machines side by side.
 
 ## Licensing
 

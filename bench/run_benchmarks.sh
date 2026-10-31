@@ -30,9 +30,17 @@
 #   SLHDSA_WORKSPACE_MIB  largest SLH-DSA workspace per context in MiB, for the runs without a third field
 #               (default 3072: the RTX 3050's 4 GiB; an integrated GPU takes it from the host's memory, so
 #               give such a run about 1024-1280 in its third field)
-#   CUPQC_BENCH path of bench_cupqc_mlkem (optional), and
-#   CUPQC_OUT   directory for its output. cuPQC results are confidential under NVIDIA's
+#   CUPQC_BENCH path of bench_cupqc_mlkem (optional),
+#   CUPQC_MLDSA_BENCH  path of bench_cupqc_mldsa (optional), and
+#   CUPQC_OUT   directory for their output. cuPQC results are confidential under NVIDIA's
 #               evaluation licence: CUPQC_OUT must not be OUT_DIR or any other public place.
+#   BENCH_THREADS  thread count T of the CPU benchmarks (default: the CPUs this process may use,
+#               as nproc counts them, so that a Slurm job uses the cores it was given)
+#   BENCH_THREAD_LIST  the thread counts measured (default: 1,T/2,T), e.g. 1,16,48,96 to compare
+#               machines at equal thread counts
+#   SKIP_CPU    set to 1 to skip the CPU benchmarks (e.g. a GPU run on a shared node)
+#   BATCHES, MLDSA_BATCHES  the GPU batch sizes of ML-KEM and ML-DSA (large GPUs such as the B200
+#               need more than the defaults to fill up, e.g. MLDSA_BATCHES=8192,16384,32768,65536)
 #
 # Before every NVIDIA GPU measurement the benchmarks wait until the GPU has cooled to COOL_TO_C
 # degrees, so that laptop GPUs are measured unthrottled; nvidia-smi logs clock and temperature
@@ -47,11 +55,13 @@ out=$1
 cool=${2:-70}
 cpu_build=${CPU_BUILD:-build}
 levels=512,768,1024
-batches=1,32,128,512,2048,8192,32768,65536
+batches=${BATCHES:-1,32,128,512,2048,8192,32768,65536}
+mldsa_batches=${MLDSA_BATCHES:-1,8,64,512,4096,8192}
 trials=15
 mkdir -p "$out"
 
-have_nvidia_smi() { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; }
+# an NVIDIA GPU this process can use (a CPU job on a GPU node sees the driver but no GPU)
+have_nvidia_smi() { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; }
 
 {   # environment
     date -Iseconds
@@ -67,43 +77,53 @@ have_nvidia_smi() { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev
         grep -E '^OPENPQC_SYCL_TARGETS:' "$b/CMakeCache.txt" | cut -d= -f2
         echo
     done
-} > "$out/environment.txt"
+} >> "$out/environment.txt"   # appended: a run may be split into passes (bench/hipergator)
 
 # CPU: single-thread cycles (mlkem-native's bench_mlkem, built for both implementations)
-: > "$out/cpu_mlkem_cycles.txt"
-for impl in "" reference_; do
-    for level in 512 768 1024; do
-        dir=openpqc
-        [ -n "$impl" ] && dir=reference
-        b="$cpu_build/tests/ML-KEM/run/$dir/test/build/mlkem$level/bin/bench_mlkem$level"
-        if [ -x "$b" ]; then
-            "$b" 2>&1 | grep -E 'cycles =' | sed "s/^/${dir} $level /" >> "$out/cpu_mlkem_cycles.txt" || true
-        fi
+if [ "${SKIP_CPU:-0}" != 1 ]; then
+    : > "$out/cpu_mlkem_cycles.txt"
+    for impl in "" reference_; do
+        for level in 512 768 1024; do
+            dir=openpqc
+            [ -n "$impl" ] && dir=reference
+            b="$cpu_build/tests/ML-KEM/run/$dir/test/build/mlkem$level/bin/bench_mlkem$level"
+            if [ -x "$b" ]; then
+                "$b" 2>&1 | grep -E 'cycles =' | sed "s/^/${dir} $level /" >> "$out/cpu_mlkem_cycles.txt" || true
+            fi
+        done
     done
-done
-[ -s "$out/cpu_mlkem_cycles.txt" ] || rm -f "$out/cpu_mlkem_cycles.txt"
+    [ -s "$out/cpu_mlkem_cycles.txt" ] || rm -f "$out/cpu_mlkem_cycles.txt"
+fi
 
-# CPU: throughput on 1, T/2 and T threads
-threads=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)
-if [ -x "$cpu_build/bench/bench_mlkem_cpu_mt" ]; then
+# CPU: throughput on 1, T/2 and T threads (nproc: the CPUs of this process's affinity mask,
+# which in a Slurm job are the allocated cores, not all cores of the node)
+threads=${BENCH_THREADS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}
+thread_list=${BENCH_THREAD_LIST:-1,$((threads / 2)),$threads}
+if [ "${SKIP_CPU:-0}" = 1 ]; then
+    echo "skip CPU benchmarks (SKIP_CPU=1)"
+elif [ -x "$cpu_build/bench/bench_mlkem_cpu_mt" ]; then
     echo "run  CPU multi-threaded -> $out/cpu_mlkem_mt.csv"
-    "$cpu_build/bench/bench_mlkem_cpu_mt" "1,$((threads / 2)),$threads" 1 > "$out/cpu_mlkem_mt.csv"
+    "$cpu_build/bench/bench_mlkem_cpu_mt" "$thread_list" 1 > "$out/cpu_mlkem_mt.csv"
 else
     echo "skip CPU multi-threaded ($cpu_build/bench/bench_mlkem_cpu_mt not built)"
 fi
 
-if [ -x "$cpu_build/bench/bench_mldsa_cpu_mt" ]; then
+if [ "${SKIP_CPU:-0}" = 1 ]; then
+    :
+elif [ -x "$cpu_build/bench/bench_mldsa_cpu_mt" ]; then
     echo "run  CPU multi-threaded ML-DSA -> $out/cpu_mldsa_mt.csv"
-    "$cpu_build/bench/bench_mldsa_cpu_mt" "1,$((threads / 2)),$threads" 1 > "$out/cpu_mldsa_mt.csv"
+    "$cpu_build/bench/bench_mldsa_cpu_mt" "$thread_list" 1 > "$out/cpu_mldsa_mt.csv"
 else
     echo "skip CPU multi-threaded ML-DSA ($cpu_build/bench/bench_mldsa_cpu_mt not built)"
 fi
 
 # SLH-DSA: an s-set signature takes 0.5-1.6 s on one core, so every thread does at least one operation per
 # point; all twelve sets take about 20-30 minutes
-if [ -x "$cpu_build/bench/bench_slhdsa_cpu_mt" ]; then
+if [ "${SKIP_CPU:-0}" = 1 ]; then
+    :
+elif [ -x "$cpu_build/bench/bench_slhdsa_cpu_mt" ]; then
     echo "run  CPU multi-threaded SLH-DSA -> $out/cpu_slhdsa_mt.csv"
-    "$cpu_build/bench/bench_slhdsa_cpu_mt" "1,$((threads / 2)),$threads" 1 openpqc,reference,avx2 3 \
+    "$cpu_build/bench/bench_slhdsa_cpu_mt" "$thread_list" 1 openpqc,reference,avx2 3 \
         > "$out/cpu_slhdsa_mt.csv" 2> "$out/cpu_slhdsa_mt.log"
 else
     echo "skip CPU multi-threaded SLH-DSA ($cpu_build/bench/bench_slhdsa_cpu_mt not built)"
@@ -113,7 +133,7 @@ fi
 logger=""
 if have_nvidia_smi; then
     nvidia-smi --query-gpu=timestamp,clocks.sm,temperature.gpu,power.draw --format=csv -lms 500 \
-        > "$out/gpu_clocks.csv" 2>/dev/null &
+        >> "$out/gpu_clocks.csv" 2>/dev/null &
     logger=$!
 fi
 
@@ -147,7 +167,7 @@ for run in ${SYCL_RUNS:-}; do
     fi
     if [ -x "$dir/bench/bench_mldsa_sycl" ]; then
         echo "run  SYCL ML-DSA $name -> $out/mldsa_sycl_$name.csv"
-        "$dir/bench/bench_mldsa_sycl" 44,65,87 1,8,64,512,4096,8192 "$trials" "$cool" "$device" \
+        "$dir/bench/bench_mldsa_sycl" 44,65,87 "$mldsa_batches" "$trials" "$cool" "$device" \
             > "$out/mldsa_sycl_$name.csv" 2> "$out/mldsa_sycl_$name.log" ||
             echo "warning: SYCL ML-DSA $name exited with status $?" >&2
     fi
@@ -180,8 +200,15 @@ done
 if [ -n "${CUPQC_BENCH:-}" ] && [ -n "${CUPQC_OUT:-}" ] && [ -x "$CUPQC_BENCH" ]; then
     mkdir -p "$CUPQC_OUT"
     echo "run  cuPQC -> $CUPQC_OUT/cupqc_mlkem.csv (confidential: not in $out)"
-    "$CUPQC_BENCH" "$levels" 1,32,128,512,2048,8192,32768 "$trials" 32,64,128,256 "$cool" \
+    "$CUPQC_BENCH" "$levels" "$batches" "$trials" 32,64,128,256 "$cool" \
         > "$CUPQC_OUT/cupqc_mlkem.csv" || echo "warning: cuPQC exited with status $?" >&2
+fi
+# cuPQC's ML-DSA (bench_cupqc_mldsa), at the batch sizes of bench_mldsa_sycl above
+if [ -n "${CUPQC_MLDSA_BENCH:-}" ] && [ -n "${CUPQC_OUT:-}" ] && [ -x "$CUPQC_MLDSA_BENCH" ]; then
+    mkdir -p "$CUPQC_OUT"
+    echo "run  cuPQC ML-DSA -> $CUPQC_OUT/cupqc_mldsa.csv (confidential: not in $out)"
+    "$CUPQC_MLDSA_BENCH" 44,65,87 "$mldsa_batches" "$trials" 32,64,128,256 "$cool" \
+        > "$CUPQC_OUT/cupqc_mldsa.csv" || echo "warning: cuPQC ML-DSA exited with status $?" >&2
 fi
 
 [ -n "$logger" ] && kill "$logger" 2>/dev/null || true
