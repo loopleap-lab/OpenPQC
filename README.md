@@ -15,6 +15,18 @@ alternative to NVIDIA cuPQC.
   answers, functional tests, and for ML-KEM NIST ACVP and Wycheproof) against both, and check ML-DSA and SLH-DSA
   against NIST's ACVP vectors.
 
+## Tutorial
+
+[tutorial/](tutorial/README.md) is a hands-on Jupyter notebook: build the library, run all three
+schemes interactively from Python and C++, watch tampered ciphertexts and messages get rejected,
+compare sizes and speed with classical cryptography, and see what the GPU backend changes. With
+Docker it is two commands (everything preinstalled and prebuilt):
+
+```sh
+docker build -f tutorial/Dockerfile -t openpqc-tutorial .
+docker run --rm -p 127.0.0.1:8888:8888 openpqc-tutorial    # http://localhost:8888/lab?token=openpqc
+```
+
 ## Layout
 
 The primitives are organised in groups: Core (shared by every scheme) and one group per scheme.
