@@ -1,5 +1,9 @@
 # OpenPQC
 
+<p align="center">
+  <img src="figures/openpqc-logo.png" alt="OpenPQC logo: a Q with a subtle key-shaped tail" width="560">
+</p>
+
 An open-source post-quantum cryptography library for research, with GPU acceleration across vendors: an open
 alternative to NVIDIA cuPQC.
 
