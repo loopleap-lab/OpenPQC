@@ -4,196 +4,328 @@
   <img src="figures/openpqc-logo.png" alt="OpenPQC logo: a Q with a subtle key-shaped tail" width="560">
 </p>
 
-An open-source post-quantum cryptography library for research, with GPU acceleration across vendors: an open
-alternative to NVIDIA cuPQC.
+**An open-source framework for post-quantum cryptography across CPUs and GPUs.**
 
-- **Readable and structured.** The code follows the standards closely. A header-only **C11 math core** holds the arithmetic,
-  hashing, sampling and encoding, and a **C++20 scheme layer** holds the algorithms of FIPS 203 (ML-KEM), FIPS 204
-  (ML-DSA) and FIPS 205 (SLH-DSA), one function per algorithm, commented with the standard's line numbers.
-- **Vendor-neutral GPUs.** The **SYCL 2020** backend compiles the same math core into GPU kernels. It runs with Intel
-  DPC++ and with AdaptiveCpp, on NVIDIA and Intel GPUs and on CPUs.
-- **Checked against references.** [mlkem-native](https://github.com/pq-code-package/mlkem-native), the PQCA's formally
-  verified ML-KEM, [CRYSTALS-Dilithium](https://github.com/pq-crystals/dilithium), the reference implementation of
-  ML-DSA, and [SPHINCS+](https://github.com/sphincs/sphincsplus), the designers' implementation of SLH-DSA, are kept
-  unmodified in `reference/`. The tests compare OpenPQC with them byte for byte, run their test programs (known
-  answers, functional tests, and for ML-KEM NIST ACVP and Wycheproof) against both, and check ML-DSA and SLH-DSA
-  against NIST's ACVP vectors.
+OpenPQC brings standards-oriented implementations, portable GPU acceleration, and hands-on examples into
+one research framework. Explore how post-quantum algorithms work, use them through C and C++ APIs, and
+compare their behavior and performance across hardware platforms.
 
-## Tutorial
+[Quick start](#quick-start) · [Tutorial](#hands-on-tutorial) · [GPU setup](#gpu-setup) ·
+[API examples](#using-openpqc) · [Benchmarks](#benchmarks) · [Documentation](#documentation)
 
-[tutorial/](tutorial/README.md) is a hands-on Jupyter notebook: build the library, run all three
-schemes interactively from Python and C++, watch tampered ciphertexts and messages get rejected,
-compare sizes and speed with classical cryptography, and see what the GPU backend changes. With
-Docker it is two commands (everything preinstalled and prebuilt):
+- **Follow the standards.** A header-only C11 math core and a C++20 scheme layer implement ML-KEM,
+  ML-DSA, and SLH-DSA. Scheme functions map to FIPS algorithms, with comments referencing their steps.
+- **Share code across hardware.** SYCL 2020 kernels reuse the CPU math core. GPU backends support
+  Intel DPC++ and AdaptiveCpp, with documented runs on NVIDIA and Intel GPUs.
+- **Check against independent implementations.** Differential tests compare results byte for byte
+  with mlkem-native, CRYSTALS-Dilithium, and SPHINCS+. The suite also includes known-answer tests,
+  NIST ACVP vectors, and ML-KEM Wycheproof tests.
+- **Learn by running.** Start with the Jupyter tutorial, then explore standalone API examples,
+  application demos, and CPU/GPU benchmarks.
+
+## Supported algorithms
+
+| Algorithm | Standard | Parameter sets | CPU and SYCL operations |
+| --- | --- | --- | --- |
+| **ML-KEM** | FIPS 203 | 512, 768, 1024 | Key generation, encapsulation, decapsulation |
+| **ML-DSA** | FIPS 204 | 44, 65, 87 | Key generation, signing, verification; HashML-DSA and external mu |
+| **SLH-DSA** | FIPS 205 | All 12 SHA2/SHAKE sets: 128s/f, 192s/f, 256s/f | Key generation, signing, verification; HashSLH-DSA |
+
+The shared core provides Keccak-f[1600], SHA-3, SHAKE, SHA-2, the twelve pre-hash functions used by
+HashML-DSA and HashSLH-DSA, constant-time helpers, OS randomness, and zeroization.
+
+GPU APIs operate in batches. SLH-DSA currently uses a baseline GPU pipeline; further optimization
+experiments are planned. FN-DSA is planned and is not yet implemented. See the
+[scheme documentation](#documentation) for API coverage and backend design details.
+
+## Quick start
+
+For a native build, use CMake 3.20 or newer and compilers with C11 and C++20 support.
+For a tutorial environment with the tools preinstalled, use the [Docker instructions](#hands-on-tutorial).
+
+### 1. Get the source
+
+```sh
+git clone https://github.com/UCF-ML-Research/OpenPQC.git
+cd OpenPQC
+```
+
+Reference implementations are already vendored in the repository. Initializing the upstream submodules
+is not required to build or run the tests.
+
+### 2. Build and run on the CPU
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DOPENPQC_SYCL=OFF \
+  -DOPENPQC_BUILD_TESTS=ON -DOPENPQC_BUILD_EXAMPLES=ON
+cmake --build build -j
+./build/examples/demo_cpu
+```
+
+`demo_cpu` runs ML-KEM-768, ML-DSA-65, and SLH-DSA-SHA2-128f. The explicit `OPENPQC_SYCL=OFF`
+setting keeps this build CPU-only even when a SYCL compiler is installed.
+
+### 3. Run the tests
+
+```sh
+# Quick check: exclude tests that need network access or take longer to run.
+ctest --test-dir build --output-on-failure -LE "network|slow" -j4
+
+# Full offline suite, including the slow tests.
+ctest --test-dir build --output-on-failure -LE network -j4
+
+# ACVP and Wycheproof tests; vectors are downloaded on first use.
+ctest --test-dir build --output-on-failure -L network
+```
+
+The `slow` label includes several SLH-DSA tests. See the
+[SLH-DSA testing notes](include/SLH/DSA/README.md#tests) for their scope and expected runtime.
+
+## Hands-on tutorial
+
+The [Jupyter walkthrough](tutorial/README.md) introduces all three schemes through Python and C++.
+Generate keys, establish a shared secret, sign and verify messages, explore tampering behavior,
+and compare key sizes, signature sizes, and timings with classical cryptography.
+
+From the repository root:
 
 ```sh
 docker build -f tutorial/Dockerfile -t openpqc-tutorial .
-docker run --rm -p 127.0.0.1:8888:8888 openpqc-tutorial    # http://localhost:8888/lab?token=openpqc
+docker run --rm -p 127.0.0.1:8888:8888 openpqc-tutorial
 ```
 
-## Layout
+Open [JupyterLab](http://localhost:8888/lab?token=openpqc) to start the notebook. The image includes
+JupyterLab, the compiler, and a prebuilt CPU library. The container is removed when it exits;
+see the [tutorial instructions](tutorial/README.md) to save notebook edits or run natively.
 
-The primitives are organised in groups: Core (shared by every scheme) and one group per scheme.
+The Docker image is **CPU-only**. The notebook's GPU section can run a native `demo_gpu` build
+created with DPC++ or AdaptiveCpp. For a staged presentation, see the
+[live demo](examples/README.md#live-demo-for-a-presentation).
 
-```
-include/
-  Core/      shared by every scheme: Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11, header-only), constant-time
-             helpers, OS randomness and zeroization, C++ wrappers, the pre-hash functions of HashML-DSA and
-             HashSLH-DSA (prehash.hpp); sycl/: the GPU runtime, team, sponge, SHA-2 and message helpers of all
-             GPU backends                                                           -> Core/README.md
-  ML/        shared by the module-lattice schemes: math/ml_bitpack.h (the bit packing of both standards)
-                                                                                    -> ML/README.md
-  ML/KEM/    FIPS 203, ML-KEM-512/768/1024:
-               math/    C11 math core (Z_q, NTT, compression, encoding, sampling)
-               scheme/  C++20: K-PKE, ML-KEM, input checks, one function per FIPS 203 algorithm
-               sycl/    batched ML-KEM on GPUs (SYCL 2020)
-               openpqc_mlkem.h (C API), mlkem.hpp (C++ API)                         -> ML/KEM/README.md
-  ML/DSA/    FIPS 204, ML-DSA-44/65/87 and HashML-DSA:
-               math/    C11 math core (Z_q, NTT, rounding and hints, encoding, sampling)
-               scheme/  C++20: one function per FIPS 204 algorithm, HashML-DSA, external mu
-               sycl/    batched ML-DSA on GPUs (SYCL 2020)
-               openpqc_mldsa.h (C API), mldsa.hpp (C++ API)                         -> ML/DSA/README.md
-  SLH/DSA/   FIPS 205, the twelve SLH-DSA parameter sets and HashSLH-DSA:
-               math/    C11 math core (toInt, toByte, base_2b, the address ADRS, HMAC and MGF1)
-               scheme/  C++20: WOTS+, XMSS, the hypertree, FORS, one function per FIPS 205 algorithm
-               sycl/    batched SLH-DSA on GPUs (SYCL 2020)
-               openpqc_slhdsa.h (C API), slhdsa.hpp (C++ API)                       -> SLH/DSA/README.md
-reference/   mlkem-native, CRYSTALS-Dilithium and SPHINCS+, unmodified: test oracles and CPU baselines
-                                                                                    -> reference/README.md
-tests/       C++ tests; tests/Core; tests/ML-KEM, tests/ML-DSA, tests/SLH-DSA (the references' test programs
-             against both implementations, differential, math-core and constant-time tests, ACVP); tests/gpu
-             (SYCL vs CPU, every device)
-bench/       CPU and GPU benchmarks, run_benchmarks.sh, compare_gpu.py
-examples/    demo_cpu, demo_gpu, live_demo: ML-KEM, ML-DSA and SLH-DSA on the CPU and on a GPU; and small programs,
-             one part of the API each: ML-KEM, ML-DSA and SLH-DSA with the C and C++ APIs, hashing, and the three
-             on a GPU                                                               -> examples/README.md
-applications/  demos built on ML-KEM, ML-DSA and SLH-DSA: a TLS 1.3-like handshake, a file encryption and signing
-             tool, a handshake server batching on a GPU, a repository of signed packages verified on a GPU, secure
-             boot with an SLH-DSA root key, a time-stamping service signing in GPU batches
-                                                                                    -> applications/README.md
-scripts/     vendor_mlkem_native.py, vendor_dilithium.py, vendor_sphincsplus.py (update reference/ and the test
-             programs from upstream)
-cmake/       warning flags, native-backend detection for the reference
-```
+## GPU setup
 
-## Build and test
+Choose one SYCL toolchain below. You also need the runtime and drivers for your target device.
+`OPENPQC_SYCL=ON` makes configuration fail if a supported SYCL toolchain cannot be found.
 
-CPU only (a C11 and C++20 compiler; tested with GCC 16, Clang 23 and the Clang of DPC++):
+### Intel DPC++
 
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build -LE network -j4          # offline tests
-ctest --test-dir build -LE "network|slow" -j4   # quick run: the offline tests without the slow ones
-ctest --test-dir build -L network               # ACVP and Wycheproof (download the vectors on first use)
-```
-
-The label `slow` marks the tests that take more than about a minute: SLH-DSA's KATs of the s parameter sets, its
-differential, constant-time and ACVP tests, and its GPU test (1–8 minutes each with GCC 16 on an i7-11370H, the GPU
-test longer; see [include/SLH/DSA/README.md](include/SLH/DSA/README.md#tests)).
-
-With the SYCL backend, using **DPC++** (build the whole project with its compilers):
+Build the project with DPC++'s C and C++ compilers. Replace `/path/to/dpcpp` with your installation
+path. This example targets NVIDIA CUDA and Intel SPIR-V devices; adjust the targets and NVIDIA
+architecture (`sm_86` here) for your toolchain and hardware.
 
 ```sh
 cmake -S . -B build-dpcpp -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=<dpcpp>/bin/clang -DCMAKE_CXX_COMPILER=<dpcpp>/bin/clang++ \
-      -DOPENPQC_SYCL_TARGETS=nvptx64-nvidia-cuda,spir64 \
-      "-DOPENPQC_SYCL_FLAGS=-Xsycl-target-backend=nvptx64-nvidia-cuda --offload-arch=sm_86"
+  -DCMAKE_C_COMPILER="/path/to/dpcpp/bin/clang" \
+  -DCMAKE_CXX_COMPILER="/path/to/dpcpp/bin/clang++" \
+  -DOPENPQC_SYCL=ON \
+  -DOPENPQC_BUILD_TESTS=ON -DOPENPQC_BUILD_EXAMPLES=ON \
+  -DOPENPQC_SYCL_TARGETS=nvptx64-nvidia-cuda,spir64 \
+  "-DOPENPQC_SYCL_FLAGS=-Xsycl-target-backend=nvptx64-nvidia-cuda --offload-arch=sm_86"
+cmake --build build-dpcpp -j
+./build-dpcpp/examples/demo_gpu
+ctest --test-dir build-dpcpp --output-on-failure -L gpu
 ```
 
-or using **AdaptiveCpp** (any compiler for the rest; device code is JIT-compiled for whatever device is present):
+### AdaptiveCpp
+
+AdaptiveCpp compiles the device code; a separate host compiler can build the rest of the project.
+Replace `/path/to/acpp` with your installation path. The `generic` target enables runtime compilation
+for available devices supported by your AdaptiveCpp installation.
 
 ```sh
 cmake -S . -B build-acpp -DCMAKE_BUILD_TYPE=Release \
-      -DAdaptiveCpp_DIR=<acpp>/lib/cmake/AdaptiveCpp -DACPP_TARGETS=generic
+  -DOPENPQC_SYCL=ON \
+  -DOPENPQC_BUILD_TESTS=ON -DOPENPQC_BUILD_EXAMPLES=ON \
+  -DAdaptiveCpp_DIR="/path/to/acpp/lib/cmake/AdaptiveCpp" \
+  -DACPP_TARGETS=generic
+cmake --build build-acpp -j
+./build-acpp/examples/demo_gpu
+ctest --test-dir build-acpp --output-on-failure -L gpu
 ```
 
-`ctest -L gpu` then runs `test_mlkem_sycl`, `test_mldsa_sycl` and `test_slhdsa_sycl` on every SYCL device of the
-machine.
+The GPU tests compare the backends with the CPU implementations on available SYCL devices.
+Linking all twelve SLH-DSA GPU parameter sets with DPC++ can take several minutes per executable;
+see [build options](#build-options) and the [demo setup](examples/README.md#build-and-run)
+for a smaller development build.
 
-| Option                                             | Default        | Meaning                                                                                                                                                                                                                                                                        |
-| -------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `OPENPQC_SYCL`                                     | AUTO           | build the SYCL backends (`openpqc_mlkem_sycl`, `openpqc_mldsa_sycl`, `openpqc_slhdsa_sycl`) when DPC++ (`-fsycl`) or AdaptiveCpp is found; ON makes it required                                                                                                                |
-| `OPENPQC_SYCL_TARGETS`, `OPENPQC_SYCL_FLAGS`       | empty          | DPC++: devices to compile for, and extra flags for the SYCL code (e.g. `-DOPQC_SHA2_UNROLL_PASSES=1`, which keeps the SHA-2 rounds in loops: the same results, a DPC++ link of SLH-DSA's backend in about 2 instead of 10 minutes, SHA-256 on the GPUs measured 6–10 % slower) |
-| `OPENPQC_SLHDSA_SYCL_SETS`                         | empty          | development only: the SLH-DSA parameter-set ids (1–12, e.g. `3,4`) that the SYCL backend contains; empty: all twelve. DPC++ generates the device code of every set at each link of a program that uses the backend, about 10 minutes and 1.2 GiB for all twelve                |
-| `OPENPQC_NATIVE`                                   | ON             | build the reference (mlkem-native) with its SIMD/assembly backends where the CPU supports them                                                                                                                                                                                 |
-| `OPENPQC_BUILD_TESTS`, `_BENCHMARKS`, `_EXAMPLES`  | ON (top level) | tests, benchmarks, and the demos, examples and application demos (`ctest -L examples`, `-L applications`) |
-| `OPENPQC_WERROR`                                   | ON (top level) | `-Werror` for OpenPQC's own code                                                                                                                                                                                                                                               |
-| `OPENPQC_BENCH_CYCLES`                             | PERF           | cycle counter for the single-thread CPU benchmarks: NO, PERF, PMU, MAC                                                                                                                                                                                                         |
-| `OPENPQC_VALGRIND`, `OPENPQC_VALGRIND_INCLUDE_DIR` | found on PATH  | valgrind for the constant-time tests `mlkemNNN_ct`, `mldsa_ct`, `slhdsa_ct`                                                                                                                                                                                                    |
-| `OPENPQC_CUPQC_DIR`                                | empty          | path to an NVIDIA cuPQC SDK: builds the optional baseline benchmark (its results are covered by NVIDIA's licence and are not published here)                                                                                                                                   |
+## Using OpenPQC
 
-## Usage
+### C and C++ APIs
 
-Complete programs: [examples/](examples/README.md) (`demo_cpu`: the three schemes on the CPU; `demo_gpu`: the same in
-batches on a GPU, checked against the CPU and timed against it).
+Each scheme has a C API, a C++ API, and a batched SYCL API. The
+[complete examples](examples/README.md#the-apis-in-one-table) cover each interface.
+
+| Component | C header | C++ header | CPU CMake target |
+| --- | --- | --- | --- |
+| Shared core | `Core/openpqc_core.h` | `Core/hash.hpp` | `openpqc::core` |
+| ML-KEM | `ML/KEM/openpqc_mlkem.h` | `ML/KEM/mlkem.hpp` | `openpqc::mlkem` |
+| ML-DSA | `ML/DSA/openpqc_mldsa.h` | `ML/DSA/mldsa.hpp` | `openpqc::mldsa` |
+| SLH-DSA | `SLH/DSA/openpqc_slhdsa.h` | `SLH/DSA/slhdsa.hpp` | `openpqc::slhdsa` |
+
+For example, this C program performs an ML-KEM-768 round trip, checks each operation, compares
+the shared secrets, and clears the secret buffers before returning:
 
 ```c
-#include "ML/KEM/openpqc_mlkem.h"        /* link openpqc::mlkem */
+#include "Core/openpqc_core.h"
+#include "ML/KEM/openpqc_mlkem.h"
 
-uint8_t pk[MLKEM768_PUBLICKEYBYTES], sk[MLKEM768_SECRETKEYBYTES];
-uint8_t ct[MLKEM768_CIPHERTEXTBYTES], ss[MLKEM_BYTES], ss2[MLKEM_BYTES];
-openpqc_mlkem768_keypair(pk, sk);        /* randomness from the operating system */
-openpqc_mlkem768_enc(ct, ss, pk);
-openpqc_mlkem768_dec(ss2, ct, sk);       /* ss2 == ss */
+int main(void)
+{
+    uint8_t pk[MLKEM768_PUBLICKEYBYTES], sk[MLKEM768_SECRETKEYBYTES];
+    uint8_t ct[MLKEM768_CIPHERTEXTBYTES];
+    uint8_t ss_enc[MLKEM_BYTES], ss_dec[MLKEM_BYTES];
+    int result = 1;
+
+    if (openpqc_mlkem768_keypair(pk, sk) != 0 ||
+        openpqc_mlkem768_enc(ct, ss_enc, pk) != 0 ||
+        openpqc_mlkem768_dec(ss_dec, ct, sk) != 0) {
+        goto cleanup;
+    }
+    result = opqc_ct_memcmp(ss_enc, ss_dec, sizeof ss_enc) != 0;
+
+cleanup:
+    opqc_zeroize(sk, sizeof sk);
+    opqc_zeroize(ss_enc, sizeof ss_enc);
+    opqc_zeroize(ss_dec, sizeof ss_dec);
+    return result;
+}
 ```
 
-```c
-#include "ML/DSA/openpqc_mldsa.h"        /* link openpqc::mldsa */
+A zero exit status means the round trip succeeded. ML-KEM uses **implicit rejection**: an invalid
+ciphertext of the expected length produces a fallback secret, rather than a ciphertext-validity
+error. Signature verification, by contrast, reports invalid signatures. The
+[ML-KEM examples](examples/README.md) demonstrate these failure cases.
 
-uint8_t pk[MLDSA65_PUBLICKEYBYTES], sk[MLDSA65_SECRETKEYBYTES], sig[MLDSA65_BYTES];
-openpqc_mldsa65_keypair(pk, sk);
-openpqc_mldsa65_sign(sig, msg, msglen, ctx, ctxlen, sk);              /* hedged; ctx may be NULL, 0 */
-openpqc_mldsa65_verify(sig, sizeof sig, msg, msglen, ctx, ctxlen, pk); /* 0: valid */
+### Add OpenPQC to a CMake project
+
+With the repository at `third_party/OpenPQC` and the program above saved as `main.c`:
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(openpqc_example LANGUAGES C CXX)
+
+set(OPENPQC_SYCL OFF CACHE STRING "CPU-only example")
+add_subdirectory(third_party/OpenPQC)
+add_executable(openpqc_example main.c)
+target_compile_features(openpqc_example PRIVATE c_std_11)
+target_link_libraries(openpqc_example PRIVATE openpqc::mlkem)
+set_target_properties(openpqc_example PROPERTIES LINKER_LANGUAGE CXX)
 ```
 
-```c
-#include "SLH/DSA/openpqc_slhdsa.h"      /* link openpqc::slhdsa */
+Use `openpqc::openpqc` to link the shared core and all three CPU schemes. GPU headers live under
+each scheme's `sycl/` directory; their batch APIs and build targets are documented in the
+[GPU examples](examples/README.md#using-a-gpu-backend-in-five-steps).
 
-uint8_t pk[SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[SLHDSA_SHA2_128F_SECRETKEYBYTES];
-static uint8_t sig[SLHDSA_SHA2_128F_BYTES];
-openpqc_slhdsa_sha2_128f_keypair(pk, sk);
-openpqc_slhdsa_sha2_128f_sign(sig, msg, msglen, ctx, ctxlen, sk);              /* hedged; ctx may be NULL, 0 */
-openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, msglen, ctx, ctxlen, pk); /* 0: valid */
+## Application demos
+
+The [application examples](applications/README.md) combine the primitives into larger workflows:
+
+| Demo | Workflow |
+| --- | --- |
+| `pq_handshake` | A TLS 1.3-like handshake using ML-KEM and ML-DSA |
+| `pqcrypt` | File encryption and signing |
+| `handshake_offload` | Handshake processing on CPU threads and in GPU batches |
+| `batch_verify` | Verification of signed packages on CPUs and GPUs |
+| `secure_boot` | Firmware updates with an SLH-DSA root key and ML-DSA release keys |
+| `timestamp_authority` | SLH-DSA time-stamp signing on CPUs and GPUs |
+
+These are research and teaching demos. Their symmetric encryption and key-derivation helpers are
+demo constructions; the applications are not production protocol implementations. See the
+[application documentation](applications/README.md) for commands, assumptions, and limitations.
+
+## Validation
+
+OpenPQC's tests cover the math core, scheme APIs, and CPU/GPU agreement:
+
+- **Independent references:** byte-for-byte comparisons with
+  [mlkem-native](https://github.com/pq-code-package/mlkem-native),
+  [CRYSTALS-Dilithium](https://github.com/pq-crystals/dilithium), and
+  [SPHINCS+](https://github.com/sphincs/sphincsplus).
+- **Test vectors:** known-answer tests and NIST ACVP vectors for all three schemes, plus
+  Wycheproof tests for ML-KEM.
+- **Implementation checks:** math-core tests, malformed-input cases, Valgrind-based constant-time
+  tests, and comparisons between SYCL and CPU results.
+
+The reference implementations are vendored without source changes and built only for tests and
+benchmarks. See [reference/README.md](reference/README.md) for pinned upstream versions,
+test integration, and update instructions.
+
+## Benchmarks
+
+The benchmark suite measures CPU latency and throughput, GPU batch throughput, and pipeline stages.
+On Linux, collect CPU measurements from a build with benchmarks enabled:
+
+```sh
+cmake -S . -B build -DOPENPQC_BUILD_BENCHMARKS=ON
+cmake --build build -j
+bench/run_benchmarks.sh results/local
 ```
 
-[examples/](examples/README.md) has complete programs for each API, the GPU ones included, and
-[applications/](applications/README.md) has demos that put ML-KEM, ML-DSA and SLH-DSA together.
+For GPU runs, configure `SYCL_RUNS` with the build directory and device index as described in
+[run_benchmarks.sh](bench/run_benchmarks.sh). Record the compiler, device, batch size, and transfer
+costs when comparing results; batch throughput and single-operation latency measure different things.
 
-C++: `openpqc::mlkem::MLKEM768` (`ML/KEM/mlkem.hpp`), `openpqc::mldsa::MLDSA65` (`ML/DSA/mldsa.hpp`),
-`openpqc::slhdsa::SLHDSA_SHA2_128f` (`SLH/DSA/slhdsa.hpp`), `openpqc::fips202` and `openpqc::sha2` (`Core/hash.hpp`),
-or the algorithms of the standards themselves as templates (`ML/KEM/scheme/ml_kem.hpp`, `ML/DSA/scheme/ml_dsa.hpp`,
-`SLH/DSA/scheme/slh_dsa.hpp`). Batched operations on a GPU: `ML/KEM/sycl/openpqc_mlkem_sycl.h`,
-`ML/DSA/sycl/openpqc_mldsa_sycl.h` and `SLH/DSA/sycl/openpqc_slhdsa_sycl.h`, see
-[include/ML/KEM/README.md](include/ML/KEM/README.md#gpu-backend-sycl),
-[include/ML/DSA/README.md](include/ML/DSA/README.md#gpu-backend-sycl) and
-[include/SLH/DSA/README.md](include/SLH/DSA/README.md#gpu-backend-sycl).
+- [ML-DSA results and methodology](include/ML/DSA/README.md#performance)
+- [SLH-DSA results and methodology](include/SLH/DSA/README.md#performance)
+- [HiPerGator runs and results](bench/hipergator/README.md) for Intel Xeon, AMD EPYC, NVIDIA L4, and NVIDIA B200
+- [Cross-platform plotting script](bench/plot_platforms.py)
 
-## Status
+## Documentation
 
-| Group   | CPU                                                                                                                                                           | GPU                                                                                                                                                                                                     | Tests                                                                                                                                                                                                                                               |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Core    | Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11); the twelve pre-hash functions of HashML-DSA and HashSLH-DSA with their OIDs                                        | the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message and workspace helpers                                                                       | known answers, incremental vs one-shot, the OID table                                                                                                                                                                                               |
-| ML-KEM  | complete (512/768/1024), C11/C++20                                                                                                                            | SYCL: batched KeyGen/Encaps/Decaps, randomized and derandomized, all parameter sets                                                                                                                     | KAT, ACVP, Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind constant-time test, SYCL byte-identity on every device                                                                                                      |
-| ML-DSA  | complete (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20                                                                        | SYCL: batched KeyGen/Sign/Verify (messages or mu), randomized and derandomized, all parameter sets                                                                                                      | KAT, ACVP (1335 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), exhaustive math tests, valgrind constant-time test, SYCL byte-identity on every device                                                      |
-| SLH-DSA | complete (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic and hedged signing, the internal functions), C11/C++20 | SYCL: batched KeyGen/Sign/Verify, also pre-hash, internal and one-key, randomized and derandomized, all parameter sets; the baseline pipeline only (the optimisation experiments are planned, not done) | KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), math-core tests against transcriptions of the standard, valgrind constant-time test, stack-residue test, SYCL byte-identity on every device |
-| FN-DSA  | planned, waiting for FIPS 206                                                                                                                                 | planned                                                                                                                                                                                                 | -                                                                                                                                                                                                                                                   |
+| Path | Contents |
+| --- | --- |
+| [include/Core/](include/Core/README.md) | Hash functions, constant-time helpers, randomness, zeroization, and shared SYCL utilities |
+| [include/ML/](include/ML/README.md) | Utilities shared by the module-lattice schemes |
+| [include/ML/KEM/](include/ML/KEM/README.md) | ML-KEM math, FIPS algorithms, APIs, and GPU backend |
+| [include/ML/DSA/](include/ML/DSA/README.md) | ML-DSA, HashML-DSA, external mu, and GPU backend |
+| [include/SLH/DSA/](include/SLH/DSA/README.md) | SLH-DSA, HashSLH-DSA, parameter sets, and GPU backend |
+| [tutorial/](tutorial/README.md) | Interactive Jupyter walkthrough and Docker environment |
+| [examples/](examples/README.md) | C, C++, and GPU API examples; CPU, GPU, and presentation demos |
+| [applications/](applications/README.md) | Application demos built from the three schemes |
+| [tests/](tests/) | Core, scheme, reference, and GPU tests |
+| [bench/](bench/) | CPU/GPU benchmarks and plotting tools |
+| [reference/](reference/README.md) | Vendored upstream implementations and their provenance |
+| [scripts/](scripts/) | Scripts for refreshing vendored references and tests |
+| [cmake/](cmake/) | Build helpers, warning flags, and reference backend detection |
 
-The GPU designs: [include/ML/KEM/README.md](include/ML/KEM/README.md#gpu-backend-sycl),
-[include/ML/DSA/README.md](include/ML/DSA/README.md#gpu-backend-sycl) and
-[include/SLH/DSA/README.md](include/SLH/DSA/README.md#gpu-backend-sycl), with the experiments behind them.
-`bench/run_benchmarks.sh OUT_DIR` measures the CPU and GPU performance on your machine; ML-DSA's and SLH-DSA's results
-on one laptop are in [include/ML/DSA/README.md](include/ML/DSA/README.md#performance) and
-[include/SLH/DSA/README.md](include/SLH/DSA/README.md#performance). On HiPerGator (University of Florida),
-[bench/hipergator](bench/hipergator/README.md) builds and runs ML-KEM's and ML-DSA's benchmarks, the cuPQC baselines
-included, and has the results for an Intel Xeon Platinum 8570, an AMD EPYC 9655P, an NVIDIA L4 and an NVIDIA B200;
-`bench/plot_platforms.py` puts machines side by side.
+## Build options
 
-## Licensing
+Pass these options to CMake as `-DNAME=value`.
 
-OpenPQC is licensed under Apache-2.0 OR ISC OR MIT, see [LICENSE](LICENSE). The copies in `reference/` keep their own
-licences: mlkem-native (`reference/mlkem-native/LICENSE`, also Apache-2.0 OR ISC OR MIT), CRYSTALS-Dilithium
-(`reference/dilithium/LICENSE`: public domain (CC0), or Apache-2.0, or GPL-2.0) and SPHINCS+
-(`reference/sphincsplus/LICENSE`: public domain or CC0-1.0 or 0BSD or MIT-0, with NIST's files for the KATs under
-their own terms, see [reference/README.md](reference/README.md)). None is part of the OpenPQC libraries; they are built
-only for the tests and benchmarks.
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `OPENPQC_SYCL` | `AUTO` | Enable SYCL when DPC++ or AdaptiveCpp is found; `ON` requires it, `OFF` disables it |
+| `OPENPQC_BUILD_TESTS` | `ON` at top level | Build the test suite |
+| `OPENPQC_BUILD_BENCHMARKS` | `ON` at top level | Build CPU and available GPU benchmarks |
+| `OPENPQC_BUILD_EXAMPLES` | `ON` at top level | Build API examples, demos, and application demos |
+| `OPENPQC_WERROR` | `ON` at top level | Treat warnings in OpenPQC code as errors |
+| `OPENPQC_NATIVE` | `ON` | Enable supported SIMD/assembly backends in the mlkem-native reference |
+
+<details>
+<summary>Advanced GPU, benchmark, and test options</summary>
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `OPENPQC_SYCL_TARGETS` | Empty | DPC++ device targets passed through `-fsycl-targets` |
+| `OPENPQC_SYCL_FLAGS` | Empty | Extra flags for SYCL sources and, with DPC++, linking |
+| `OPENPQC_SLHDSA_SYCL_SETS` | Empty: all 12 | Development builds: select SLH-DSA GPU parameter-set IDs, e.g. `3,4` |
+| `OPENPQC_BENCH_CYCLES` | `PERF` | CPU cycle-counter mode: `NO`, `PERF`, `PMU`, or `MAC` |
+| `OPENPQC_VALGRIND` | Auto-detected | Valgrind executable for constant-time tests |
+| `OPENPQC_VALGRIND_INCLUDE_DIR` | Auto-detected | Valgrind headers for constant-time tests |
+| `OPENPQC_CUPQC_DIR` | Empty | Optional NVIDIA cuPQC SDK path for baseline benchmarks; its license governs result publication |
+
+Restricting SLH-DSA GPU parameter sets reduces DPC++ link time but leaves the omitted sets unavailable
+in that build. The [SLH-DSA backend documentation](include/SLH/DSA/README.md#gpu-backend-sycl)
+describes this option and SHA-2 loop-unrolling tradeoffs.
+
+</details>
+
+## License
+
+OpenPQC is available under **Apache-2.0 OR ISC OR MIT**; choose any of these licenses.
+See [LICENSE](LICENSE).
+
+Vendored reference implementations retain their own licenses: mlkem-native uses the same three-way
+choice; CRYSTALS-Dilithium and SPHINCS+ have separate terms, including terms for NIST KAT files.
+See [reference/README.md](reference/README.md) and the licenses in each reference directory.
