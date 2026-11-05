@@ -26,8 +26,11 @@
 //              the verdicts of chunk 1 (0, 0) and "invalid" for the forged signatures that no kernel decided. Then
 //              the whole workspace is zero, every later call (verification, signing, KeyGen, randomized or not)
 //              returns -2 without launching a kernel or writing into the workspace (its context string and OID
-//              included), verification still sets status to "invalid" (and has done so when it returns, as the
-//              refused call above), sync and memcpy return -2, memcpy with a NULL pointer -1, and destroy returns
+//              included), also with a buffer in pageable host memory, which a context that has not failed
+//              refuses with -1 (a pageable status buffer is left alone, or, by the OpenMP host device, which
+//              takes host memory for its own, set to "invalid"), verification still sets status to "invalid"
+//              (and has done so when it returns, as the refused call above), sync and memcpy return -2, memcpy
+//              with a NULL pointer -1, and destroy returns
 //   throw      the first launch of chunk 2 throws: the call returns -2, every entry reads "invalid", the whole
 //              workspace is zero, and the next call returns -2 without launching a kernel
 //
@@ -328,9 +331,11 @@ std::string at_return(Fixture& f, const Bytes& ctxstr, int expect, const char* w
             opqc_sycl_slhdsa_verify(f.ctx, f.sig, f.msg, f.offsets, ctxstr.data(), ctxstr.size(), f.pk, hs, OPS);
     const Status seen(hs, hs + OPS);
     CHECK(rc == expect && seen == Status(OPS, INVALID));
-    opqc_sycl_slhdsa_sync(f.ctx);
+    const int synced = opqc_sycl_slhdsa_sync(f.ctx);   // a refused call leaves the context usable, a failed one not
+    CHECK(synced == (expect == -1 ? 0 : -2));
     opqc_sycl_slhdsa_free(f.ctx, hs);
-    return std::string(what) + " " + std::to_string(rc) + ", host status at its return " + show(seen);
+    return std::string(what) + " " + std::to_string(rc) + ", host status at its return " + show(seen) + ", sync " +
+           std::to_string(synced);
 }
 
 void report(int device, const Oracle& o, const char* what, int before, const std::string& detail) {
@@ -411,12 +416,21 @@ void fault(int device, const Oracle& o, long per_chunk) {
                          std::to_string(src) + ", status " + show(device_st) + ", workspace " +
                          (all_zero(w_failed) ? "zero" : "NOT zero");
 
-    // the failed context: every call -2, no kernel, nothing written into the workspace, status "invalid"
+    // the failed context: every call -2, no kernel, nothing written into the workspace, status "invalid"; also a
+    // call with memory that the device cannot use (pageable host memory), which a context that has not failed
+    // refuses with -1: the failed state comes first. A pageable status buffer is not written, except by a device
+    // that takes host memory for its own (the OpenMP host device), which fills it with "invalid".
     const std::string text = "not in the workspace";
     const Bytes marker(text.begin(), text.end());
+    Bytes pageable_msg = o.msgs;
+    Status pageable_status(OPS, UNTOUCHED);
     f.put_status(0);
     Launches::reset();
     const int calls[] = {
+            opqc_sycl_slhdsa_sign_derand(f.ctx, f.out_sig, pageable_msg.data(), f.offsets, marker.data(), marker.size(),
+                                         nullptr, f.sk, OPS),
+            opqc_sycl_slhdsa_verify(f.ctx, f.sig, f.msg, f.offsets, marker.data(), marker.size(), f.pk,
+                                    pageable_status.data(), OPS),
             f.verify(marker),
             opqc_sycl_slhdsa_prehash_verify(f.ctx, f.sig, f.ph, marker.data(), marker.size(),
                                             OPENPQC_SLHDSA_PREHASH_SHA2_256, f.pk, f.status, OPS),
@@ -433,6 +447,9 @@ void fault(int device, const Oracle& o, long per_chunk) {
     for (const int r : calls) all_failed &= r == -2;
     CHECK(all_failed);
     CHECK(launched == 0);
+    const bool pageable_closed =
+            pageable_status == Status(OPS, UNTOUCHED) || pageable_status == Status(OPS, INVALID);
+    CHECK(pageable_closed);
     const std::string returned = at_return(f, marker, -2, "a call on the failed context");
     const Status after = f.raw_status();
     CHECK(after == Status(OPS, INVALID));
@@ -447,8 +464,9 @@ void fault(int device, const Oracle& o, long per_chunk) {
     const int src2 = opqc_sycl_slhdsa_sync(f.ctx);
     CHECK(mrc2 == -2 && mrc3 == -2 && null1 == -1 && null2 == -1 && src2 == -2);
     detail += "; then " + std::to_string(sizeof calls / sizeof calls[0]) + " calls " +
-              (all_failed ? "-2" : "NOT all -2") + " with " + std::to_string(launched) + " launches, status " +
-              show(after) + ", context string " + (head_zero ? "not in the workspace" : "IN THE WORKSPACE") +
+              (all_failed ? "-2" : "NOT all -2") + " (2 with pageable memory; its status " + show(pageable_status) +
+              ") with " + std::to_string(launched) + " launches, status " + show(after) + ", context string " +
+              (head_zero ? "not in the workspace" : "IN THE WORKSPACE") +
               ", workspace " +
               (all_zero(w_later) ? "zero" : "NOT zero") + ", memcpy " + std::to_string(mrc2) + "/" +
               std::to_string(mrc3) + ", NULL " + std::to_string(null1) + "/" + std::to_string(null2) + ", sync " +

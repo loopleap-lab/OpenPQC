@@ -162,31 +162,53 @@ if(_openpqc)
     #   slhdsa_ct   test_slhdsa_ct.c under valgrind: randombytes() marks its output as secret, the library
     #               (built with OPQC_CT_TESTING) declassifies what FIPS 205 makes public, and valgrind
     #               fails on any branch or memory index that depends on a secret
+    #   slhdsa_O2_ct  the same with the library compiled at -O2 whatever the build type, so that a Debug
+    #               build (-O0) also checks optimized code (one level: each run takes about 10 minutes);
+    #               not in a sanitizer build, whose programs valgrind cannot run
+    # Objects and programs are compiled without the x86-64 extensions that valgrind cannot decode
+    # (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt).
     find_program(OPENPQC_VALGRIND valgrind)
     find_path(OPENPQC_VALGRIND_INCLUDE_DIR valgrind/memcheck.h)
     if(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
-        add_library(openpqc_slhdsa_ct_objects OBJECT ${PROJECT_SOURCE_DIR}/include/SLH/DSA/slhdsa.cpp)
-        target_include_directories(openpqc_slhdsa_ct_objects PRIVATE ${PROJECT_SOURCE_DIR}/include
-                                   ${OPENPQC_VALGRIND_INCLUDE_DIR})
-        target_compile_definitions(openpqc_slhdsa_ct_objects PRIVATE OPQC_CT_TESTING)
-        target_compile_features(openpqc_slhdsa_ct_objects PRIVATE cxx_std_20)
-        add_executable(test_slhdsa_ct test_slhdsa_ct.c $<TARGET_OBJECTS:openpqc_slhdsa_ct_objects>)
-        target_include_directories(test_slhdsa_ct PRIVATE ${PROJECT_SOURCE_DIR}/include ${OPENPQC_VALGRIND_INCLUDE_DIR})
-        target_link_libraries(test_slhdsa_ct PRIVATE openpqc_core_testrng openpqc_strict_warnings)
-        set_target_properties(test_slhdsa_ct PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
-                                                        C_EXTENSIONS OFF)
         # valgrind needs the symbol table of the dynamic loader, which some distributions strip; static
         # executables do not use it (as for mldsa_ct)
         include(CheckLinkerFlag)
         check_linker_flag(CXX -static OPENPQC_HAVE_STATIC_LINK)
-        if(OPENPQC_HAVE_STATIC_LINK)
-            target_link_options(test_slhdsa_ct PRIVATE -static)
+        set(_ct_levels "")   # the fixed level; "" is the build's own
+        if(NOT (CMAKE_C_FLAGS MATCHES "-fsanitize" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize"))
+            set(_ct_levels O2)
         endif()
-        add_test(NAME slhdsa_ct COMMAND ${OPENPQC_VALGRIND} --error-exitcode=1 --track-origins=yes
-                                        $<TARGET_FILE:test_slhdsa_ct>)
-        set_tests_properties(slhdsa_ct PROPERTIES LABELS slow TIMEOUT 1800)
+        foreach(opt "" ${_ct_levels})
+            if(opt STREQUAL "")
+                set(_name slhdsa_ct)
+                set(_objects openpqc_slhdsa_ct_objects)
+            else()
+                set(_name slhdsa_${opt}_ct)
+                set(_objects openpqc_slhdsa_ct_${opt}_objects)
+            endif()
+            add_library(${_objects} OBJECT ${PROJECT_SOURCE_DIR}/include/SLH/DSA/slhdsa.cpp)
+            target_include_directories(${_objects} PRIVATE ${PROJECT_SOURCE_DIR}/include
+                                                           ${OPENPQC_VALGRIND_INCLUDE_DIR})
+            target_compile_definitions(${_objects} PRIVATE OPQC_CT_TESTING)
+            target_compile_features(${_objects} PRIVATE cxx_std_20)
+            # a target's options come after those of the build type, so -${opt} wins
+            target_compile_options(${_objects} PRIVATE ${OPENPQC_CT_ISA_FLAGS} $<$<BOOL:${opt}>:-${opt}>)
+            add_executable(test_${_name} test_slhdsa_ct.c $<TARGET_OBJECTS:${_objects}>)
+            target_include_directories(test_${_name} PRIVATE ${PROJECT_SOURCE_DIR}/include
+                                                             ${OPENPQC_VALGRIND_INCLUDE_DIR})
+            target_compile_options(test_${_name} PRIVATE ${OPENPQC_CT_ISA_FLAGS})
+            target_link_libraries(test_${_name} PRIVATE openpqc_core_testrng openpqc_strict_warnings)
+            set_target_properties(test_${_name} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                           C_EXTENSIONS OFF)
+            if(OPENPQC_HAVE_STATIC_LINK)
+                target_link_options(test_${_name} PRIVATE -static)
+            endif()
+            add_test(NAME ${_name} COMMAND ${OPENPQC_VALGRIND} --error-exitcode=1 --track-origins=yes
+                                           $<TARGET_FILE:test_${_name}>)
+            set_tests_properties(${_name} PROPERTIES LABELS slow TIMEOUT 1800)
+        endforeach()
     else()
-        message(STATUS "valgrind not found: constant-time test (slhdsa_ct) disabled")
+        message(STATUS "valgrind or valgrind/memcheck.h not found: constant-time test (slhdsa_ct) disabled")
     endif()
 endif()
 

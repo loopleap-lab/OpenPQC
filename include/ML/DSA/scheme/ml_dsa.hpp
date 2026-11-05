@@ -52,8 +52,29 @@ using openpqc::prehash_oid;
 
 // --- key generation ------------------------------------------------------------------
 
+// The configuration of key generation. keygen_derand and keygen run the pair-wise consistency
+// test only where this header is compiled with OPENPQC_MLDSA_KEYGEN_PCT (mldsa.cpp, for a
+// FIPS 140-3 module), and the test fails on purpose with OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST
+// (tests only). Each translation unit that uses these templates for a parameter set has its own
+// copy of them, and the linker keeps one copy per name. Under one name for every configuration,
+// the copy of an application compiled without the test could take the place of the library's
+// wherever the library calls one out of line, and KeyGen would return key pairs that were never
+// tested (and the program would break C++'s one-definition rule). So each configuration defines
+// them in an inline namespace of its own: part of the names the linker sees, not of the names
+// that callers write (as for ML-KEM, scheme/ml_kem.hpp, and SLH-DSA, scheme/slh_dsa.hpp).
+#if defined(OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST)
+#define OPENPQC_MLDSA_KEYGEN_CONFIGURATION keygen_pct_breakage_test
+#elif defined(OPENPQC_MLDSA_KEYGEN_PCT)
+#define OPENPQC_MLDSA_KEYGEN_CONFIGURATION keygen_pct
+#else
+#define OPENPQC_MLDSA_KEYGEN_CONFIGURATION keygen_no_pct
+#endif
+inline namespace OPENPQC_MLDSA_KEYGEN_CONFIGURATION {
+
 // The pair-wise consistency test that FIPS 140-3 asks of validated modules after key
-// generation: a signature made with sk must verify under pk
+// generation: a signature made with sk must verify under pk. OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST
+// (tests only) changes a bit of the signature before it is verified, so that the test fails and
+// the failure path of keygen_derand is taken (tests/ML-DSA: mldsa_pct_fail).
 template <ParameterSet P>
 bool check_pair_wise_consistency(std::span<const std::uint8_t, Sizes<P>::pk> pk,
                                  std::span<const std::uint8_t, Sizes<P>::sk> sk) {
@@ -61,10 +82,15 @@ bool check_pair_wise_consistency(std::span<const std::uint8_t, Sizes<P>::pk> pk,
     static constexpr std::array<std::uint8_t, 32> rnd{};
     std::array<std::uint8_t, Sizes<P>::sig> sigma;
     if (internal::sign<P>(sigma, sk, {message}, rnd) != Status::ok) return false;
+#if defined(OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST)
+    sigma[0] ^= 1;
+#endif
     bool ok = internal::verify<P>(pk, {message}, sigma);
     OPQC_CT_DECLASSIFY(&ok, sizeof ok);   // the outcome of the check is public
     return ok;
 }
+
+} // inline namespace OPENPQC_MLDSA_KEYGEN_CONFIGURATION
 
 // The key pair that Algorithm 6 computes (lines 3 and 5-10) for the rho, K, s1 and s2 of a given
 // sk, in place of those that line 1 derives from xi: the regeneration that the key checks below
@@ -132,6 +158,8 @@ bool check_key_pair(std::span<const std::uint8_t, Sizes<P>::pk> pk, std::span<co
     return ok;
 }
 
+inline namespace OPENPQC_MLDSA_KEYGEN_CONFIGURATION {
+
 // Algorithm 1, line 5, with the seed xi given: ML-DSA.KeyGen_internal(xi)
 template <ParameterSet P>
 Status keygen_derand(std::span<std::uint8_t, Sizes<P>::pk> pk, std::span<std::uint8_t, Sizes<P>::sk> sk,
@@ -155,6 +183,8 @@ Status keygen(std::span<std::uint8_t, Sizes<P>::pk> pk, std::span<std::uint8_t, 
     if (opqc_randombytes(xi.data(), xi.size()) != 0) return Status::rng_failure;   // 1-4
     return keygen_derand<P>(pk, sk, xi);                                           // 5
 }
+
+} // inline namespace OPENPQC_MLDSA_KEYGEN_CONFIGURATION
 
 // --- ML-DSA (pure) -----------------------------------------------------------------------
 

@@ -78,7 +78,7 @@ OPQC_INLINE void mlkem_sample_ntt(uint16_t a[MLKEM_N], const uint8_t B[34])
 /* Bit k of the byte string B, i.e. BytesToBits(B)[k] (Algorithm 4). */
 OPQC_INLINE unsigned mlkem_bit(const uint8_t *B, unsigned k)
 {
-    return (B[k / 8] >> (k % 8)) & 1u;
+    return ((unsigned)B[k / 8] >> (k % 8)) & 1u;
 }
 
 /*

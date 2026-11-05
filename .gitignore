@@ -1,6 +1,8 @@
-# Build trees (build/, build-dpcpp/, build-acpp/, ...) and tool output
+# Build trees (build/, build-dpcpp/, build-acpp/, build-presets/ of CMakePresets.json, ...) and tool output
 build*/
 compile_commands.json
+# a developer's own CMake presets (CMakePresets.json is the project's)
+CMakeUserPresets.json
 __pycache__/
 
 # Hidden files and directories are local (.cache/, .claude/, .vscode/, .idea/, .original-src/,
@@ -22,8 +24,19 @@ perf.data*
 vgcore.*
 core.[0-9]*
 
-# Notes, reports and plans that do not document the code as it is
-docs/
+# Notes, reports and plans that do not document the code as it is: the review and fix records, the SLH-DSA working
+# notes, the toolchain-bug reproducers and local status reports stay on the machine that wrote them. The pages of
+# docs/ that document the code are tracked.
+docs/*
+!docs/GPU_ACCELERATION.md
+!docs/SOURCE_MAP.md
+!docs/PRIMITIVES.md
+!docs/catalog/
+
+# Images with locally measured NVIDIA cuPQC results: the cuPQC evaluation licence keeps such results private, so
+# they stay local
+figures/mlkem768_cpu_vs_gpu.png
+figures/mlkem768_cpu_vs_gpu_rtxpro6000.png
 
 # The upstream checkouts in reference/repos/ are submodules (.gitmodules) and are not ignored:
 # git add needs to see them to record their commits

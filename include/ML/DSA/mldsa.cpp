@@ -6,6 +6,13 @@
 // The only compiled file of ML-DSA: it instantiates the templates of
 // scheme/ml_dsa.hpp for the three parameter sets and exports them under the
 // C names. Each function turns its pointer arguments into spans.
+//
+// Outputs on failure (openpqc_mldsa.h, Results): the checks of ctx and the RNG
+// run before anything is written to sig, mu, pk or sk, so their failures leave
+// them unchanged; Sign_internal zeroes sig when it fails (a malformed sk, the
+// signing limit) and a failed pair-wise consistency test zeroizes pk and sk
+// (scheme/mldsa_internal.hpp, scheme/ml_dsa.hpp). The check of ph below comes
+// before any write as well.
 #include "ML/DSA/openpqc_mldsa.h"
 
 #include <cstddef>

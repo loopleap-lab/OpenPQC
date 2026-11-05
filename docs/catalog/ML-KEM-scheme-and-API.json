@@ -1,0 +1,1432 @@
+[
+ {
+  "symbol": "mlk_gen_matrix",
+  "linker_symbol": "<PREFIX>[LVL]_gen_matrix (MLK_NAMESPACE_K, indcpa.h:22)",
+  "file": "mlkem/src/indcpa.c",
+  "line": 211,
+  "kind": "internal_api",
+  "fips203_ref": "Alg.13 L3-7; Alg.14 L4-8 (SampleNTT = Alg.7)",
+  "math": "A[i][j] = SampleNTT(rho||j||i) (transposed=0) or A^T (transposed=1, bytes swapped, indcpa.c:232-241,265-273); floor(k^2/4) x4 batches then k^2 mod 4 serial; permute to native custom NTT order; zeroize seed_ext",
+  "inputs": "seed rho[32] (public, declassified by callers), transposed in {0,1}",
+  "outputs": "mlk_polymat a (k^2 polys, coeffs in [0,q))",
+  "callees": [
+   "mlk_poly_rej_uniform_x4",
+   "mlk_poly_rej_uniform",
+   "mlk_polymat_permute_bitrev_to_custom",
+   "mlk_zeroize",
+   "mlk_memcpy"
+  ],
+  "core_deps": [
+   "SHAKE128 (x4 and x1) via sampling.c: absorb 34 B, squeeze 3x168 B + extra 168-B blocks",
+   "mlk_zeroize"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "Public data; per-entry XOF stream is embarrassingly parallel (k^2 streams); E[perms]/entry 3.0083; x4 schedule squeezes all 4 lanes until all done (sampling.c:187-208). Can be fused with basemul rows to avoid storing A (512k^2 B)."
+ },
+ {
+  "symbol": "mlk_pack_pk",
+  "linker_symbol": "static (MLK_ADD_PARAM_SET -> mlk_pack_pk[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 57,
+  "kind": "static_fn",
+  "fips203_ref": "Alg.13 L19",
+  "math": "ek = ByteEncode12(t_hat) || rho",
+  "inputs": "mlk_polyvec t_hat (coeffs [0,q)), rho[32]",
+  "outputs": "pk[384k+32]",
+  "callees": [
+   "mlk_polyvec_tobytes",
+   "mlk_memcpy"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "Pure byte packing; coalesced store kernel."
+ },
+ {
+  "symbol": "mlk_unpack_pk",
+  "linker_symbol": "static (mlk_unpack_pk[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 79,
+  "kind": "static_fn",
+  "fips203_ref": "Alg.14 L2-3",
+  "math": "t_hat = ByteDecode12(ek[0:384k]); rho = ek[384k:384k+32]; no reduction (bound < 4096, indcpa.c:85-88)",
+  "inputs": "pk[384k+32]",
+  "outputs": "mlk_polyvec t_hat, rho[32]",
+  "callees": [
+   "mlk_polyvec_frombytes",
+   "mlk_memcpy"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "Coalesced load + 12-bit unpack."
+ },
+ {
+  "symbol": "mlk_pack_sk",
+  "linker_symbol": "static (mlk_pack_sk[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 101,
+  "kind": "static_fn",
+  "fips203_ref": "Alg.13 L20",
+  "math": "dk_PKE = ByteEncode12(s_hat)",
+  "inputs": "mlk_polyvec s_hat",
+  "outputs": "sk[384k]",
+  "callees": [
+   "mlk_polyvec_tobytes"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "SECRET data."
+ },
+ {
+  "symbol": "mlk_unpack_sk",
+  "linker_symbol": "static (mlk_unpack_sk[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 118,
+  "kind": "static_fn",
+  "fips203_ref": "Alg.15 L5",
+  "math": "s_hat = ByteDecode12(dk_PKE)",
+  "inputs": "sk[384k]",
+  "outputs": "mlk_polyvec s_hat",
+  "callees": [
+   "mlk_polyvec_frombytes"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "SECRET data."
+ },
+ {
+  "symbol": "mlk_pack_ciphertext",
+  "linker_symbol": "static (mlk_pack_ciphertext[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 137,
+  "kind": "static_fn",
+  "fips203_ref": "Alg.14 L22-23",
+  "math": "c1 = ByteEncode_du(Compress_du(u)); c2 = ByteEncode_dv(Compress_dv(v))",
+  "inputs": "mlk_polyvec u, mlk_poly v",
+  "outputs": "c[32(du*k+dv)]",
+  "callees": [
+   "mlk_polyvec_compress_du",
+   "mlk_poly_compress_dv"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "du=10/10/11, dv=4/4/5; division-free compress (see arith catalog)."
+ },
+ {
+  "symbol": "mlk_unpack_ciphertext",
+  "linker_symbol": "static (mlk_unpack_ciphertext[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 156,
+  "kind": "static_fn",
+  "fips203_ref": "Alg.15 L1-4",
+  "math": "u' = Decompress_du(ByteDecode_du(c1)); v' = Decompress_dv(ByteDecode_dv(c2))",
+  "inputs": "c",
+  "outputs": "mlk_polyvec u', mlk_poly v'",
+  "callees": [
+   "mlk_polyvec_decompress_du",
+   "mlk_poly_decompress_dv"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "Public data."
+ },
+ {
+  "symbol": "mlk_polymat_permute_bitrev_to_custom",
+  "linker_symbol": "static (mlk_polymat_permute_bitrev_to_custom[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 164,
+  "kind": "static_fn",
+  "fips203_ref": "none (implementation detail)",
+  "math": "If MLK_USE_NATIVE_NTT_CUSTOM_ORDER (x86_64 native/x86_64/meta.h:13): permute each A entry from bit-reversed to backend order; else no-op",
+  "inputs": "mlk_polymat a",
+  "outputs": "mlk_polymat a (permuted)",
+  "callees": [
+   "mlk_poly_permute_bitrev_to_custom"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "GPU kernels should fix one internal NTT-domain order; only conversion at encode/decode boundaries."
+ },
+ {
+  "symbol": "mlk_matvec_mul",
+  "linker_symbol": "static (mlk_matvec_mul[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 304,
+  "kind": "static_fn",
+  "fips203_ref": "Sec.2.4.7 Eq.(2.12),(2.13); Alg.13 L18 / Alg.14 L19 (A o y)",
+  "math": "out[i] = sum_j A[i][j] * v[j] in NTT domain (Montgomery, with mulcache of v)",
+  "inputs": "mlk_polymat a (|coef|<4096), mlk_polyvec v, mlk_polyvec_mulcache vc",
+  "outputs": "mlk_polyvec out",
+  "callees": [
+   "mlk_polyvec_basemul_acc_montgomery_cached"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "k rows x k products; 32-bit accumulators reduced once per output coefficient; row-parallel."
+ },
+ {
+  "symbol": "mlk_keypair_getnoise_eta1",
+  "linker_symbol": "static (mlk_keypair_getnoise_eta1[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 339,
+  "kind": "static_fn",
+  "fips203_ref": "Alg.13 L8-15",
+  "math": "s[i] = CBD_eta1(PRF_eta1(sigma, i)), e[i] = CBD_eta1(PRF_eta1(sigma, k+i)); k=2: one 4x call (N=0..3); k=3: two 4x calls with NULL 4th lane and dummy nonce 0xFF; k=4: two 4x calls (N=0..7)",
+  "inputs": "noiseseed sigma[32]",
+  "outputs": "mlk_polyvec s, e",
+  "callees": [
+   "mlk_poly_getnoise_eta1_4x"
+  ],
+  "core_deps": [
+   "SHAKE256 33 B -> 64*eta1 B (x4 when native x4 Keccak present)"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "SECRET; 2k independent PRF+CBD jobs; native x4 wastes 2 lanes for k=3."
+ },
+ {
+  "symbol": "mlk_enc_getnoise_eta1_eta2",
+  "linker_symbol": "static (mlk_enc_getnoise_eta1_eta2[LVL])",
+  "file": "mlkem/src/indcpa.c",
+  "line": 387,
+  "kind": "static_fn",
+  "fips203_ref": "Alg.14 L9-17",
+  "math": "y[i]=CBD_eta1(PRF(r,i)); e1[i]=CBD_eta2(PRF(r,k+i)); e2=CBD_eta2(PRF(r,2k)); k=2: eta1122_4x + eta2; k=3: eta1_4x(3 lanes) + eta2_4x(e1,e2); k=4: eta1_4x + eta2_4x + eta2",
+  "inputs": "coins r[32]",
+  "outputs": "mlk_polyvec y, e1; mlk_poly e2",
+  "callees": [
+   "mlk_poly_getnoise_eta1_4x",
+   "mlk_poly_getnoise_eta1122_4x",
+   "mlk_poly_getnoise_eta2_4x (=eta1_4x alias, poly_k.h:539)",
+   "mlk_poly_getnoise_eta2"
+  ],
+  "core_deps": [
+   "SHAKE256 33 B -> 128/192 B"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "SECRET; 2k+1 independent PRF+CBD jobs."
+ },
+ {
+  "symbol": "mlk_indcpa_keypair_derand",
+  "linker_symbol": "<PREFIX>[LVL]_indcpa_keypair_derand (indcpa.h:49-50)",
+  "file": "mlkem/src/indcpa.c",
+  "line": 436,
+  "kind": "internal_api",
+  "fips203_ref": "Alg.13 K-PKE.KeyGen",
+  "math": "(rho,sigma)=G(d||k); A=gen_matrix(rho,0); s,e<-CBD; s_hat=NTT(s), e_hat=NTT(e); t_hat = tomont(A o s_hat) + e_hat; reduce; ek=Enc12(t_hat)||rho; dk=Enc12(s_hat)",
+  "inputs": "coins d[32] (secret), context (opt.)",
+  "outputs": "pk[384k+32], sk[384k]; int 0 or MLK_ERR_OUT_OF_MEMORY",
+  "callees": [
+   "mlk_hash_g",
+   "mlk_gen_matrix",
+   "mlk_keypair_getnoise_eta1",
+   "mlk_polyvec_ntt",
+   "mlk_polyvec_mulcache_compute",
+   "mlk_matvec_mul",
+   "mlk_polyvec_tomont",
+   "mlk_polyvec_add",
+   "mlk_polyvec_reduce",
+   "mlk_pack_sk",
+   "mlk_pack_pk",
+   "MLK_ALLOC/MLK_FREE"
+  ],
+  "core_deps": [
+   "SHA3-512 (33 B in, 64 B out, 1 perm)",
+   "SHAKE128 (k^2 SampleNTT)",
+   "SHAKE256 (PRF)",
+   "mlk_zeroize (MLK_FREE)",
+   "MLK_ALLOC",
+   "MLK_CT_TESTING_DECLASSIFY (indcpa.c:474)"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "MLK_ALLOC peak 512k^2+1792k+128 B (5760/10112/15488). Keccak: 1 + E[matrix] + PRF (6-8). 2k NTT, k basemul rows."
+ },
+ {
+  "symbol": "mlk_indcpa_enc",
+  "linker_symbol": "<PREFIX>[LVL]_indcpa_enc (indcpa.h:92)",
+  "file": "mlkem/src/indcpa.c",
+  "line": 518,
+  "kind": "internal_api",
+  "fips203_ref": "Alg.14 K-PKE.Encrypt",
+  "math": "t_hat,rho=unpack(ek); mu=Decompress1(Decode1(m)); A^T=gen_matrix(rho,1); y,e1,e2<-CBD; y_hat=NTT(y); u=INTT(A^T o y_hat)+e1; v=INTT(t_hat^T o y_hat)+e2+mu; c=pack(Compress_du(u), Compress_dv(v))",
+  "inputs": "m[32], pk[384k+32], coins r[32], context",
+  "outputs": "c[32(du*k+dv)]; int 0 or MLK_ERR_OUT_OF_MEMORY",
+  "callees": [
+   "mlk_unpack_pk",
+   "mlk_poly_frommsg",
+   "mlk_gen_matrix",
+   "mlk_enc_getnoise_eta1_eta2",
+   "mlk_polyvec_ntt",
+   "mlk_polyvec_mulcache_compute",
+   "mlk_matvec_mul",
+   "mlk_polyvec_basemul_acc_montgomery_cached",
+   "mlk_polyvec_invntt_tomont",
+   "mlk_poly_invntt_tomont",
+   "mlk_polyvec_add",
+   "mlk_poly_add",
+   "mlk_polyvec_reduce",
+   "mlk_poly_reduce",
+   "mlk_pack_ciphertext"
+  ],
+  "core_deps": [
+   "SHAKE128 (matrix)",
+   "SHAKE256 (PRF)",
+   "mlk_zeroize",
+   "MLK_ALLOC",
+   "MLK_CT_TESTING_DECLASSIFY (indcpa.c:552)"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "Largest frame (13,280 B at 768, gcc -O3). MLK_ALLOC 512k^2+2304k+1568 B. k NTT, k+1 INTT, k+1 basemul rows. Re-used by Decaps (re-encryption)."
+ },
+ {
+  "symbol": "mlk_indcpa_dec",
+  "linker_symbol": "<PREFIX>[LVL]_indcpa_dec (indcpa.h:134)",
+  "file": "mlkem/src/indcpa.c",
+  "line": 598,
+  "kind": "internal_api",
+  "fips203_ref": "Alg.15 K-PKE.Decrypt",
+  "math": "u',v'=unpack_ct(c); s_hat=Decode12(dk); w = v' - INTT(s_hat^T o NTT(u')); m = Encode1(Compress1(w))",
+  "inputs": "c, sk[384k], context",
+  "outputs": "m[32]; int 0 or MLK_ERR_OUT_OF_MEMORY",
+  "callees": [
+   "mlk_unpack_ciphertext",
+   "mlk_unpack_sk",
+   "mlk_polyvec_ntt",
+   "mlk_polyvec_mulcache_compute",
+   "mlk_polyvec_basemul_acc_montgomery_cached",
+   "mlk_poly_invntt_tomont",
+   "mlk_poly_sub",
+   "mlk_poly_reduce",
+   "mlk_poly_tomsg"
+  ],
+  "core_deps": [
+   "mlk_zeroize",
+   "MLK_ALLOC"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/K-PKE",
+  "gpu_notes": "No hashing. SECRET s, m'. k NTT, 1 INTT, 1 basemul row; MLK_ALLOC 1280k+1024 B."
+ },
+ {
+  "symbol": "mlk_kem_check_pk",
+  "linker_symbol": "<PREFIX>[LVL]_check_pk (kem.h:61)",
+  "file": "mlkem/src/kem.c",
+  "line": 44,
+  "kind": "external_api",
+  "fips203_ref": "Sec.7.2 Modulus check",
+  "math": "ek[0:384k] == ByteEncode12(ByteDecode12(ek[0:384k])) mod q, via frombytes -> reduce -> tobytes -> ct_memcmp",
+  "inputs": "pk[384k+32], context",
+  "outputs": "int 0 / MLK_ERR_INVALID_PK / MLK_ERR_OUT_OF_MEMORY",
+  "callees": [
+   "mlk_polyvec_frombytes",
+   "mlk_polyvec_reduce",
+   "mlk_polyvec_tobytes",
+   "mlk_ct_memcmp",
+   "MLK_ALLOC/MLK_FREE"
+  ],
+  "core_deps": [
+   "mlk_ct_memcmp (verify.h:338)",
+   "mlk_zeroize"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/KEM",
+  "gpu_notes": "Per-key, not per-ciphertext: hoist out of batched encaps to the same pk. Constant-time compare avoids declassifying pk (kem.c:61-62)."
+ },
+ {
+  "symbol": "mlk_kem_check_sk",
+  "linker_symbol": "<PREFIX>[LVL]_check_sk (kem.h:65)",
+  "file": "mlkem/src/kem.c",
+  "line": 80,
+  "kind": "external_api",
+  "fips203_ref": "Sec.7.3 Hash check",
+  "math": "H(dk[384k:768k+32]) == dk[768k+32:768k+64]",
+  "inputs": "sk[768k+96], context",
+  "outputs": "int 0 / MLK_ERR_INVALID_SK / MLK_ERR_OUT_OF_MEMORY",
+  "callees": [
+   "mlk_hash_h",
+   "mlk_ct_memcmp",
+   "MLK_CT_TESTING_DECLASSIFY"
+  ],
+  "core_deps": [
+   "SHA3-256 over 384k+32 B (6/9/12 perms)",
+   "mlk_ct_memcmp"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/KEM",
+  "gpu_notes": "Per-key check: 9 of 53 Decaps permutations at 768; hoistable for batches under one sk (policy decision)."
+ },
+ {
+  "symbol": "mlk_check_pct",
+  "linker_symbol": "static (MLK_ADD_PARAM_SET -> mlk_check_pct[LVL], kem.c:37)",
+  "file": "mlkem/src/kem.c",
+  "line": 148,
+  "kind": "static_fn",
+  "fips203_ref": "FIPS 203 Sec.7.1 Pairwise consistency; FIPS 140-3 IG p.87",
+  "math": "ct,ss_e = Encaps(pk) [randomized]; ss_d = Decaps(sk, ct); fail if ss_e != ss_d (ct). Stub returning 0 at kem.c:215 when !MLK_CONFIG_KEYGEN_PCT",
+  "inputs": "pk, sk, context",
+  "outputs": "int 0 / MLK_ERR_PCT_FAIL / MLK_ERR_RNG_FAIL / MLK_ERR_OUT_OF_MEMORY",
+  "callees": [
+   "mlk_kem_enc",
+   "mlk_kem_dec",
+   "mlk_ct_memcmp",
+   "mlk_break_pct (PCT_BREAKAGE_TEST)"
+  ],
+  "core_deps": [
+   "randombytes (32 B)",
+   "all KEM hashes"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/KEM",
+  "gpu_notes": "Triples KeyGen cost (85/140/221 perms). On GPU could be done as a batched encaps+decaps pass."
+ },
+ {
+  "symbol": "mlk_kem_keypair_derand",
+  "linker_symbol": "<PREFIX>[LVL]_keypair_derand (kem.h:50) = public MLK_API_NAMESPACE(keypair_derand)",
+  "file": "mlkem/src/kem.c",
+  "line": 233,
+  "kind": "external_api",
+  "fips203_ref": "Alg.16 ML-KEM.KeyGen_internal(d,z)",
+  "math": "(ek,dk_PKE)=K-PKE.KeyGen(d); dk = dk_PKE || ek || H(ek) || z; optional PCT; zeroize pk/sk on error",
+  "inputs": "coins[64] = d||z, context",
+  "outputs": "pk[384k+32], sk[768k+96]; int 0/PCT_FAIL/RNG_FAIL/OOM",
+  "callees": [
+   "mlk_indcpa_keypair_derand",
+   "mlk_memcpy",
+   "mlk_hash_h",
+   "mlk_check_pct",
+   "mlk_zeroize"
+  ],
+  "core_deps": [
+   "SHA3-256 over pk (6/9/12 perms)",
+   "mlk_zeroize",
+   "MLK_CT_TESTING_DECLASSIFY"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/KEM",
+  "gpu_notes": "Keccak 27/43/69 perms minimum. FIPS internal function: expose only for testing (fips203.txt:1036-1041)."
+ },
+ {
+  "symbol": "mlk_kem_keypair",
+  "linker_symbol": "<PREFIX>[LVL]_keypair (kem.h:53)",
+  "file": "mlkem/src/kem.c",
+  "line": 277,
+  "kind": "external_api",
+  "fips203_ref": "Alg.19 ML-KEM.KeyGen",
+  "math": "d||z <- randombytes(64); keypair_derand",
+  "inputs": "context",
+  "outputs": "pk, sk; int 0/RNG_FAIL/PCT_FAIL/OOM",
+  "callees": [
+   "mlk_randombytes",
+   "mlk_kem_keypair_derand"
+  ],
+  "core_deps": [
+   "randombytes (64 B)",
+   "MLK_CT_TESTING_SECRET",
+   "MLK_ALLOC"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/KEM",
+  "gpu_notes": "Randomness drawn on host via Core RNG for GPU batch."
+ },
+ {
+  "symbol": "mlk_kem_enc_derand",
+  "linker_symbol": "<PREFIX>[LVL]_enc_derand (kem.h:57)",
+  "file": "mlkem/src/kem.c",
+  "line": 315,
+  "kind": "external_api",
+  "fips203_ref": "Alg.17 ML-KEM.Encaps_internal(ek,m) + Sec.7.2",
+  "math": "check_pk; (K,r)=G(m||H(ek)); c=K-PKE.Encrypt(ek,m,r); ss=K",
+  "inputs": "pk, coins m[32], context",
+  "outputs": "ct, ss[32]; int 0/INVALID_PK/OOM",
+  "callees": [
+   "mlk_kem_check_pk",
+   "mlk_memcpy",
+   "mlk_hash_h",
+   "mlk_hash_g",
+   "mlk_indcpa_enc"
+  ],
+  "core_deps": [
+   "SHA3-256 over pk (6/9/12)",
+   "SHA3-512 64 B (1)",
+   "SHAKE128/256 via indcpa_enc",
+   "MLK_ALLOC"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/KEM",
+  "gpu_notes": "Keccak 26/44/70 perms minimum; H(pk) hoistable per pk in batch encaps."
+ },
+ {
+  "symbol": "mlk_kem_enc",
+  "linker_symbol": "<PREFIX>[LVL]_enc (kem.h:59)",
+  "file": "mlkem/src/kem.c",
+  "line": 365,
+  "kind": "external_api",
+  "fips203_ref": "Alg.20 ML-KEM.Encaps",
+  "math": "m <- randombytes(32); enc_derand",
+  "inputs": "pk, context",
+  "outputs": "ct, ss; int 0/RNG_FAIL/INVALID_PK/OOM",
+  "callees": [
+   "mlk_randombytes",
+   "mlk_kem_enc_derand"
+  ],
+  "core_deps": [
+   "randombytes (32 B)",
+   "MLK_CT_TESTING_SECRET"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/KEM",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "mlk_kem_dec",
+  "linker_symbol": "<PREFIX>[LVL]_dec (kem.h:64)",
+  "file": "mlkem/src/kem.c",
+  "line": 403,
+  "kind": "external_api",
+  "fips203_ref": "Alg.21 ML-KEM.Decaps = Sec.7.3 + Alg.18 Decaps_internal",
+  "math": "check_sk; m'=K-PKE.Decrypt(dk_PKE,c); (K',r')=G(m'||h); K_bar=J(z||c); c'=K-PKE.Encrypt(ek,m',r'); ss = (c==c') ? K' : K_bar (ct_cmov_zero)",
+  "inputs": "ct, sk[768k+96], context",
+  "outputs": "ss[32]; int 0/INVALID_SK/OOM (implicit rejection returns 0)",
+  "callees": [
+   "mlk_kem_check_sk",
+   "mlk_indcpa_dec",
+   "mlk_memcpy",
+   "mlk_hash_g",
+   "mlk_indcpa_enc",
+   "mlk_ct_memcmp",
+   "mlk_hash_j",
+   "mlk_ct_cmov_zero"
+  ],
+  "core_deps": [
+   "SHA3-256 (check_sk)",
+   "SHA3-512 64 B",
+   "SHAKE256 J over 32+|c| B (6/9/12)",
+   "SHAKE128/256 via indcpa_enc",
+   "mlk_ct_memcmp",
+   "mlk_ct_cmov_zero",
+   "MLK_ALLOC"
+  ],
+  "level": "level-specific",
+  "group": "ML-KEM/KEM",
+  "gpu_notes": "Keccak 32/53/82 minimum. fail mask must stay branch-free on GPU (warp OR-reduce + select). No Sec.7.2 check on embedded ek."
+ },
+ {
+  "symbol": "mlk_hash_h",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 29,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: H = SHA3-256 (Eq.4.4)",
+  "math": "mlk_sha3_256(OUT, IN, INBYTES)",
+  "inputs": "pk (384k+32 B)",
+  "outputs": "32 B",
+  "callees": [
+   "mlk_sha3_256"
+  ],
+  "core_deps": [
+   "SHA3-256 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_hash_g",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 32,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: G = SHA3-512 (Eq.4.5)",
+  "math": "mlk_sha3_512(OUT, IN, INBYTES)",
+  "inputs": "33 B (d||k) or 64 B (m||h)",
+  "outputs": "64 B",
+  "callees": [
+   "mlk_sha3_512"
+  ],
+  "core_deps": [
+   "SHA3-512 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_hash_j",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 35,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: J = SHAKE256(.,8*32) (Eq.4.4)",
+  "math": "mlk_shake256(OUT, 32, IN, INBYTES)",
+  "inputs": "z||c (32+|c| B)",
+  "outputs": "32 B",
+  "callees": [
+   "mlk_shake256"
+  ],
+  "core_deps": [
+   "SHAKE256 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_prf_eta",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 40,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: PRF_eta(s,b) = SHAKE256(s||b, 8*64*eta) (Eq.4.3)",
+  "math": "mlk_shake256(OUT, ETA*N/4, IN, 33)",
+  "inputs": "33 B (seed||nonce)",
+  "outputs": "64*eta B",
+  "callees": [
+   "mlk_shake256"
+  ],
+  "core_deps": [
+   "SHAKE256 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_prf_eta1",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 42,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: PRF_eta1",
+  "math": "mlk_prf_eta(MLKEM_ETA1,...)",
+  "inputs": "33 B",
+  "outputs": "192 (k=2) / 128 B",
+  "callees": [
+   "mlk_prf_eta"
+  ],
+  "core_deps": [
+   "SHAKE256 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_prf_eta2",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 43,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: PRF_eta2",
+  "math": "mlk_prf_eta(MLKEM_ETA2,...)",
+  "inputs": "33 B",
+  "outputs": "128 B",
+  "callees": [
+   "mlk_prf_eta"
+  ],
+  "core_deps": [
+   "SHAKE256 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_prf_eta1_x4",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 44,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: 4 x PRF_eta1",
+  "math": "mlk_shake256x4(out0..3, ETA1*N/4, in0..3, 33)",
+  "inputs": "4 x 33 B",
+  "outputs": "4 x 64*eta1 B",
+  "callees": [
+   "mlk_shake256x4"
+  ],
+  "core_deps": [
+   "SHAKE256x4 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_ctx",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 50,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: XOF state type (Sec.4.1)",
+  "math": "mlk_shake128ctx",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [
+   "SHAKE128 ctx type (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_x4_ctx",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 51,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: 4-way XOF state type",
+  "math": "mlk_shake128x4ctx",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [
+   "SHAKE128x4 ctx type (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_init",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 52,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: XOF.Init",
+  "math": "mlk_shake128_init",
+  "inputs": "ctx",
+  "outputs": "ctx",
+  "callees": [
+   "mlk_shake128_init"
+  ],
+  "core_deps": [
+   "SHAKE128 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_absorb",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 53,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: XOF.Absorb (single call)",
+  "math": "mlk_shake128_absorb_once",
+  "inputs": "34 B (rho||b33||b34)",
+  "outputs": "ctx",
+  "callees": [
+   "mlk_shake128_absorb_once"
+  ],
+  "core_deps": [
+   "SHAKE128 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_squeezeblocks",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 55,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: XOF.Squeeze (whole 168-B blocks)",
+  "math": "mlk_shake128_squeezeblocks",
+  "inputs": "ctx, nblocks",
+  "outputs": "nblocks*168 B",
+  "callees": [
+   "mlk_shake128_squeezeblocks"
+  ],
+  "core_deps": [
+   "SHAKE128 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_release",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 57,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: XOF release (zeroize)",
+  "math": "mlk_shake128_release",
+  "inputs": "ctx",
+  "outputs": "-",
+  "callees": [
+   "mlk_shake128_release"
+  ],
+  "core_deps": [
+   "SHAKE128 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_x4_init",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 59,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: 4-way XOF.Init",
+  "math": "mlk_shake128x4_init",
+  "inputs": "ctx",
+  "outputs": "ctx",
+  "callees": [
+   "mlk_shake128x4_init"
+  ],
+  "core_deps": [
+   "SHAKE128x4 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_x4_absorb",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 60,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: 4-way XOF.Absorb",
+  "math": "mlk_shake128x4_absorb_once",
+  "inputs": "4 x 34 B",
+  "outputs": "ctx",
+  "callees": [
+   "mlk_shake128x4_absorb_once"
+  ],
+  "core_deps": [
+   "SHAKE128x4 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_x4_squeezeblocks",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 63,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: 4-way XOF.Squeeze",
+  "math": "mlk_shake128x4_squeezeblocks",
+  "inputs": "ctx, nblocks",
+  "outputs": "4 x nblocks*168 B",
+  "callees": [
+   "mlk_shake128x4_squeezeblocks"
+  ],
+  "core_deps": [
+   "SHAKE128x4 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "mlk_xof_x4_release",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 66,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: 4-way XOF release",
+  "math": "mlk_shake128x4_release",
+  "inputs": "ctx",
+  "outputs": "-",
+  "callees": [
+   "mlk_shake128x4_release"
+  ],
+  "core_deps": [
+   "SHAKE128x4 (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "MLK_XOF_RATE",
+  "linker_symbol": "macro (no symbol)",
+  "file": "mlkem/src/symmetric.h",
+  "line": 68,
+  "kind": "macro",
+  "fips203_ref": "FIPS 203 Sec.4.1: SHAKE128 rate",
+  "math": "SHAKE128_RATE (168)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [
+   "SHAKE128_RATE constant (Core FIPS-202 via MLK_CONFIG_FIPS202[X4]_CUSTOM_HEADER)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM->Core binding",
+  "gpu_notes": "Binding point: Core must export exactly these mlk_* names (FIPS202.md:10-18); GPU path uses its own device Keccak."
+ },
+ {
+  "symbol": "randombytes",
+  "linker_symbol": "randombytes (NOT namespaced)",
+  "file": "mlkem/src/randombytes.h",
+  "line": 29,
+  "kind": "extern_decl (consumer-provided)",
+  "fips203_ref": "Alg.19 L1-2 / Alg.20 L1 (random bit generation)",
+  "math": "Fill out[0:outlen] with CSPRNG output; 0 on success",
+  "inputs": "outlen",
+  "outputs": "out; int (0 ok)",
+  "callees": [],
+  "core_deps": [
+   "Core RNG"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": "Same signature expected by mldsa-native (mldsa/src/randombytes.h:16): provide once from Core. Absent with NO_RANDOMIZED_API or CUSTOM_RANDOMBYTES."
+ },
+ {
+  "symbol": "mlk_randombytes",
+  "linker_symbol": "static inline",
+  "file": "mlkem/src/randombytes.h",
+  "line": 46,
+  "kind": "static_inline",
+  "fips203_ref": "-",
+  "math": "return randombytes(out, outlen)",
+  "inputs": "out, outlen",
+  "outputs": "int",
+  "callees": [
+   "randombytes"
+  ],
+  "core_deps": [
+   "Core RNG"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": "Replaceable via MLK_CONFIG_CUSTOM_RANDOMBYTES."
+ },
+ {
+  "symbol": "MLK_NAMESPACE",
+  "linker_symbol": "macro",
+  "file": "mlkem/src/common.h",
+  "line": 80,
+  "kind": "macro",
+  "fips203_ref": "-",
+  "math": "MLK_NAMESPACE(s) = <PREFIX>_s (level-independent symbols)",
+  "inputs": "s",
+  "outputs": "identifier",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_NAMESPACE_K",
+  "linker_symbol": "macro",
+  "file": "mlkem/src/common.h",
+  "line": 81,
+  "kind": "macro",
+  "fips203_ref": "-",
+  "math": "MLK_NAMESPACE_K(s) = <PREFIX>[LVL]_s; LVL appended iff MULTILEVEL_WITH_SHARED or NO_SHARED (common.h:61-66)",
+  "inputs": "s",
+  "outputs": "identifier",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_ADD_PARAM_SET",
+  "linker_symbol": "macro",
+  "file": "mlkem/src/common.h",
+  "line": 63,
+  "kind": "macro",
+  "fips203_ref": "-",
+  "math": "s -> s##MLK_CONFIG_PARAMETER_SET in multilevel builds (for statics in SCU)",
+  "inputs": "s",
+  "outputs": "identifier",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_ALLOC",
+  "linker_symbol": "macro",
+  "file": "mlkem/src/common.h",
+  "line": 228,
+  "kind": "macro",
+  "fips203_ref": "-",
+  "math": "Default: MLK_ALIGN T mlk_alloc_v[N]; T *v = mlk_alloc_v (stack). CUSTOM_ALLOC_FREE: MLK_CUSTOM_ALLOC(v,T,N[,ctx]) (common.h:254-255), may yield NULL",
+  "inputs": "v, T, N, context",
+  "outputs": "T *v",
+  "callees": [],
+  "core_deps": [
+   "allocator (Core candidate)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": "Lists the per-instance large state; see opcount_mlkem.md Sec.7."
+ },
+ {
+  "symbol": "MLK_FREE",
+  "linker_symbol": "macro",
+  "file": "mlkem/src/common.h",
+  "line": 237,
+  "kind": "macro",
+  "fips203_ref": "Sec.3.3 destruction of intermediate values",
+  "math": "mlk_zeroize then (custom) free; v=NULL (common.h:237-243, 257-266)",
+  "inputs": "v, T, N, context",
+  "outputs": "-",
+  "callees": [
+   "mlk_zeroize"
+  ],
+  "core_deps": [
+   "mlk_zeroize (Core candidate)"
+  ],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": "Device buffers need an explicit zeroization equivalent."
+ },
+ {
+  "symbol": "MLK_ERR_FAIL",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/src/common.h",
+  "line": 274,
+  "kind": "const",
+  "fips203_ref": "Sec.7.2/7.3/7.1 where applicable",
+  "math": "= -1 (also mlkem_native.h)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_ERR_OUT_OF_MEMORY",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/src/common.h",
+  "line": 277,
+  "kind": "const",
+  "fips203_ref": "Sec.7.2/7.3/7.1 where applicable",
+  "math": "= -2 (also mlkem_native.h)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_ERR_RNG_FAIL",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/src/common.h",
+  "line": 280,
+  "kind": "const",
+  "fips203_ref": "Sec.7.2/7.3/7.1 where applicable",
+  "math": "= -3 (also mlkem_native.h)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_ERR_INVALID_PK",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/src/common.h",
+  "line": 284,
+  "kind": "const",
+  "fips203_ref": "Sec.7.2/7.3/7.1 where applicable",
+  "math": "= -4 (also mlkem_native.h)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_ERR_INVALID_SK",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/src/common.h",
+  "line": 288,
+  "kind": "const",
+  "fips203_ref": "Sec.7.2/7.3/7.1 where applicable",
+  "math": "= -5 (also mlkem_native.h)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_ERR_PCT_FAIL",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/src/common.h",
+  "line": 293,
+  "kind": "const",
+  "fips203_ref": "Sec.7.2/7.3/7.1 where applicable",
+  "math": "= -6 (also mlkem_native.h)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_CONTEXT_PARAMETERS_n",
+  "linker_symbol": "macro family (n=0..4)",
+  "file": "mlkem/src/context.h",
+  "line": 20,
+  "kind": "macro",
+  "fips203_ref": "-",
+  "math": "Append or drop trailing context argument depending on MLK_CONFIG_CONTEXT_PARAMETER",
+  "inputs": "args..., context",
+  "outputs": "argument list",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/infra (Core candidate)",
+  "gpu_notes": ""
+ },
+ {
+  "symbol": "MLK_API_NAMESPACE(keypair_derand)",
+  "linker_symbol": "<PREFIX>[LVL if MLK_CONFIG_MULTILEVEL_BUILD]_keypair_derand (mlkem_native.h:131-139), e.g. PQCP_MLKEM_NATIVE_MLKEM768_keypair_derand",
+  "file": "mlkem/mlkem_native.h",
+  "line": 187,
+  "kind": "public_api",
+  "fips203_ref": "Alg.16",
+  "math": "Public prototype; defined at kem.c:233",
+  "inputs": "pk[PUBLICKEYBYTES(LVL)], sk[SECRETKEYBYTES(LVL)], coins[64] [, context if MLK_CONFIG_CONTEXT_PARAMETER]",
+  "outputs": "int 0/PCT_FAIL/OOM/RNG_FAIL",
+  "callees": [
+   "kem.c:233"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Sizes: pk 800/1184/1568, sk 1632/2400/3168, ct 768/1088/1568, ss 32."
+ },
+ {
+  "symbol": "MLK_API_NAMESPACE(keypair)",
+  "linker_symbol": "<PREFIX>[LVL if MLK_CONFIG_MULTILEVEL_BUILD]_keypair (mlkem_native.h:131-139), e.g. PQCP_MLKEM_NATIVE_MLKEM768_keypair",
+  "file": "mlkem/mlkem_native.h",
+  "line": 220,
+  "kind": "public_api",
+  "fips203_ref": "Alg.19",
+  "math": "Public prototype; defined at kem.c:277",
+  "inputs": "pk, sk [, context if MLK_CONFIG_CONTEXT_PARAMETER]",
+  "outputs": "int 0/PCT_FAIL/OOM/RNG_FAIL",
+  "callees": [
+   "kem.c:277"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Sizes: pk 800/1184/1568, sk 1632/2400/3168, ct 768/1088/1568, ss 32."
+ },
+ {
+  "symbol": "MLK_API_NAMESPACE(enc_derand)",
+  "linker_symbol": "<PREFIX>[LVL if MLK_CONFIG_MULTILEVEL_BUILD]_enc_derand (mlkem_native.h:131-139), e.g. PQCP_MLKEM_NATIVE_MLKEM768_enc_derand",
+  "file": "mlkem/mlkem_native.h",
+  "line": 255,
+  "kind": "public_api",
+  "fips203_ref": "Alg.17 + Sec.7.2",
+  "math": "Public prototype; defined at kem.c:315",
+  "inputs": "ct[CIPHERTEXTBYTES(LVL)], ss[32], pk, coins[32] [, context if MLK_CONFIG_CONTEXT_PARAMETER]",
+  "outputs": "int 0/INVALID_PK/OOM",
+  "callees": [
+   "kem.c:315"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Sizes: pk 800/1184/1568, sk 1632/2400/3168, ct 768/1088/1568, ss 32."
+ },
+ {
+  "symbol": "MLK_API_NAMESPACE(enc)",
+  "linker_symbol": "<PREFIX>[LVL if MLK_CONFIG_MULTILEVEL_BUILD]_enc (mlkem_native.h:131-139), e.g. PQCP_MLKEM_NATIVE_MLKEM768_enc",
+  "file": "mlkem/mlkem_native.h",
+  "line": 290,
+  "kind": "public_api",
+  "fips203_ref": "Alg.20",
+  "math": "Public prototype; defined at kem.c:365",
+  "inputs": "ct, ss[32], pk [, context if MLK_CONFIG_CONTEXT_PARAMETER]",
+  "outputs": "int 0/INVALID_PK/OOM/RNG_FAIL",
+  "callees": [
+   "kem.c:365"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Sizes: pk 800/1184/1568, sk 1632/2400/3168, ct 768/1088/1568, ss 32."
+ },
+ {
+  "symbol": "MLK_API_NAMESPACE(dec)",
+  "linker_symbol": "<PREFIX>[LVL if MLK_CONFIG_MULTILEVEL_BUILD]_dec (mlkem_native.h:131-139), e.g. PQCP_MLKEM_NATIVE_MLKEM768_dec",
+  "file": "mlkem/mlkem_native.h",
+  "line": 325,
+  "kind": "public_api",
+  "fips203_ref": "Alg.21",
+  "math": "Public prototype; defined at kem.c:403",
+  "inputs": "ss[32], ct, sk [, context if MLK_CONFIG_CONTEXT_PARAMETER]",
+  "outputs": "int 0/INVALID_SK/OOM",
+  "callees": [
+   "kem.c:403"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Sizes: pk 800/1184/1568, sk 1632/2400/3168, ct 768/1088/1568, ss 32."
+ },
+ {
+  "symbol": "MLK_API_NAMESPACE(check_pk)",
+  "linker_symbol": "<PREFIX>[LVL if MLK_CONFIG_MULTILEVEL_BUILD]_check_pk (mlkem_native.h:131-139), e.g. PQCP_MLKEM_NATIVE_MLKEM768_check_pk",
+  "file": "mlkem/mlkem_native.h",
+  "line": 357,
+  "kind": "public_api",
+  "fips203_ref": "Sec.7.2",
+  "math": "Public prototype; defined at kem.c:44",
+  "inputs": "pk [, context if MLK_CONFIG_CONTEXT_PARAMETER]",
+  "outputs": "int 0/INVALID_PK/OOM",
+  "callees": [
+   "kem.c:44"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Sizes: pk 800/1184/1568, sk 1632/2400/3168, ct 768/1088/1568, ss 32."
+ },
+ {
+  "symbol": "MLK_API_NAMESPACE(check_sk)",
+  "linker_symbol": "<PREFIX>[LVL if MLK_CONFIG_MULTILEVEL_BUILD]_check_sk (mlkem_native.h:131-139), e.g. PQCP_MLKEM_NATIVE_MLKEM768_check_sk",
+  "file": "mlkem/mlkem_native.h",
+  "line": 386,
+  "kind": "public_api",
+  "fips203_ref": "Sec.7.3",
+  "math": "Public prototype; defined at kem.c:80",
+  "inputs": "sk [, context if MLK_CONFIG_CONTEXT_PARAMETER]",
+  "outputs": "int 0/INVALID_SK/OOM",
+  "callees": [
+   "kem.c:80"
+  ],
+  "core_deps": [],
+  "level": "level-specific",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Sizes: pk 800/1184/1568, sk 1632/2400/3168, ct 768/1088/1568, ss 32."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_512_KEYPAIR_NO_PCT",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 422,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 5824 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_512_KEYPAIR_PCT",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 423,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 10048 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_512_ENCAPS",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 424,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 8384 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_512_DECAPS",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 425,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 9152 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_768_KEYPAIR_NO_PCT",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 426,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 10176 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_768_KEYPAIR_PCT",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 427,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 15552 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_768_ENCAPS",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 428,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 13248 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_768_DECAPS",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 429,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 14336 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_1024_KEYPAIR_NO_PCT",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 430,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 15552 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_1024_KEYPAIR_PCT",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 431,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 22400 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_1024_ENCAPS",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 432,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 19136 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ },
+ {
+  "symbol": "MLK_TOTAL_ALLOC_1024_DECAPS",
+  "linker_symbol": "macro constant",
+  "file": "mlkem/mlkem_native.h",
+  "line": 433,
+  "kind": "const",
+  "fips203_ref": "-",
+  "math": "= 20704 B peak cumulative MLK_ALLOC (32-B rounded bump allocator; reproduced by opcount_model.py)",
+  "inputs": "-",
+  "outputs": "-",
+  "callees": [],
+  "core_deps": [],
+  "level": "level-independent",
+  "group": "ML-KEM/public-API",
+  "gpu_notes": "Upper bound for a per-instance scratch arena; excludes ~3 KB residual stack."
+ }
+]

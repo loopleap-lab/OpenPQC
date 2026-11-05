@@ -1,3 +1,9 @@
+# Copyright (c) The OpenPQC project authors
+# SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+#
+# OpenPQC: FIPS 203 ML-KEM, FIPS 204 ML-DSA and FIPS 205 SLH-DSA, on CPUs and on SYCL devices.
+# CMakePresets.json has the configurations the project is tested in (and .github/workflows/ci.yml
+# runs them).
 cmake_minimum_required(VERSION 3.20)
 project(OpenPQC VERSION 0.3.0 LANGUAGES C CXX)
 
@@ -6,6 +12,15 @@ option(OPENPQC_BUILD_BENCHMARKS "Build the OpenPQC benchmarks"           ${PROJE
 option(OPENPQC_BUILD_EXAMPLES   "Build the demos in examples/"            ${PROJECT_IS_TOP_LEVEL})
 option(OPENPQC_NATIVE           "Use the SIMD/assembly backends of the reference (mlkem-native)" ON)
 option(OPENPQC_WERROR           "Treat warnings in OpenPQC's own code as errors" ${PROJECT_IS_TOP_LEVEL})
+option(OPENPQC_REQUIRE_FULL_TESTS
+       "Fail the configuration if a tool tests need is missing: Python 3, OpenSSL, valgrind, threads, Clang, -m32 libraries"
+       OFF)
+option(OPENPQC_MLKEM_KEYGEN_PCT
+       "ML-KEM: KeyGen runs the pair-wise consistency test of FIPS 140-3 (FIPS 203, Section 7.1)" OFF)
+option(OPENPQC_MLDSA_KEYGEN_PCT
+       "ML-DSA: KeyGen of the CPU library runs the pair-wise consistency test of FIPS 140-3 (signs and verifies)" OFF)
+set(OPENPQC_SANITIZE "" CACHE STRING
+    "Sanitizers for every target (GCC, Clang): the list of -fsanitize=, e.g. address,undefined; empty: none")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)   # build/compile_commands.json, for clangd and other tools
 set(OPENPQC_SYCL "AUTO" CACHE STRING "Build the SYCL GPU backend: AUTO, ON or OFF")
@@ -17,8 +32,28 @@ set(OPENPQC_SYCL_FLAGS "" CACHE STRING
 set(OPENPQC_CUPQC_DIR "" CACHE PATH
     "NVIDIA cuPQC SDK directory: builds the cuPQC baseline benchmark (needs CUDA; not part of OpenPQC)")
 
+# Release unless the build type is given: the stack sizes the headers document and the constant-time tests at the
+# build's level are those of optimized code. -DCMAKE_BUILD_TYPE=Debug gives a debug build (-O0).
 if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# Sanitizers: the flags go into CMAKE_C_FLAGS and CMAKE_CXX_FLAGS, with which every target (the
+# references' included) is compiled and linked, and which the build files below look at to recognise a
+# sanitizer build: cmake/OpenPQCWarnings.cmake drops its limit on frame sizes under AddressSanitizer,
+# and the tests that run under valgrind are left out (valgrind cannot run a sanitized program). A report
+# ends the program (no recovery), so that it fails the test; the frame pointers keep the reports' stack
+# traces complete. CMakePresets.json has the configurations (gcc-asan-ubsan, clang-asan-ubsan).
+if(OPENPQC_SANITIZE)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" OR NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "OPENPQC_SANITIZE needs GCC or Clang (C: ${CMAKE_C_COMPILER_ID}, "
+                            "C++: ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+    set(_openpqc_sanitize_flags
+        "-fsanitize=${OPENPQC_SANITIZE} -fno-sanitize-recover=all -fno-omit-frame-pointer")
+    string(APPEND CMAKE_C_FLAGS " ${_openpqc_sanitize_flags}")
+    string(APPEND CMAKE_CXX_FLAGS " ${_openpqc_sanitize_flags}")
+    message(STATUS "OpenPQC sanitizers: ${_openpqc_sanitize_flags}")
 endif()
 
 include(cmake/OpenPQCWarnings.cmake)   # openpqc_strict_warnings, openpqc_warnings, openpqc_c_warnings
@@ -106,6 +141,24 @@ add_subdirectory(include/Core)
 add_subdirectory(include/ML/KEM)
 add_subdirectory(include/ML/DSA)
 add_subdirectory(include/SLH/DSA)
+
+# ML-KEM with the pair-wise consistency test after KeyGen (FIPS 140-3; FIPS 203, Section 7.1, item 4):
+# the definition is given to the library's own objects only (openpqc_mlkem and openpqc_mlkem_testrng),
+# so the test is a property of the compiled library; KeyGen then also draws the test's m from the RNG.
+if(OPENPQC_MLKEM_KEYGEN_PCT)
+    target_compile_definitions(openpqc_mlkem_objects PRIVATE OPENPQC_MLKEM_KEYGEN_PCT)
+endif()
+message(STATUS "OpenPQC ML-KEM pair-wise consistency test after KeyGen: ${OPENPQC_MLKEM_KEYGEN_PCT}")
+
+# ML-DSA with the pair-wise consistency test after KeyGen (FIPS 140-3; scheme/ml_dsa.hpp), in the same way:
+# the definition goes to the CPU library's own objects only (openpqc_mldsa and openpqc_mldsa_testrng), and
+# KeyGen then signs a fixed message with the new sk and verifies it with the new pk (deterministically: no
+# randomness is drawn). The GPU backend (openpqc_mldsa_sycl) reads the compile definition of the same name,
+# which this option does not give it.
+if(OPENPQC_MLDSA_KEYGEN_PCT)
+    target_compile_definitions(openpqc_mldsa_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
+endif()
+message(STATUS "OpenPQC ML-DSA pair-wise consistency test after KeyGen (CPU): ${OPENPQC_MLDSA_KEYGEN_PCT}")
 
 # C++ umbrella library: Core, ML-KEM, ML-DSA and SLH-DSA, and the C++ learning
 # code for ML-KEM's arithmetic (ML/KEM/reduce, ML/KEM/ntt).

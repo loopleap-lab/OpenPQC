@@ -5,6 +5,18 @@
 # is reported as "skipped". Label: gpu.
 
 if(OPENPQC_HAVE_SYCL)
+    # Core's SYCL helpers that the backends share (Core/sycl): the team reductions, a context's calls, zeroization
+    # and failure handling (asynchronous errors, waits through the queue, coins, allocations, arguments), and the
+    # device selection by OPENPQC_SYCL_DEVICE, on every device. "sticky" makes a real fault on an NVIDIA GPU, after
+    # which CUDA refuses all work of the process on that device: a process of its own (skipped without one).
+    add_executable(test_core_sycl test_core_sycl.cpp)
+    target_link_libraries(test_core_sycl PRIVATE openpqc_core_sycl openpqc_core)
+    target_compile_features(test_core_sycl PRIVATE cxx_std_20)
+    openpqc_sycl_sources(test_core_sycl test_core_sycl.cpp)
+    add_test(NAME core_sycl COMMAND test_core_sycl)
+    add_test(NAME core_sycl_sticky COMMAND test_core_sycl sticky)
+    set_tests_properties(core_sycl core_sycl_sticky PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 900)
+
     # ML-KEM: the three parameter sets, the status and error contract, fresh coins and two threads on one context,
     # on every device
     add_executable(test_mlkem_sycl test_mlkem_sycl.cpp)
@@ -24,11 +36,27 @@ if(OPENPQC_HAVE_SYCL)
     add_test(NAME mlkem_sycl_faults COMMAND test_mlkem_sycl_faults)
     set_tests_properties(mlkem_sycl_faults PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 1800)
 
+    # ML-DSA: the three parameter sets on every device, byte for byte against the CPU library; fresh randomness,
+    # the status and error contract, the self-test's answers, two threads on one context. "sticky" makes a real
+    # fault inside the signing loop on an NVIDIA GPU, after which CUDA refuses all work of the process on that
+    # device: a process of its own (skipped without an NVIDIA device).
     add_executable(test_mldsa_sycl test_mldsa_sycl.cpp)
     target_link_libraries(test_mldsa_sycl PRIVATE openpqc_mldsa_sycl openpqc_mldsa)
     target_compile_features(test_mldsa_sycl PRIVATE cxx_std_20)
     add_test(NAME mldsa_sycl COMMAND test_mldsa_sycl 200)
-    set_tests_properties(mldsa_sycl PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu)
+    add_test(NAME mldsa_sycl_sticky COMMAND test_mldsa_sycl sticky)
+    set_tests_properties(mldsa_sycl mldsa_sycl_sticky PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 3600)
+
+    # ML-DSA when the device work fails, by fault injection: a white-box test that compiles the backend's source
+    # itself, with the pair-wise consistency test after KeyGen (OPENPQC_MLDSA_KEYGEN_PCT), and provides the
+    # library's randombytes() (openpqc_core_testrng), so it links neither openpqc_mldsa_sycl nor openpqc_core.
+    add_executable(test_mldsa_sycl_faults test_mldsa_sycl_faults.cpp)
+    target_include_directories(test_mldsa_sycl_faults PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(test_mldsa_sycl_faults PRIVATE openpqc_mldsa_testrng openpqc_core_sycl openpqc_core_testrng)
+    target_compile_features(test_mldsa_sycl_faults PRIVATE cxx_std_20)
+    openpqc_sycl_sources(test_mldsa_sycl_faults test_mldsa_sycl_faults.cpp)
+    add_test(NAME mldsa_sycl_faults COMMAND test_mldsa_sycl_faults)
+    set_tests_properties(mldsa_sycl_faults PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 1800)
 
     # SLH-DSA: all twelve parameter sets (those of OPENPQC_SLHDSA_SYCL_SETS in a development build) on every
     # device; the CPU computes the expected values once per set, in threads (about 6 minutes in all). Measured on

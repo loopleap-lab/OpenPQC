@@ -21,7 +21,12 @@
 // secret input (H here, RejBoundedPoly, the message representative) are
 // OPENPQC_MLDSA_CLEARS_REGISTERS: never inlined, and their call-used registers
 // are zeroed when they return, where the compiler can (zero_call_used_regs:
-// GCC 11 and Clang 15 or later, on x86 and AArch64).
+// GCC 11 and Clang 15 or later, on x86 and AArch64). Clang 23 at -O1, -O2, -O3
+// and -Os on x86-64 does not do it for H: H zeroes the ones that carry no
+// argument of openpqc::sponge, then jumps to it (a tail call), and sponge
+// returns to H's caller without clearing any; at -O0, and with GCC 16 at every
+// level, H clears them (other compiler versions, 32-bit x86 and AArch64 were
+// not checked).
 #pragma once
 
 #include <array>

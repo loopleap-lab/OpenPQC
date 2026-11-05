@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // live_demo.cpp  --  OpenPQC in about five minutes, for a live presentation
 //
 // Three short scenes show what each scheme is for, then three races show what a GPU changes:
@@ -16,7 +19,8 @@
 //   a usable device the races run on the CPU only. NO_COLOR=1 turns the colours off.
 //
 // The GPU's results are checked in the races (every secret, every signature), and demo_gpu.cpp
-// shows the calls in more detail.
+// shows the calls in more detail. Every call's result is checked, on the CPU as on the GPU: a
+// call that fails produces no output (the C headers say what its buffers hold).
 
 #include <algorithm>
 #include <atomic>
@@ -152,10 +156,16 @@ void bar(const char* label, const char* colour, std::size_t done, std::size_t n,
     std::fflush(stdout);
 }
 
-// Runs op(i, scratch) for i = 0..n-1 on all CPU threads; with a label, draws a progress bar.
+// Runs op(i, scratch) for i = 0..n-1 on all CPU threads; op returns the C API's result, and
+// `failed` receives the number of calls that failed. With a label, draws a progress bar.
 // Returns the seconds.
-template <class Op> double cpu_run(std::size_t n, const Op& op, const char* label) {
-    std::atomic<std::size_t> next_i{0}, done{0};
+//
+// std::thread gives each thread the platform's default stack: with glibc the stack limit
+// (ulimit -s, usually 8 MiB), with musl 128 KiB, too little for ML-DSA-65 signing
+// (openpqc_mldsa.h, Stack). On musl, create the threads with pthread_attr_setstacksize and
+// OPENPQC_MLDSA65_STACK_BYTES, or link with -Wl,-z,stack-size=N.
+template <class Op> double cpu_run(std::size_t n, const Op& op, const char* label, std::size_t& failed) {
+    std::atomic<std::size_t> next_i{0}, done{0}, bad{0};
     std::vector<std::thread> pool;
     const auto t0 = Clock::now();
     for (unsigned t = 0; t < cpu_threads; t++)
@@ -164,7 +174,7 @@ template <class Op> double cpu_run(std::size_t n, const Op& op, const char* labe
             for (;;) {
                 const std::size_t i = next_i++;
                 if (i >= n) break;
-                op(i, scratch.data());
+                if (op(i, scratch.data()) != 0) bad++;
                 done++;
             }
         });
@@ -175,6 +185,7 @@ template <class Op> double cpu_run(std::size_t n, const Op& op, const char* labe
     for (auto& th : pool) th.join();
     const double s = seconds_since(t0);
     if (label) bar(label, cyan(), n, n, s, true);
+    failed = bad;
     return s;
 }
 
@@ -229,9 +240,14 @@ struct KemRace {
         check(openpqc_mlkem768_keypair(pk.data(), sk.data()), "keypair");
         for (std::size_t i = 0; i < n; i++) std::memcpy(&sks[SK * i], sk.data(), SK);
         // the clients' side, before the race: each encapsulates a secret to the server's key
+        std::size_t failed = 0;
         cpu_run(n, [&](std::size_t i, std::uint8_t*) {
-            check(openpqc_mlkem768_enc(&ct[CT * i], &ss_client[SS * i], pk.data()), "enc");
-        }, nullptr);
+            return openpqc_mlkem768_enc(&ct[CT * i], &ss_client[SS * i], pk.data());
+        }, nullptr, failed);
+        if (failed != 0) {
+            std::fprintf(stderr, "\nerror: %zu of %zu calls of enc failed\n", failed, n);
+            std::exit(2);
+        }
         if (device < -1 || opqc_sycl_mlkem_create(&gpu, 768, chunk, device) != 0) return;
         const auto alloc = [&](std::size_t b) { return static_cast<std::uint8_t*>(opqc_sycl_mlkem_malloc(gpu, b)); };
         d_sk = alloc(sks.size()), d_ct = alloc(ct.size()), d_ss = alloc(ss_server.size());
@@ -248,7 +264,7 @@ struct KemRace {
         gpu = nullptr;
     }
 
-    void cpu(std::size_t i, std::uint8_t* out) const { openpqc_mlkem768_dec(out, &ct[CT * i], &sks[SK * i]); }
+    int cpu(std::size_t i, std::uint8_t* out) const { return openpqc_mlkem768_dec(out, &ct[CT * i], &sks[SK * i]); }
     void run_gpu(std::size_t s, std::size_t m) {
         check(opqc_sycl_mlkem_memcpy_async(gpu, d_ct + CT * s, &ct[CT * s], CT * m), "copy");
         check(opqc_sycl_mlkem_memcpy_async(gpu, d_sk + SK * s, &sks[SK * s], SK * m), "copy");
@@ -292,8 +308,8 @@ struct DsaRace {
         gpu = nullptr;
     }
 
-    void cpu(std::size_t i, std::uint8_t* out) const {
-        openpqc_mldsa65_sign(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, sk.data());
+    int cpu(std::size_t i, std::uint8_t* out) const {
+        return openpqc_mldsa65_sign(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, sk.data());
     }
     // the messages lie back to back; offsets[i] .. offsets[i + 1] delimit message i
     void run_gpu(std::size_t s, std::size_t m) {
@@ -349,8 +365,8 @@ struct SlhRace {
         gpu = nullptr;
     }
 
-    void cpu(std::size_t i, std::uint8_t* out) const {
-        openpqc_slhdsa_sha2_128f_sign(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, sk.data());
+    int cpu(std::size_t i, std::uint8_t* out) const {
+        return openpqc_slhdsa_sha2_128f_sign(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, sk.data());
     }
     void run_gpu(std::size_t s, std::size_t m) {
         if (s == 0) check(opqc_sycl_slhdsa_memcpy_async(gpu, d_sk, sk.data(), SK), "copy");
@@ -391,7 +407,10 @@ template <class Race> void warm_up(Race& r) {
 template <class Race> void race(Race& r, const std::string& title, const std::string& what, const std::string& ok) {
     std::printf("  %s%s%s\n\n", bold(), title.c_str(), reset());
     const std::string cpu_label = "CPU " + std::to_string(cpu_threads) + " thr";
-    const double cpu_s = cpu_run(Race::n, [&](std::size_t i, std::uint8_t* out) { r.cpu(i, out); }, cpu_label.c_str());
+    std::size_t cpu_failed = 0;
+    const double cpu_s = cpu_run(Race::n, [&](std::size_t i, std::uint8_t* out) { return r.cpu(i, out); },
+                                 cpu_label.c_str(), cpu_failed);
+    if (cpu_failed != 0) expect(false, std::to_string(cpu_failed) + " calls on the CPU failed");
     double gpu_s = 0;
     if (r.gpu) {
         warm_up(r);

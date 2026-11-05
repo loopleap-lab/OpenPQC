@@ -23,8 +23,10 @@
  *  - On some CPUs the division instruction takes a data-dependent number of
  *    cycles, which leaks secret values (KyberSlash, 2024). A compiler is free
  *    to emit that instruction for `%` and `/`, e.g. when optimizing for size.
- *  - The result needs no final conditional subtraction, so there is nothing
- *    the compiler could turn into a secret-dependent branch.
+ *  - The result needs no final conditional subtraction: no mask is derived
+ *    from a secret here, so there is no selection that a compiler could turn
+ *    into a secret-dependent branch (selections on secrets use the helpers of
+ *    Core/opqc_ct.h, whose masks pass a value barrier).
  *
  * The bound 2^27 covers everything ML-KEM needs: a + b < 2q, a * b < q^2,
  * and the sum of 4 products from the NTT-domain multiplication, 8 q^2 < 2^27.

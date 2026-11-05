@@ -10,6 +10,12 @@
 // they used before they return (scheme/ml_kem.hpp; FIPS 203, Section 3.3).
 // Compiled with OPENPQC_MLKEM_KEYGEN_PCT, KeyGen runs the pair-wise consistency
 // check of Section 7.1 (openpqc_mlkem.h).
+//
+// Outputs on failure (openpqc_mlkem.h, Results): the checks of ek and dk
+// (Sections 7.2 and 7.3) and the RNG run before anything is written to ct, ss,
+// pk or sk, so their failures leave them unchanged, and ss is never set to a
+// fixed value; a failed pair-wise consistency check zeroizes pk and sk
+// (scheme/ml_kem.hpp).
 #include "ML/KEM/openpqc_mlkem.h"
 
 #include <cstddef>

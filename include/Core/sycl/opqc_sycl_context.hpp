@@ -9,16 +9,30 @@
 // largest batch of a launch, and one device allocation, the workspace, divided into sections of a fixed
 // size per operation. Every call
 //
-//   - takes the context's lock (calls from several threads take turns: one call's per-call data in the
-//     workspace must not be overwritten by another's before its kernels have run; recursive, since the
-//     randomized calls call the derandomized ones),
+//   - takes the context's lock for the whole call (calls from several threads take turns: one call's
+//     per-call data in the workspace must not be overwritten by another's before its kernels have run;
+//     recursive, since the randomized calls call the derandomized ones),
 //   - runs in chunks of at most max_batch operations (chunked), each queued without waiting,
 //   - and zeroizes the sections that held secrets after every chunk, and the whole workspace if the call
 //     or the device fails (FIPS 204, Section 3.6.3; FIPS 205, Section 3.1, "Destruction of sensitive data").
 //
+// Every helper here that uses the workspace, the page-locked coin buffer or the record of the
+// zeroization after a failure takes the lock itself (allocate, zeroize, check, wipe_workspace,
+// coin_buffer, free_coin_buffer, release, sync, chunked, with_random_coins, fill_status), so that no
+// helper's work can run between the steps of another thread's call, also when a backend calls the
+// helper without the lock. That a backend holds the lock across each whole call is still its own duty,
+// which nothing here checks: a call has several steps (the status fill, the context string, the chunks,
+// the fill after a failure), and only a lock held across all of them keeps another call from running in
+// between. The copies and the memory functions take none (they use none of it, and SYCL queues are
+// thread-safe), nor does the failed state need it (atomic).
+//
 // Randomized calls draw their coins on the host (with_random_coins), into page-locked memory of the
-// context, and wipe them there at once. The queue is in order, so a memset queued after a kernel runs
-// after it: zeroizing costs no wait.
+// context, and wipe them there at once. That reaches every copy the library holds, not every copy that
+// exists: NVIDIA's CUDA driver has been seen to keep copies of such small host-to-device transfers (the
+// coins: ML-KEM's d || z and m, ML-DSA's xi and rnd, SLH-DSA's seeds and addrnd) in memory of its own
+// (mappings of /dev/nvidiactl), after the call and, under DPC++, after destroy, where the library cannot
+// reach them.
+// The queue is in order, so a memset queued after a kernel runs after it: zeroizing costs no wait.
 // Host code only; none of it throws to the caller of a C API (guarded, opqc_sycl_runtime.hpp).
 //
 // Device failures
@@ -36,12 +50,19 @@
 //   -2, from every helper here and every C API of a backend, means that the SYCL runtime threw an
 //   exception or that the context has failed. Nothing the context computed since the last sync that
 //   returned 0 can then be trusted: outputs may be missing, partial or stale, also those of calls that
-//   returned 0. A failed context does no more work: every later call returns -2 without queueing any,
-//   sync and the copies return -2, and the only way on is destroy, then create.
+//   returned 0. A failed context runs no more of the backend's kernels: every later call whose arguments
+//   are accepted returns -2, and queues only its fail-closed writes (the fill of its status entries, in
+//   ML-KEM's Encaps and Decaps and in the verifications, and the zeroing of its outputs where the backend
+//   does that on failure) and, if it is the first to find the failure, the zeroization of the workspace
+//   (below); sync and the copies return -2 (a copy is still made, as far as the device allows: copy,
+//   below), and the only way on is destroy, then create (on CUDA, after a sticky fault, in a new process:
+//   see the workspace paragraph below).
 //   -1 is an argument that a helper refuses before it queues anything (a null context, a null pointer
-//   to copy, a status buffer that is not 4-byte aligned); it does not fail the context. An invalid
-//   pointer that only the SYCL runtime or the device detects does: no helper can tell that error from
-//   a fault of the context's own work.
+//   to copy, a status buffer that is not 4-byte aligned); it does not fail the context, and a context
+//   that has failed returns it too (the backends check NULL and misaligned buffers before the failed
+//   state, ML-KEM's and ML-DSA's also memory that is not USM memory of the context). An invalid pointer
+//   that only the SYCL runtime or the device detects does fail the context: no helper can tell that
+//   error from a fault of the context's own work.
 //
 //   Where a failure is found: every call checks at its start and after queueing its work (Context::check,
 //   in chunked and with_random_coins); sync waits for all queued work and reports what the wait finds; a
@@ -53,26 +74,34 @@
 //   and frees it in separate steps, so that a failed wait does not skip the zeroization, nor a failed
 //   zeroization the free. Both run as far as the device still accepts work: after a fault that leaves
 //   the device unusable (on CUDA an invalid address is sticky: every later command of the process on
-//   that device fails) no zeroization of device memory can run, and what the kernels wrote stays in
-//   device memory until the driver reuses it.
+//   that device fails, so every other context on it fails too and a new create on it returns -1; only
+//   a new process can use the device again) no zeroization of device memory can run, and what the
+//   kernels wrote stays in device memory until the driver reuses it.
 //
 //   Status: a verification call fills its status entries with the backend's failure code (fill_status)
 //   before its first kernel, so that an entry the kernels never reach reads as a failure, and again when
-//   the call returns non-zero. Neither fill can run on a lost device, and the copy back then fails too
-//   (-2), leaving the host buffer as it was: a caller checks the results of the call, of sync and of
-//   the copy, not only the status entries.
+//   the call returns non-zero. The fill after a refused (-1) or failed (-2) call is waited for before the
+//   call returns, so that no write into the caller's status buffer is left queued behind it: the caller
+//   may free the buffer at once, and device_free does not wait (on AdaptiveCpp's OpenMP host device a
+//   pending fill into a freed status buffer corrupted the heap). fill_status itself does not wait.
+//   Neither fill can run on a lost device, and the copy back then fails too (-2), leaving the host buffer
+//   as it was: a caller checks the results of the call, of sync and of the copy, not only the status
+//   entries.
 //
 //   What a backend's C API does:
 //     create         derive the context from Context and allocate(); delete it if that fails
 //     destroy        openpqc::gpu::destroy(ctx)
 //     sync           return openpqc::gpu::sync(ctx)
 //     memcpy, memcpy_async   return openpqc::gpu::copy(ctx, dst, src, bytes, wait)
-//     every call     take the lock and queue the work through chunked or with_random_coins (both check
+//     every call     take the lock for the whole call (the helpers take it too, but each only for its
+//                    own part) and queue the work through chunked or with_random_coins (both check
 //                    before and after); work queued outside them (put_context, ...) goes through
 //                    ctx->guard, after ctx->check() at the start of the call
 //     verification   check the status pointer with the other arguments (4-byte aligned), then, with the
 //                    lock held, fill_status(ctx, status, <failure code>, n) before the first kernel, and
-//                    again if the call ends with a non-zero result
+//                    again if the call is refused or ends with a non-zero result, followed then by a wait
+//                    (ctx->guard([&] { ctx->queue.wait(); return 0; })) so that the call returns with no
+//                    write into status queued
 //     a wait inside a call (ML-DSA's signing loop reads its counters back): copy(ctx, ..., true), or
 //                    ctx->check() after the wait; stop at -2, what was read may be stale
 //   Code that waits through ctx->queue.wait_and_throw() inside guarded, or copies through
@@ -287,14 +316,14 @@ struct Context {
     std::size_t bytes[Sections] = {};      // and its bytes per operation (or per other unit, see zeroize)
     std::uint8_t* coins_host = nullptr;    // page-locked host memory for the coins (with_random_coins), zero
     std::size_t coins_host_bytes = 0;      //   between calls
-    mutable std::recursive_mutex mutex;    // taken by every call (see the top of the file)
+    mutable std::recursive_mutex mutex;    // taken by every call and by the helpers (the top of the file)
     bool wiped_after_failure = false;      // check has zeroized the workspace (under the lock)
 
     Context(const sycl::device& dev, std::size_t batch)
         : queue(dev), max_batch(batch), device_name(dev.get_info<sycl::info::device::name>()) {
         // a wait through queue.wait_and_throw() that finds the context failed zeroizes the workspace
         // (once), as sync does
-        queue.on_failure([](void* self) noexcept { static_cast<Context*>(self)->check_under_lock(); }, this);
+        queue.on_failure([](void* self) noexcept { static_cast<Context*>(self)->check(); }, this);
     }
     Context(const Context&) = delete;
     Context& operator=(const Context&) = delete;
@@ -303,8 +332,9 @@ struct Context {
     // Lays out the sections, per_op[i] bytes per operation for max_batch operations each, every one
     // WORKSPACE_ALIGN-aligned, followed by `extra` bytes (per-call data, such as the context string);
     // allocates the workspace and fills it with zeros. Returns the start of the extra bytes, or nullptr
-    // if the device memory could not be allocated or zeroed. May throw (SYCL runtime).
+    // if the device memory could not be allocated or zeroed. May throw (SYCL runtime). Takes the lock.
     std::uint8_t* allocate(const std::array<std::size_t, Sections>& per_op, std::size_t extra) {
+        const Lock lock(mutex);
         std::size_t total = 0;
         for (unsigned i = 0; i < Sections; i++) {
             offset[i] = total;
@@ -325,9 +355,11 @@ struct Context {
     std::uint8_t* section(unsigned s) const { return mem + offset[s]; }
 
     // Queues the zeroization of the sections whose bit is set in mask: section i for count(i) units
-    // of bytes[i] (operations, or another unit that the backend counts, such as ML-DSA's slots)
+    // of bytes[i] (operations, or another unit that the backend counts, such as ML-DSA's slots).
+    // Takes the lock.
     template <class Count>
     void zeroize(unsigned mask, Count count) {
+        const Lock lock(mutex);
         for (unsigned i = 0; i < Sections; i++) {
             if (!(mask & (1u << i))) continue;
             const std::size_t units = count(i);
@@ -358,8 +390,10 @@ struct Context {
     // Gives the asynchronous errors that are pending to the handler, without waiting, and returns 0 if
     // the context has not failed. A failed context returns -2; the first time, it queues the
     // zeroization of the whole workspace and waits for it, as far as the device still accepts work.
-    // Called with the lock held, at the start of a call and after it has queued its work.
+    // Called at the start of a call and after it has queued its work, and by the queue's failure hook
+    // (ContextQueue::on_failure). Takes the lock.
     int check() noexcept {
+        const Lock lock(mutex);
         guard([&] {
             queue.throw_asynchronous();
             return 0;
@@ -372,15 +406,10 @@ struct Context {
         return -2;
     }
 
-    // check(), taking the lock: the queue's failure hook (ContextQueue::on_failure)
-    void check_under_lock() noexcept {
-        const Lock lock(mutex);
-        check();
-    }
-
     // Queues the zeroization of the whole workspace and waits for it; each step on its own, so that one
-    // that fails does not skip the next
+    // that fails does not skip the next. Takes the lock.
     void wipe_workspace() noexcept {
+        const Lock lock(mutex);
         if (!mem) return;
         guard([&] {
             queue.memset(mem, 0, mem_bytes);
@@ -398,8 +427,9 @@ struct Context {
 
     // Page-locked host memory of at least `size` bytes for the coins of a randomized call (held by the
     // context, zero between calls), or nullptr if it cannot be allocated. A smaller buffer of an earlier
-    // call is wiped and freed first. May throw (SYCL runtime); called with the lock held.
+    // call is wiped and freed first. May throw (SYCL runtime). Both take the lock.
     std::uint8_t* coin_buffer(std::size_t size) {
+        const Lock lock(mutex);
         if (coins_host_bytes >= size) return coins_host;
         free_coin_buffer();
         coins_host = sycl::malloc_host<std::uint8_t>(size, queue);
@@ -407,6 +437,7 @@ struct Context {
         return coins_host;
     }
     void free_coin_buffer() noexcept {
+        const Lock lock(mutex);
         if (!coins_host) return;
         opqc_zeroize(coins_host, coins_host_bytes);
         guarded([&] {
@@ -421,8 +452,11 @@ struct Context {
     // (destroy; also run by the destructor). Each step on its own: a wait that fails (DPC++ throws the
     // device's error there) does not skip the zeroization, nor a zeroization that fails the free. Then
     // the errors still pending go to the handler, which records them, so that the queue's destructor
-    // finds none (AdaptiveCpp's would give them to the handler). Must not run concurrently with a call.
+    // finds none (AdaptiveCpp's would give them to the handler). Takes the lock, so that it waits for a
+    // call that holds it; destroy must nevertheless not overlap a call, since it deletes the context,
+    // the lock included, after release.
     void release() noexcept {
+        const Lock lock(mutex);
         if (mem) {
             guard([&] {
                 queue.wait();
@@ -483,11 +517,12 @@ int sync(Context<Sections>* ctx) noexcept {
 // After every chunk, wipe(m, that count, mask) queues the zeroization of the secret sections in mask.
 // A failed context runs no chunk (check). An exception while the chunks are queued fails the context,
 // and so does an asynchronous error that is pending once they are; then check zeroizes the whole
-// workspace, as far as the device still accepts work. Called with the lock held. Returns 0, -1 for a
-// null context, or -2.
+// workspace, as far as the device still accepts work. Takes the context's lock (the call that runs it
+// holds it already). Returns 0, -1 for a null context, or -2.
 template <unsigned Sections, class F, class Wipe>
 int chunked(Context<Sections>* ctx, std::size_t n, unsigned mask, F f, Wipe wipe) {
     if (!ctx) return -1;
+    const Lock lock(ctx->mutex);
     if (ctx->check() != 0) return -2;
     ctx->guard([&] {
         for (std::size_t off = 0; off < n; off += ctx->max_batch) {
@@ -507,7 +542,9 @@ int chunked(Context<Sections>* ctx, std::size_t n, unsigned mask, F f, Wipe wipe
 // workspace, whatever happened: randomness is as secret as what it becomes (FIPS 204, Section 3.6.1;
 // FIPS 205, Section 3.1). The host buffer is wiped again at the end. It is page-locked so that the copy
 // reads it directly: a copy from pageable memory goes through a staging buffer of the driver (CUDA, for
-// one), which keeps the coins after the call and which the library cannot wipe. Takes the context's
+// one), which keeps the coins after the call and which the library cannot wipe. Even so, NVIDIA's driver
+// has been seen to keep copies of these small page-locked transfers as well (top of this file): the
+// wipes here reach every copy the library holds, not every copy that exists. Takes the context's
 // lock. A failed context draws no coins (-2), after each copy, whose wait finds the faults of the work
 // queued before it, the context is checked again before f runs, and it is checked at the end however the
 // chunks ended. Returns rng_fail if the RNG fails, -2 if the page-locked buffer cannot be allocated or
@@ -564,15 +601,17 @@ int with_random_coins(Context<Sections>* ctx, std::size_t n, std::size_t coin_by
 // memory) with the backend's failure code: before the call's first kernel, so that an entry that the
 // kernels never reach (a failure part way, a device fault) reads as a failure, and again when the call
 // ends with a non-zero result. It does not refuse a failed context: the fill after a failure runs as
-// far as the device still accepts work. status == nullptr or n == 0: nothing to fill. Called with the
-// lock held. Returns 0; -1 for a null context or a status pointer that is not aligned for int32_t
-// (refused before anything is queued: a misaligned fill would fault on the device, and on CUDA that
-// fault is sticky); -2 for an exception (the context has then failed).
+// far as the device still accepts work. status == nullptr or n == 0: nothing to fill. Takes the
+// context's lock (the call that runs it holds it already), so that the fill cannot land between the
+// kernels of another thread's call. Returns 0; -1 for a null context or a status pointer that is not
+// aligned for int32_t (refused before anything is queued: a misaligned fill would fault on the device,
+// and on CUDA that fault is sticky); -2 for an exception (the context has then failed).
 template <unsigned Sections>
 int fill_status(Context<Sections>* ctx, std::int32_t* status, std::int32_t code, std::size_t n) noexcept {
     if (!ctx) return -1;
     if (!status || n == 0) return 0;
     if (!aligned(alignof(std::int32_t), status)) return -1;
+    const Lock lock(ctx->mutex);
     return ctx->guard([&] {
         ctx->queue.fill(status, code, n);
         return 0;
@@ -581,7 +620,8 @@ int fill_status(Context<Sections>* ctx, std::int32_t* status, std::int32_t code,
 
 // The memory functions of the C APIs: device memory and page-locked host memory with WORKSPACE_ALIGN
 // alignment (nullptr on failure), free (null pointers ignored), and copies that wait or are queued
-// behind the context's work. They need not take the context's lock: SYCL queues are thread-safe.
+// behind the context's work. They need not take the context's lock: they touch neither the workspace
+// nor the coin buffer, and SYCL queues are thread-safe.
 inline void* device_malloc(sycl::queue& q, std::size_t bytes) noexcept {
     void* p = nullptr;
     guarded([&] {
@@ -608,11 +648,12 @@ inline void device_free(sycl::queue& q, void* p) noexcept {
 
 // memcpy and memcpy_async: copies `bytes` bytes from src to dst behind the work queued on the context's
 // queue; with `wait`, waits for the copy, and so, the queue being in order, for all the work queued
-// before it. Returns 0; -1 for a null pointer (bytes > 0), refused before anything is queued (the context
-// stays usable); -2 for an exception (which fails the context) or a failed context. The copy is still
-// made on a failed context, as far as the device allows (a status buffer that a failed verification
-// filled reaches the host), but its result is -2: nothing the context computed can be trusted then.
-// Does not zeroize the workspace (check does, under the lock).
+// before it. Returns 0; -1 for a null pointer (bytes > 0), refused before anything is queued (it does
+// not fail the context, and a failed context returns -1 for it too); -2 for an exception (which fails
+// the context) or a failed context. The copy is still made on a failed context, as far as the device
+// allows (a status buffer that a failed verification filled reaches the host), but its result is -2:
+// nothing the context computed can be trusted then. Does not zeroize the workspace (check does, under
+// the lock).
 inline int copy(ContextQueue& q, void* dst, const void* src, std::size_t bytes, bool wait) noexcept {
     if (bytes > 0 && (!dst || !src)) return -1;
     const int rc = q.guard([&] {

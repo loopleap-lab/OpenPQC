@@ -8,18 +8,25 @@
 // compiled once in ML/DSA/mldsa.cpp). Sizes are part of the types:
 //
 //   using DSA = openpqc::mldsa::MLDSA65;
-//   DSA::public_key pk;  DSA::secret_key sk;
-//   DSA::keypair(pk, sk);                          // randomness from the operating system
-//   DSA::signature sig;
-//   DSA::sign(sig, message, sk);                   // hedged; optional context string last
-//   DSA::verify(sig, message, pk) == 0;            // 0: valid
-//   DSA::prehash_sign(sig, message, PreHash::SHA2_512, sk);   // HashML-DSA
+//   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
+//   if (DSA::keypair(pk, sk) != 0 ||               // randomness from the operating system
+//       DSA::sign(sig, message, sk) != 0)          // hedged; optional context string last
+//       return -1;                                 // no key pair or no signature
+//   bool valid = DSA::verify(sig, message, pk) == 0;            // 0 and only 0: valid
+//   if (DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk) != 0)   // HashML-DSA
+//       return -1;
 //
 // All functions return 0 on success (for verification: a valid signature) and
 // otherwise one of the OPENPQC_MLDSA_ERR_* codes of openpqc_mldsa.h. What that
 // header says about private keys (sk from a trusted source; check_sk and
 // check_keypair for a stored or imported key) and about the stack each call
 // needs applies here too.
+//
+// keypair_derand, sign_derand, prehash_sign_derand and sign_mu_derand take xi or rnd
+// from the caller: keypair_derand is for testing and for expanding a seed xi stored in
+// place of sk (FIPS 204, Section 3.6.3), the signing functions with rnd = {0} are the
+// deterministic variant (Sections 3.4 and 5.2) and with any other rnd for testing only
+// (Sections 5.4 and 6; "Testing interfaces" in openpqc_mldsa.h).
 #pragma once
 
 #include <array>

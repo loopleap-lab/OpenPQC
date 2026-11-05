@@ -69,9 +69,14 @@
  *                      a caller may store it in its frame later (GCC 16 stored
  *                      a lane of Keccak-f's last round, left in r11, into the
  *                      frame of ML-DSA's ExpandMask)
- *   OPQC_STACK_FRAME_GPR  the same, setting only the general-purpose registers
- *                      to zero: for Keccak-f's rounds, which use no others with
- *                      GCC 16 and Clang 23 and run once per permutation
+ *   OPQC_STACK_FRAME_ROUNDS  the same for Keccak-f's rounds, which run once per
+ *                      permutation: on x86-64 and AArch64 only the
+ *                      general-purpose registers are set to zero, since GCC 16
+ *                      and Clang 23 keep the lanes in no others there; on
+ *                      32-bit x86 all of them, since GCC 16 computes with lanes
+ *                      in SSE registers (and Clang 23 too with -march=native),
+ *                      and 3 to 11 values of the last round stayed in xmm0 ..
+ *                      xmm7 with the general-purpose registers alone cleared
  *   OPQC_BURN_STACK()  right after the call of such a function, from the same
  *   OPQC_BURN_STACK_HASH()  caller: overwrite the stack below the caller's
  *                      frame with zeros, where the frame of the function and
@@ -97,39 +102,49 @@
  * through a volatile pointer, which the compiler must read at each call and
  * cannot see through, as opqc_zeroize does where the system has no zeroizing
  * call (opqc_platform.c: compiled code, and so not available to the math
- * core). The MSVC branch was compiled only by clang-cl in MSVC mode, never by
- * cl.exe. In device code the stores are plain.
+ * core). The MSVC branch was compiled only by clang-cl in MSVC mode with
+ * __clang__, __GNUC__ and __OPTIMIZE__ undefined, as cl.exe defines none of
+ * them, and never by cl.exe; clang-cl itself defines __clang__ and takes the
+ * GCC and Clang branch. In device code the stores are plain.
  *
  * Sizes. How deep a computation writes below its caller depends on the
  * processor, the compiler, its options and the translation unit: where the
  * SHA-2 compression has other callers in the same unit, compilers keep it out
  * of the one-shot's frame, and the chain of frames is deeper (i686, GCC 16 at
- * -O3: 720 + 160 + 352 bytes of frames for SHA-512). Measured by painting the
- * stack (with the red zone, the 128 bytes below the stack pointer that an
- * x86-64 function may use without reserving them), with the clearing removed:
- * the deepest write below the caller, in bytes, with GCC 16 and Clang 23
- * (Clang only for the processors other than x86):
+ * -O3: 720 + 160 + 352 bytes of frames for SHA-512), and with -march=native on
+ * a processor with AVX-512, Clang 23 can compute the 24 rounds for 32-bit x86
+ * in vector registers, unrolled, and spill them to a frame of 1.5 KiB. Measured
+ * by painting the stack (with the red zone, the 128 bytes below the stack
+ * pointer that an x86-64 function may use without reserving them), with the
+ * clearing removed: the deepest write below the caller, in bytes, with GCC 16
+ * and Clang 23 (Clang only for the processors other than x86):
  *
- *   build                                     Keccak-f's rounds   one-shot
- *   optimized (-O1 .. -O3, -Os; also -fPIC,                       SHA-2 / SHA-3
- *   -flto, -fno-inline, -march=native)
- *     x86-64                                         272            800 / 528
- *     i686                                           628           1210 / 716
- *     Armv7-A, ARM and Thumb                         528            716 / 800
- *     AArch64, RV64GC, RV32GC                        288            728 / 576
- *   -O0, and with sanitizers                        1624           2900 / 2072
+ *   build                                   Keccak-f's   one-shot   one-shot
+ *                                           rounds       SHA-2      SHA-3
+ *   optimized: -O1 .. -O3, -Os, -Oz, -Og; also -fPIC, -flto, -fno-inline,
+ *   -funroll-loops, -fstack-protector-all, -march=native (i7-11370H)
+ *     x86-64                                  376          816        680
+ *     i686                                    628         1208        888
+ *     i686 with -march=native                1572         1456       1828
+ *     Armv7-A, ARM and Thumb                  528          716        800
+ *     AArch64, RV64GC, RV32GC                 288          728        576
+ *   -O0                                       492          804        876
+ *   with sanitizers (UBSan; ASan + UBSan)    1624         2900       2104
  *
- * The deepest at -O0 are Clang's AddressSanitizer and
- * UndefinedBehaviorSanitizer together, with the frames kept on the stack
- * (x86-64 for Keccak-f, i686 for SHA-512); without AddressSanitizer the -O0
- * builds write at most 1304 and 2184 bytes. The SHA-3 one-shot counts its frame
- * and Keccak-f's rounds, which clear after themselves. 1 KiB is cleared after
- * Keccak-f (once per permutation, so it is kept small), and 2 KiB after a
- * one-shot hash on 64-bit processors, 3 KiB on 32-bit ones: at least twice the
- * deepest measured. At -O0, with sanitizers, and with MSVC, which has no macro
- * that says whether it optimizes, 3 KiB and 3,968 bytes. Each clearing frame
- * stays below one 4 KiB page, so that on a stack too short for it the first
- * store faults at the guard page instead of writing past it.
+ * The SHA-3 column counts the one-shot's frame and Keccak-f's, with neither
+ * cleared. The deepest builds with sanitizers are Clang's at -O0 with
+ * AddressSanitizer and UndefinedBehaviorSanitizer together (x86-64 for
+ * Keccak-f and SHA-3, i686 for SHA-512). Cleared after Keccak-f, which runs
+ * once per permutation and so is kept small: 1 KiB on 64-bit processors, 2 KiB
+ * on 32-bit ones (2.7 and 3.2 times the deepest measured; 1.3 times Clang's
+ * code for 32-bit x86 with -march=native). After a one-shot hash: 2 KiB on
+ * 64-bit processors, 3 KiB on 32-bit ones (at least 2.5 times the deepest;
+ * with -march=native on 32-bit x86, 2.1 times GCC's SHA-2 one-shot and 1.7
+ * times Clang's SHA-3 one-shot). At -O0, with sanitizers, and with MSVC, which
+ * has no macro that says whether it optimizes: 3 KiB and 3,968 bytes (1.9 and
+ * 1.4 times). Each clearing frame stays below one 4 KiB page, so that on a
+ * stack too short for it the first store faults at the guard page instead of
+ * writing past it.
  * tests/test_hash.cpp measures the depths of Keccak-f's rounds and of the SHA-2
  * one-shots again in each build it runs in, and fails when a computation writes
  * deeper than the clearing that follows it; it does not run under
@@ -152,7 +167,11 @@
 #if __has_attribute(zero_call_used_regs)
 #define OPQC_STACK_BURN_REGS 1
 #define OPQC_STACK_FRAME_REGS __attribute__((zero_call_used_regs("all")))
-#define OPQC_STACK_FRAME_GPRS __attribute__((zero_call_used_regs("all-gpr")))
+#if defined(__i386__)
+#define OPQC_STACK_ROUNDS_REGS __attribute__((zero_call_used_regs("all")))
+#else
+#define OPQC_STACK_ROUNDS_REGS __attribute__((zero_call_used_regs("all-gpr")))
+#endif
 #endif
 #endif
 #elif defined(_MSC_VER)
@@ -161,14 +180,14 @@
 #endif
 #if !defined(OPQC_STACK_BURN_REGS)
 #define OPQC_STACK_FRAME_REGS
-#define OPQC_STACK_FRAME_GPRS
+#define OPQC_STACK_ROUNDS_REGS
 #endif
 #if defined(OPQC_STACK_BURN)
 #define OPQC_STACK_FRAME OPQC_STACK_BURN_NOINLINE OPQC_STACK_FRAME_REGS
-#define OPQC_STACK_FRAME_GPR OPQC_STACK_BURN_NOINLINE OPQC_STACK_FRAME_GPRS
+#define OPQC_STACK_FRAME_ROUNDS OPQC_STACK_BURN_NOINLINE OPQC_STACK_ROUNDS_REGS
 #else
 #define OPQC_STACK_FRAME OPQC_INLINE
-#define OPQC_STACK_FRAME_GPR OPQC_INLINE
+#define OPQC_STACK_FRAME_ROUNDS OPQC_INLINE
 #endif
 #if !defined(OPQC_STACK_BURN_DEVICE) && !defined(OPQC_STACK_BURN_ASM)
 #include <string.h>
@@ -186,7 +205,7 @@
 #define OPQC_STACK_BURN_BYTES 3072
 #define OPQC_STACK_BURN_HASH_BYTES 3968
 #elif defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 4
-#define OPQC_STACK_BURN_BYTES 1024
+#define OPQC_STACK_BURN_BYTES 2048
 #define OPQC_STACK_BURN_HASH_BYTES 3072
 #else
 #define OPQC_STACK_BURN_BYTES 1024
@@ -353,17 +372,17 @@ OPQC_INLINE void opqc_keccak_round(uint64_t A[OPQC_KECCAK_LANES], unsigned ir)
 #if defined(OPQC_STACK_BURN)
 /*
  * The 24 rounds of Keccak-f[1600] in a frame of their own (see the top of the
- * file), which on return also zero the general-purpose registers that a
- * function may change without saving them (OPQC_STACK_FRAME_GPR). GCC 16 calls
- * the round from here instead of inlining it, and Clang 23 calls it 24 times
- * in a row in some translation units; the fence after the loop keeps the last
- * call from becoming a jump, which would return from the round to the caller
- * with its registers uncleared. Running the rounds inlined (flatten) on a copy
+ * file), which on return also zero the registers that a function may change
+ * without saving them (OPQC_STACK_FRAME_ROUNDS). GCC 16 calls the round from
+ * here instead of inlining it, and Clang 23 calls it 24 times in a row in some
+ * translation units; the fence after the loop keeps the last call from
+ * becoming a jump, which would return from the round to the caller with its
+ * registers uncleared. Running the rounds inlined (flatten) on a copy
  * of the state in this frame executed 2 % fewer instructions per permutation
  * with GCC 16 -O3 but took 2 % more cycles (i7-11370H), so the rounds work on
  * the caller's state.
  */
-OPQC_STACK_FRAME_GPR void opqc_keccak_rounds(uint64_t A[OPQC_KECCAK_LANES])
+OPQC_STACK_FRAME_ROUNDS void opqc_keccak_rounds(uint64_t A[OPQC_KECCAK_LANES])
 {
     for (unsigned ir = 0; ir < OPQC_KECCAK_ROUNDS; ir++) {
         opqc_keccak_round(A, ir);

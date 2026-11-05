@@ -1,0 +1,165 @@
+# Copyright (c) The OpenPQC project authors
+# SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+#
+# Continuous integration: the CPU presets of CMakePresets.json, on the toolchain the project is
+# developed and tested with (Arch Linux: GCC 16, Clang 23, valgrind, Python 3, OpenSSL), in a container.
+#   release     GCC and Clang, Release (-O3): everything built (examples and benchmarks too), every
+#               offline test run, the slow ones included, and test_hash built for 32-bit x86 too
+#               (hash_m32; the 32-bit libraries come from Arch's multilib repository)
+#   ct          the schemes' constant-time tests under valgrind, built by GCC and by Clang at -O0, -O2,
+#               -O3 and -Os (a compiler can turn a mask back into a branch at one level and not at
+#               another; Core's own core_*_ct run at every level in the release jobs). SLH-DSA's at -O2,
+#               -O3 and -Os only: unoptimized, valgrind would take hours for it
+#               (CMakePresets.json, build preset ct-O0)
+#   sanitizers  GCC and Clang with AddressSanitizer and UndefinedBehaviorSanitizer (-O1): the quick
+#               offline tests (the build sets the TIMEOUTs and turns off AddressSanitizer's fake stacks
+#               for the stack tests, tests/CMakeLists.txt)
+#   pct         GCC and Clang, Release (-O3), with the pair-wise consistency tests after KeyGen
+#               (FIPS 140-3) compiled into the ML-KEM and ML-DSA libraries (OPENPQC_MLKEM_KEYGEN_PCT,
+#               OPENPQC_MLDSA_KEYGEN_PCT): the quick offline tests of ML-KEM and ML-DSA against them
+#   vendoring   the vendored references and test programs are those of the pinned upstream commits
+#   network     NIST ACVP and Wycheproof vectors, pinned by SHA-256: weekly and on demand
+# Every preset sets OPENPQC_REQUIRE_FULL_TESTS, so a missing tool fails the configuration instead of
+# leaving tests out. The commands are those of a local run (CMakePresets.json), with -j 4.
+
+name: ci
+
+on:
+  push:
+    branches: [main]   # other branches through their pull requests
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays, 03:17 UTC: every job, the network tests included
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # a new commit of a pull request replaces the run of the one before; a push to main, the weekly run
+  # and a manual run each have a group of their own and are never cancelled
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  release:
+    name: release (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - name: Toolchain
+        run: |
+          grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+          pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Configure
+        run: cmake --preset ${{ matrix.compiler }}-release
+      - name: Build
+        run: cmake --build --preset ${{ matrix.compiler }}-release -j 4
+      - name: Test (offline)
+        run: ctest --preset ${{ matrix.compiler }}-release -j 4
+
+  ct:
+    name: constant time (${{ matrix.compiler }} -${{ matrix.level }})
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        level: [O0, O2, O3, Os]
+    steps:
+      - name: Toolchain
+        run: |
+          grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+          pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Configure
+        run: cmake --preset ct-${{ matrix.compiler }}-${{ matrix.level }}
+      - name: Build
+        run: cmake --build --preset ct-${{ matrix.compiler }}-${{ matrix.level }} -j 4
+      - name: Test (valgrind)
+        run: ctest --preset ct-${{ matrix.compiler }}-${{ matrix.level }} -j 4
+
+  sanitizers:
+    name: sanitizers (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+      options: --cap-add=SYS_PTRACE   # LeakSanitizer stops the threads with ptrace
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - name: Toolchain
+        run: |
+          grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+          pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Configure
+        run: cmake --preset ${{ matrix.compiler }}-asan-ubsan
+      - name: Build
+        run: cmake --build --preset ${{ matrix.compiler }}-asan-ubsan -j 4
+      - name: Test (quick, offline)
+        run: ctest --preset ${{ matrix.compiler }}-asan-ubsan -j 4
+
+  pct:
+    name: pair-wise consistency tests (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - name: Toolchain
+        run: |
+          grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+          pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Configure
+        run: cmake --preset ${{ matrix.compiler }}-release-pct
+      - name: Build
+        run: cmake --build --preset ${{ matrix.compiler }}-release-pct -j 4
+      - name: Test (ML-KEM and ML-DSA, quick, offline)
+        run: ctest --preset ${{ matrix.compiler }}-release-pct -j 4
+
+  vendoring:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Upstream checkouts (the submodules' pinned commits)
+        run: git submodule update --init reference/repos/mlkem-native reference/repos/dilithium reference/repos/sphincsplus
+      - name: Vendored files up to date
+        run: |
+          python3 -I scripts/vendor_mlkem_native.py --upstream reference/repos/mlkem-native --check
+          python3 -I scripts/vendor_dilithium.py --upstream reference/repos/dilithium --check
+          python3 -I scripts/vendor_sphincsplus.py --upstream reference/repos/sphincsplus --check
+
+  network:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    timeout-minutes: 240
+    steps:
+      - name: Toolchain
+        run: |
+          grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+          pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Configure
+        run: cmake --preset gcc-release
+      - name: Build
+        run: cmake --build --preset gcc-release -j 4
+      - name: Test (ACVP and Wycheproof vectors)
+        run: ctest --preset gcc-release-network -j 4

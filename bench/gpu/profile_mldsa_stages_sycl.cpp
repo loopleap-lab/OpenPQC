@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // profile_mldsa_stages_sycl.cpp  --  time per stage of the SYCL ML-DSA pipeline
 //
 // Compiles the backend's source itself (mldsa_sycl.cpp) to call its stages one by one, and
@@ -160,8 +163,18 @@ int main(int argc, char** argv) {
     std::printf("impl,level,op,stage,batch,median_s,share\n");
     for (const auto level : levels) {
         opqc_sycl_mldsa* ctx = nullptr;
-        if (opqc_sycl_mldsa_create(&ctx, static_cast<int>(level), n, device) != 0) return 1;
-        opqc_sycl_mldsa_set_speculation(ctx, max_attempts, fill);
+        const int created = opqc_sycl_mldsa_create(&ctx, static_cast<int>(level), n, device);
+        if (created != 0) {
+            std::fprintf(stderr, "context creation failed (%d)\n", created);
+            return 1;
+        }
+        const int scheduled = opqc_sycl_mldsa_set_speculation(ctx, max_attempts, fill);
+        if (scheduled != 0) {   // -1 for max_attempts 0
+            std::fprintf(stderr, "signing schedule max_attempts %u, fill %zu refused (%d)\n", max_attempts, fill,
+                         scheduled);
+            opqc_sycl_mldsa_destroy(ctx);
+            return 1;
+        }
         if (ctx->device_name.find("NVIDIA") != std::string::npos) mon.cool_down(cool_to_c);
         const char* impl = opqc_sycl_implementation();
         if (level == 44) profile<params::ML_DSA_44>(ctx, n, trials, impl);

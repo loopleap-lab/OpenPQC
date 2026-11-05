@@ -8,19 +8,28 @@
 // compiled once in SLH/DSA/slhdsa.cpp). Sizes are part of the types:
 //
 //   using DSA = openpqc::slhdsa::SLHDSA_SHAKE_128f;
-//   DSA::public_key pk;  DSA::secret_key sk;
-//   DSA::keypair(pk, sk);                          // randomness from the operating system
-//   DSA::signature sig;
-//   DSA::sign(sig, message, sk);                   // hedged; optional context string last
-//   DSA::verify(sig, message, pk) == 0;            // 0: valid
-//   DSA::sign_deterministic(sig, message, sk);     // the deterministic variant
-//   DSA::prehash_sign(sig, message, PreHash::SHA2_512, sk);   // HashSLH-DSA
+//   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
+//   if (DSA::keypair(pk, sk) != 0 ||               // randomness from the operating system
+//       DSA::sign(sig, message, sk) != 0)          // hedged; optional context string last
+//       return -1;                                 // no key pair or no signature
+//   bool valid = DSA::verify(sig, message, pk) == 0;            // 0 and only 0: valid
+//   if (DSA::sign_deterministic(sig, message, sk) != 0 ||       // the deterministic variant
+//       DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk) != 0)   // HashSLH-DSA
+//       return -1;
 //
 // All functions return 0 on success (for verification: a valid signature) and
 // otherwise one of the OPENPQC_SLHDSA_ERR_* codes of openpqc_slhdsa.h. The
 // internal functions of FIPS 205, Section 9 are left out; they are in the C API
-// for testing. Signatures are up to 49,856 bytes (SLH-DSA-*-256f), which is a
-// lot for a stack: callers that sign on small thread stacks may prefer to hold
+// for testing.
+//
+// keypair_derand, sign_derand and prehash_sign_derand take the seeds or addrnd from the
+// caller: for testing (FIPS 205, Section 9), keypair_derand also for the regeneration
+// check of Section 3.1 and for seeds stored in place of sk; sign_deterministic and
+// prehash_sign_deterministic are the deterministic variant (Section 9.2; "Testing
+// interfaces" in openpqc_slhdsa.h).
+//
+// Signatures are up to 49,856 bytes (SLH-DSA-*-256f), which is a lot for a
+// stack: callers that sign on small thread stacks may prefer to hold
 // them elsewhere. Each function also needs about 35 KiB of stack below the
 // call (with OPENPQC_SLHDSA_KEYGEN_PCT, keypair needs a signature's size more:
 // up to 84 KiB, SLH-DSA-*-256f), and the signature may overlap the message and

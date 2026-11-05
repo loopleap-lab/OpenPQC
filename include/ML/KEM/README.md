@@ -38,7 +38,9 @@ therefore run the same arithmetic code.
 | Algorithms 13–15 K-PKE | `kpke::keygen`, `kpke::encrypt`, `kpke::decrypt` (`scheme/kpke.hpp`) |
 | Algorithms 16–18 internal algorithms | `internal::keygen`, `internal::encaps`, `internal::decaps` (`scheme/mlkem_internal.hpp`) |
 | Algorithms 19–21 ML-KEM | `ml_kem_keygen`, `ml_kem_encaps`, `ml_kem_decaps` and the `_derand` variants, each called as `keygen`, `encaps`, `decaps`, ..., which run it in a frame of its own and then overwrite the stack it used (`scheme/ml_kem.hpp`) |
-| §7.1 pair-wise consistency | `check_pair_wise_consistency` (item 4), run by KeyGen when `mlkem.cpp` is compiled with `OPENPQC_MLKEM_KEYGEN_PCT` (see [Usage](#usage)) |
+| §3.3 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which asks the operating system and fails closed; FIPS 203 requires an approved RBG (SP 800-90A/B/C) of at least 128, 192 and 256 bits of strength for ML-KEM-512, -768 and -1024, which the integrator supplies (top-level README, [Security notes](../../../README.md#security-notes)) |
+| §3.3 controlled access to the internal functions | `keypair_derand` and `enc_derand` take the seeds from the caller: testing interfaces ([Usage](#usage)); K-PKE is not offered as a scheme of its own |
+| §7.1 pair-wise consistency | `check_pair_wise_consistency` (item 4), run by KeyGen when `mlkem.cpp` is compiled with `OPENPQC_MLKEM_KEYGEN_PCT` (the CMake option of that name; see [Usage](#usage)) |
 | §7.2 encapsulation key check | `check_encapsulation_key` (Encaps runs it); for one chunk, while decoding: `mlkem_byte_decode12_check8` (used by the GPU kernels) |
 | §7.3 decapsulation key check | `check_decapsulation_key` (Decaps runs it) |
 | §3.3 destruction of intermediate values | every `Poly` zeroizes itself when its lifetime ends, unnamed temporaries and by-value parameters included (`scheme/polynomials.hpp`); `ZeroizeOnExit` (`Core/zeroize.hpp`) destroys the secret byte strings (d ‖ z, σ, the PRF outputs, m, K, r, m′, K′, r′, K̄, c′) and the implicit-reject flag (§6.3); KeyGen, Encaps and Decaps run in frames of their own, and when they return, the stack they used is overwritten with zeros (`burn_stack`, `scheme/ml_kem.hpp`), which removes what the compiler kept in stack slots of its own; `mlkem_stack` checks that they leave none of their secrets on the stack and, on x86-64, nothing that depends on their data; what remains is listed under [Destruction of intermediate values](#choices-that-differ-from-mlkem-native) |
@@ -56,20 +58,35 @@ that the outputs are byte-identical to mlkem-native's.
 - **Literal algorithms.** NTT, CBD, SampleNTT and the encodings are the loops of the standard. The math core also
   offers them in parallel-friendly pieces (one butterfly, one coefficient, one 8-coefficient chunk), which the GPU
   kernels use.
-- **No SIMD code.** The CPU code is portable C11/C++20 and compiles to the speed of mlkem-native's portable C: about
-  42 µs for an ML-KEM-768 key generation on a Core i7-11370H at the default flags. mlkem-native's AVX2 assembly is
-  about 4× faster. That speed is still available, since the reference implementation remains in `reference/` (it is
-  also the CPU baseline of the benchmarks).
-- **Constant time.** Secret data never decides a branch or a memory index. Comparisons and selections use
-  `Core/opqc_ct.h`, and `mlkem_decompress` hides message bits behind a value barrier (see the comment on "clangover").
-  `mlkemNNN_ct` checks this under valgrind.
+- **No SIMD code.** The CPU code is portable C11/C++20: about 42 µs for an ML-KEM-768 key generation on a Core
+  i7-11370H in a Release build (GCC 16, -O3, the default; a Debug build is about 13 times slower), which the review of
+  October 2026 measured at 64–68 % of the speed of mlkem-native's portable C code built the same way, before the
+  destruction of intermediate values below added its 2–5 %. mlkem-native's AVX2 assembly is about 4× faster. That
+  speed is still available, since the reference implementation remains in `reference/` (it is also the CPU baseline
+  of the benchmarks).
+- **Constant time.** Secret data does not decide a branch or a memory index. Comparisons and selections use
+  `Core/opqc_ct.h`, whose masks pass a value barrier where they are produced and where they are used (Clang 23 had
+  turned the implicit rejection of Decaps into a branch when the barrier sat only on the input of the mask), and
+  `mlkem_decompress` hides message bits behind a value barrier (see the comment on "clangover"). `mlkemNNN_ct` checks
+  this under valgrind at the build's optimization level, and `mlkemNNN_O1_ct` … `_Os_ct` with the library compiled at
+  -O1, -O2, -O3 and -Os whatever the build type. Scope: x86-64 Linux, GCC 16 and Clang 23; nothing is claimed for
+  other compilers, other processors or the GPU backend (top-level README,
+  [Security notes](../../../README.md#security-notes); `Core/README.md`, Constant time).
 - **Memory.** There is no heap and there are no exceptions. Polynomials live on the stack, and the whole matrix Â is
   stored as in the standard. The largest frame is K-PKE.Encrypt's: 27 KB for ML-KEM-1024 and 19 KB for ML-KEM-768 with
   GCC 16, 33 KB and 24 KB with Clang 23 (-O3, `-fstack-usage`), against 19 KB and 13 KB for mlkem-native's portable C
   (GCC 16). KeyGen, Encaps and Decaps write at most 23, 31 and 40 KiB below their caller for ML-KEM-512, -768 and
   -1024 (GCC 16 and Clang 23, -O1 to -O3 and -Os; 49 KiB for ML-KEM-1024 at -O0, 56 KiB with AddressSanitizer), and
   the stack burn below then overwrites 44, 54 and 64 KiB, so that every call of them needs about 48, 58 and 68 KiB of
-  stack (56, 68 and 79 KiB with AddressSanitizer); `check_pk` and `check_sk` need at most about 9 KiB.
+  stack (56, 68 and 79 KiB with AddressSanitizer); `check_pk` and `check_sk` need at most about 9 KiB. At -O0 the same
+  sizes hold, with little to spare (ML-KEM-1024 with Clang 23: 69,512 of 69,632 bytes). The library is compiled with
+  `-fstack-clash-protection` where the compiler has it (`cmake/OpenPQCWarnings.cmake`), so that on a stack that is
+  too small a call ends in a fault at the guard page (`mlkem_thread_stack` checks it). Built without it, frames larger
+  than a page can write below the guard page first: with Clang 23 at -O3, Encaps and Decaps of ML-KEM-768 and KeyGen,
+  Encaps and Decaps of ML-KEM-1024 changed memory up to about 15 KB below a 4 KiB guard page with 16 KiB of stack left
+  below the caller, and up to about 5 KB with 28 KiB; with GCC 16, Decaps of ML-KEM-768 and KeyGen, Encaps and Decaps
+  of ML-KEM-1024, up to about 9 KB. Neither ML-KEM-512 nor ML-KEM-768's KeyGen was seen doing so. Code that compiles
+  the scheme templates itself needs the flag as well.
 - **Destruction of intermediate values.** The scheme layer computes with values (`invntt(dot(ŝ, ntt(u′)))`), so many
   intermediate polynomials are unnamed temporaries and by-value parameters (and a function that returns its parameter
   copies it), which `ZeroizeOnExit` cannot name. When only the named variables were zeroized, every KeyGen, Encaps and
@@ -91,11 +108,20 @@ that the outputs are byte-identical to mlkem-native's.
   x86-64 checks that the copies after calls with other keys and messages agree in every byte below the call, so that
   nothing that depends on the call's data remains there in any form; `mlkem_stack_pct` does the same with the
   pair-wise consistency test compiled in, and `mlkem_stack_O0`, `_O1`, `_O2` and `_Os` with the library compiled at
-  those levels. The search fails on the code from before the self-zeroizing polynomials (810 secrets with GCC 16),
-  and the comparison on the code without the burn (1,770 to 11,436 bytes below the calls depended on their data,
-  GCC 16 and Clang 23, -O0 to -O3). All of this costs 1.9 % to 5.1 % of the cycles of KeyGen, Encaps and Decaps
-  against the code before it, most of it the stack burn (3,100 to 7,700 cycles per call; mlkem-native's benchmark,
-  single thread, GCC 16 and Clang 23 at -O3). Not covered: registers. Nothing clears them: what an operation leaves
+  those levels. The burn overwrites the frames in which the named wipes and `Poly`'s destructor run, so these tests
+  pass even with all of them deleted; `mlkem_stack_noburn` and `_noburn_pct` therefore run the search against copies
+  of the library built without the burn (a definition for the tests only), where the wipes alone must remove the
+  secrets. Deleting the zeroization in `~Poly`, all eight `ZeroizeOnExit` of the scheme layer or any one of them
+  fails one of the two (GCC 16 and Clang 23, -O3); deleting only the wipe of the one-byte implicit-reject flag does
+  not, as the search looks for 32-byte values. The search fails on the code from before the self-zeroizing
+  polynomials (810 secrets with GCC 16), and the comparison on the code without the burn (1,770 to 11,436 bytes below
+  the calls depended on their data, GCC 16 and Clang 23, -O0 to -O3, before the burn was added and with only the burn
+  removed; the review, with only the burn removed from its own copy of this code, whose Core did not yet clear the
+  stack after Keccak-f, measured 1,328 to 19,030 bytes, and on this code, built with the tests' definition that
+  removes the burn (`OPENPQC_MLKEM_TEST_NO_STACK_BURN`), 1,328 to 11,436 bytes, GCC 16 and Clang 23 at -O3). All
+  of this costs 1.9 % to 5.1 % of the cycles of KeyGen, Encaps and Decaps against the code before it, most of it the
+  stack burn (3,100 to 7,700 cycles per call, 1.3 % to 4.0 %; mlkem-native's benchmark, single thread, GCC 16 and
+  Clang 23 at -O3). Not covered: registers. Nothing clears them: what an operation leaves
   in the call-used registers stays there until other code overwrites it, and code that saves all registers can copy
   it to memory after the burn, such as the kernel when it delivers a signal (into a frame below the current one) or
   the dynamic linker when it binds a function lazily on its first call. Inside an operation such a frame is
@@ -114,9 +140,8 @@ uint8_t pk[MLKEM768_PUBLICKEYBYTES], sk[MLKEM768_SECRETKEYBYTES];
 uint8_t ct[MLKEM768_CIPHERTEXTBYTES], ss[MLKEM_BYTES], ss2[MLKEM_BYTES];
 if (openpqc_mlkem768_keypair(pk, sk) != 0 ||     /* randomness from the operating system */
     openpqc_mlkem768_enc(ct, ss, pk) != 0 ||
-    openpqc_mlkem768_dec(ss2, ct, sk) != 0) {
-    /* error: OPENPQC_MLKEM_ERR_* */
-}
+    openpqc_mlkem768_dec(ss2, ct, sk) != 0)
+    return -1;                                   /* OPENPQC_MLKEM_ERR_*: use none of the outputs */
 ```
 
 C++ (`ML/KEM/mlkem.hpp`; sizes are part of the types):
@@ -125,49 +150,113 @@ C++ (`ML/KEM/mlkem.hpp`; sizes are part of the types):
 using KEM = openpqc::mlkem::MLKEM768;
 KEM::public_key pk; KEM::secret_key sk;
 KEM::ciphertext ct; KEM::shared_secret ss, ss2;
-if (KEM::keypair(pk, sk) || KEM::encaps(ct, ss, pk) || KEM::decaps(ss2, ct, sk)) { /* error */ }
+if (KEM::keypair(pk, sk) != 0 || KEM::encaps(ct, ss, pk) != 0 || KEM::decaps(ss2, ct, sk) != 0)
+    return -1;                                   // OPENPQC_MLKEM_ERR_*: use none of the outputs
 ```
 
-To experiment with the algorithms themselves, include `ML/KEM/scheme/ml_kem.hpp` and call the templates directly, e.g.
-`openpqc::mlkem::kpke::encrypt<openpqc::mlkem::params::ML_KEM_768>(c, ek, m, r)`.
+A call that fails produces no output: pk and sk keep their old contents after `OPENPQC_MLKEM_ERR_RNG_FAIL` (and are
+zero after a failed pair-wise consistency test), ct and ss after `OPENPQC_MLKEM_ERR_INVALID_PK`, ss after
+`OPENPQC_MLKEM_ERR_INVALID_SK`. ss is never set to a fixed value, which a caller who ignored the error would use as a
+key that everybody knows. The functions are declared `OPQC_MUST_CHECK` (`openpqc_mlkem.h`, Results). They take keys
+and ciphertexts of the parameter set's exact sizes and no length: the type checks of FIPS 203 §7.2 and §7.3 are met
+by the interface, and a caller that receives a key or a ciphertext of another length refuses it itself, never passes
+a truncated or padded copy (`openpqc_mlkem.h`, Sizes). The library is C++ inside: a C program links it with the C++
+compiler driver or adds `-lstdc++` (`openpqc_mlkem.h`, Linking).
 
-The `_derand` functions take the FIPS 203 seeds as arguments: d ‖ z for KeyGen, m for Encaps. FIPS 203 §3.3 permits
-them only for testing and for expanding a stored seed.
+To experiment with the algorithms themselves, include `ML/KEM/scheme/ml_kem.hpp` and call the templates directly, e.g.
+`openpqc::mlkem::kpke::encrypt<openpqc::mlkem::params::ML_KEM_768>(c, ek, m, r)`. K-PKE is a component of ML-KEM
+only: FIPS 203 §3.3 says it "shall not be used as a stand-alone cryptographic scheme", and the internal algorithms are
+for testing.
+
+The `_derand` functions take the FIPS 203 seeds as arguments: d ‖ z for KeyGen, m for Encaps. FIPS 203 §3.3 says
+that interfaces to the internal functions "should not be made available to applications other than for testing
+purposes" and that the module samples the random values itself. `keypair_derand` has one further use, expanding a
+seed d ‖ z that was stored in place of dk (§3.3; the seed needs the protection of dk, and since `keypair` does not
+return its seed, it must come from an approved random bit generator of the application's module). `enc_derand` is
+for testing only: anyone who knows m knows the shared secret. Both are always in the library; a program for
+production use calls `keypair`, `enc` and `dec`.
 
 The pair-wise consistency test that FIPS 140-3 asks of validated modules is compiled into KeyGen when `mlkem.cpp` is
-built with the definition `OPENPQC_MLKEM_KEYGEN_PCT` (as `OPENPQC_MLDSA_KEYGEN_PCT` for ML-DSA; there is no CMake
-option for it, and the tests compile their own object library with it). It is the check of FIPS 203 §7.1, item 4: a
-key encapsulated to ek with a random m must decapsulate with dk to the same key, at the cost of one Encaps_internal
-and one Decaps_internal per key pair. Its m comes from the operating system, so `keypair_derand` then needs randomness
-as well. If none is available (`OPENPQC_MLKEM_ERR_RNG_FAIL`) or the check fails (`OPENPQC_MLKEM_ERR_PCT_FAIL`), both
-keys are zeroized. A key pair that passes is not changed: `keypair_derand` gives the same keys for the same seed with
-and without the check, and the known-answer tests pass unchanged. The check is a property of the compiled library:
-`scheme/ml_kem.hpp` defines key generation in an inline namespace named after its configuration, so an application
-that includes the scheme headers without the definition gets copies of its own under other names, which cannot take
-the place of the library's (`mlkem_pct_odr`). The definition applies to the CPU library only.
+built with the definition `OPENPQC_MLKEM_KEYGEN_PCT`, which the CMake option of the same name (OFF by default) gives
+to the library (as the option `OPENPQC_MLDSA_KEYGEN_PCT` does for ML-DSA; the tests compile their own object libraries
+with it, and when the option is on, `mlkem_pct_library` checks the library as built). It is the check of FIPS 203 §7.1,
+item 4: a key encapsulated to ek with a random m must decapsulate with dk to the same key, at the cost of one
+Encaps_internal and one Decaps_internal per key pair. Its m comes from the operating system, so `keypair_derand` then
+needs randomness as well. If none is available (`OPENPQC_MLKEM_ERR_RNG_FAIL`) or the check fails
+(`OPENPQC_MLKEM_ERR_PCT_FAIL`), both keys are zeroized. A key pair that passes is not changed: `keypair_derand` gives
+the same keys for the same seed with and without the check, and the known-answer tests pass unchanged. The check is a
+property of the compiled library: `scheme/ml_kem.hpp` defines key generation in an inline namespace named after its
+configuration, so an application that includes the scheme headers without the definition gets copies of its own under
+other names, which cannot take the place of the library's (`mlkem_pct_odr`). The definition applies to the CPU library
+only.
+
+## Using ML-KEM in an application (SP 800-227)
+
+The library does what a KEM implementation can do by itself: FIPS 203's algorithms for the three approved parameter
+sets in its byte formats, the key checks of §7.2 and §7.3 on every call (also as `check_pk` and `check_sk`), implicit
+rejection without a distinct return code, randomness and intermediate values destroyed (SP 800-227 RS5). The rest of
+NIST SP 800-227 (September 2025) falls to the application, and the library cannot enforce it:
+
+- **Randomness (RS4).** An approved RBG of the parameter set's strength; the library's default is the operating
+  system's generator (top-level README, [Security notes](../../../README.md#security-notes)).
+- **Ephemeral keys (RS6).** An ephemeral key pair serves one key establishment and is destroyed as soon as possible
+  after it: `opqc_zeroize(sk, sizeof sk)` (`Core/opqc_platform.h`) once dk is no longer needed. The shared secret and
+  every key derived from it are the application's to destroy in the same way; the C++ types `secret_key` and
+  `shared_secret` are plain arrays that do not wipe themselves.
+- **Using K.** K can be used directly as a 256-bit symmetric key; further keys are derived from it with an approved KDF
+  (SP 800-108, SP 800-56C; FIPS 203 §3.3). OpenPQC has no KDF, MAC or hybrid combiner: take them from a validated
+  module, and assess a combination of ML-KEM with another key establishment as FIPS 203 §3.3 asks.
+- **Static keys (RM3, RM4).** An encapsulating party needs assurance that a static ek belongs to its peer, and dk (or a
+  seed d ‖ z stored in its place) is kept with the safeguards of a private key.
+- **The channel (RM2, RM5).** A parameter set of the strength the application needs, and a key-establishment process
+  with an integrity appropriate to it; key confirmation (§4.4, recommended) needs an approved MAC, which OpenPQC does
+  not provide.
+- **Decapsulation succeeds for every ciphertext.** `dec` returns 0 and the implicit-rejection key for a ciphertext
+  that was not made with ek (FIPS 203 §6.3): a successful `dec` does not show that the ciphertext was valid, only key
+  confirmation or the later use of the key does.
 
 ## GPU backend (`sycl/`)
 
 `sycl/openpqc_mlkem_sycl.h` runs n operations per call on a SYCL device, with buffers in device memory and results
 byte-identical to the CPU library. The buffers must be device memory of the context (`opqc_sycl_mlkem_malloc`, or
 page-locked host memory from `opqc_sycl_mlkem_malloc_host`), 8-byte aligned (status 4-byte aligned); calls with
-other buffers, or with a NULL one, return -1.
+other buffers, or with a NULL one, return -1. The check asks the SYCL runtime, which lets some memory through: a buffer
+that has been freed is not refused under DPC++'s Level Zero and on AdaptiveCpp's OpenMP host device, where the runtime
+still reports it as the context's (a Decaps of a freed ciphertext returned 0 with status 0 there; AdaptiveCpp's Level
+Zero refused freed SLH-DSA buffers); the OpenMP host device takes every pointer for its own (a Decaps of a ciphertext
+in another GPU's device memory ended the process there with a segmentation fault); and DPC++ and AdaptiveCpp take
+device memory of the other platform of the same Intel GPU (Level Zero or OpenCL) for this context's (seen with
+SLH-DSA's backend, which asks the same question; AdaptiveCpp with a Level Zero context and OpenCL memory). Pass only
+buffers of the context that are still allocated (the header, "What the buffer check cannot see").
 
 ```c
+#include "ML/KEM/openpqc_mlkem.h"             /* the sizes MLKEM768_* */
 #include "ML/KEM/sycl/openpqc_mlkem_sycl.h"   /* link openpqc::mlkem_sycl */
 
 opqc_sycl_mlkem *ctx;
-opqc_sycl_mlkem_create(&ctx, 768, max_batch, -1);            /* -1: default device (or OPENPQC_SYCL_DEVICE) */
-uint8_t *pk = opqc_sycl_mlkem_malloc(ctx, n * MLKEM768_PUBLICKEYBYTES);  /* ... likewise sk, ct, ss */
-int32_t *status = opqc_sycl_mlkem_malloc(ctx, n * sizeof(int32_t));
-opqc_sycl_mlkem_keypair(ctx, pk, sk, n);                     /* or _keypair_derand with n x (d || z) */
-opqc_sycl_mlkem_enc(ctx, ct, ss, pk, status, n);             /* status: n x int32, required */
-opqc_sycl_mlkem_dec(ctx, ss2, ct, sk, status, n);
-if (opqc_sycl_mlkem_sync(ctx) != 0) { /* the context has failed: destroy it */ }
-opqc_sycl_mlkem_memcpy(ctx, host_status, status, n * sizeof(int32_t));   /* 0 per operation, or why not */
+if (opqc_sycl_mlkem_create(&ctx, 768, max_batch, -1) != 0)   /* -1: default device (or OPENPQC_SYCL_DEVICE) */
+    return -1;                                               /* no such device, no memory, or the self-test failed */
+uint8_t *pk = opqc_sycl_mlkem_malloc(ctx, n * MLKEM768_PUBLICKEYBYTES);  /* ... likewise sk, ct, ss, ss2 */
+int32_t *enc_status = opqc_sycl_mlkem_malloc(ctx, n * sizeof(int32_t));  /* ... likewise dec_status */
+int rc = opqc_sycl_mlkem_keypair(ctx, pk, sk, n);            /* -1 for a NULL buffer */
+if (rc == 0) rc = opqc_sycl_mlkem_enc(ctx, ct, ss, pk, enc_status, n);    /* status: n x int32, required */
+if (rc == 0) rc = opqc_sycl_mlkem_dec(ctx, ss2, ct, sk, dec_status, n);
+if (rc == 0) rc = opqc_sycl_mlkem_sync(ctx);                 /* nonzero: the context has failed */
+if (rc == 0) rc = opqc_sycl_mlkem_memcpy(ctx, host_enc_status, enc_status, n * sizeof(int32_t));
+if (rc == 0) rc = opqc_sycl_mlkem_memcpy(ctx, host_dec_status, dec_status, n * sizeof(int32_t));
+/* ... copy the results back to the host likewise, then free every buffer */
 opqc_sycl_mlkem_free(ctx, pk);                               /* wipes, then frees */
 opqc_sycl_mlkem_destroy(ctx);
+if (rc != 0)
+    return -1;                                               /* no result of these calls may be used */
+/* operation i has a result only if host_enc_status[i] == 0 and host_dec_status[i] == 0 */
 ```
+
+Encaps and Decaps get a status buffer each: with one buffer for both, Decaps would overwrite the Encaps entry of an
+operation whose pk failed its check (its zero ciphertext decapsulates, by implicit rejection, with status 0), and the
+failure would go unseen. `opqc_sycl_mlkem_keypair_derand` and `opqc_sycl_mlkem_enc_derand` take the random values from
+the caller: testing interfaces, as on the CPU (`keypair_derand` also for a stored seed; `enc_derand` for testing
+only). Every function that returns a status is declared `OPQC_MUST_CHECK`.
 
 The kernels are a staged pipeline. Hashing stages run one work-item per sponge across the batch. Arithmetic stages
 run a team of 32 work-items per operation, which share the polynomials in local memory and call the math core
@@ -185,12 +274,18 @@ holds (`Core/sycl/opqc_sycl_context.hpp`, as for ML-DSA and SLH-DSA). The header
 - **Return values.** -1 for a refused argument (nothing else is queued), -2 for an exception of the SYCL runtime or a
   failed context, `OPQC_SYCL_MLKEM_RNG_FAIL` (-3, the CPU's value) when the RNG fails, and, from create,
   `OPQC_SYCL_MLKEM_SELF_TEST_FAIL` (-7). A device error found after a call has returned (by sync, a waiting memcpy or a
-  later call) fails the context for good: from then on everything returns -2; destroy it and create another. No
-  device error ends the process.
+  later call) fails the context for good: from then on everything returns -2 (except a call whose arguments are
+  refused: -1); destroy it and create another. On CUDA a fault that is sticky (an invalid address) leaves the device
+  unusable for the rest of the process: every context on it fails, a new create on it returns -1, and only a new
+  process can use the device again. A device error found through the context's queue does not end the process (the
+  header names the three cases the library cannot catch: an error that the SYCL runtime gives to the SYCL context's
+  handler instead of the queue's, a failure inside the runtime itself and, on AdaptiveCpp's OpenMP host device, a call
+  with another GPU's device memory, above).
 - **Threads.** A context may be shared by several host threads: every call holds the context's lock while it
   queues its work. Without the lock the stages of two threads' calls interleave over the one workspace on the
   in-order queue; the review measured 193,822 wrong outputs in 586,998 operations on seven device and toolchain
-  combinations, among them shared secrets of other threads' requests and key pairs of all-zero coins. Since the
+  combinations, among them shared secrets of other threads' requests and key pairs of all-zero coins, and with the
+  lock it measured none in 635,439; `mlkem_sycl`'s two threads on one context fail without the lock. Since the
   calls take turns, one shared context gives one call's throughput at a time; threads that need more should each
   have a context (with ML-DSA's backend, which has the same lock, four contexts signed about twice as fast as one
   shared by four threads on the RTX 3050).
@@ -200,7 +295,8 @@ holds (`Core/sycl/opqc_sycl_context.hpp`, as for ML-DSA and SLH-DSA). The header
   pair-wise consistency test of the keys the device generates.
 - **Zeroization (FIPS 203 §3.3).** The secret values in the workspace (seeds, PRF outputs, m′, K′, K̄, coins) are
   zeroized after every launch, the whole workspace when a call or the device fails, and again by destroy, as far as
-  the device still accepts work (after a sticky CUDA fault it accepts none). The coins of the randomized calls pass
+  the device still accepts work (after a sticky CUDA fault it accepts none, and what the kernels wrote stays in
+  device memory until the driver reuses it). The coins of the randomized calls pass
   through page-locked host memory that is wiped right after the copy; NVIDIA's driver has nevertheless been seen to
   keep copies of such small transfers in memory of its own, out of the library's reach. `opqc_sycl_mlkem_free`
   overwrites the buffers it frees (a freed buffer used to come back from the next allocation with the keys in it).
@@ -213,13 +309,24 @@ The backend builds with Intel DPC++ or AdaptiveCpp. It has been tested on an NVI
 an Intel Iris Xe (Level Zero and OpenCL, both implementations) and the CPU (AdaptiveCpp's OpenMP backend). The test
 `mlkem_sycl` (`tests/gpu/test_mlkem_sycl.cpp`, label `gpu`) compares every output with the CPU library, checks the
 status and error contract with every output and status buffer filled with a pattern before each call, checks that
-randomized outputs are fresh across operations, chunks and calls, and runs two threads on one context.
+randomized outputs are fresh across operations, chunks and calls, and runs two threads on one context;
+`mlkem_sycl_faults` (`tests/gpu/test_mlkem_sycl_faults.cpp`) makes the device work fail part way, by fault injection,
+and checks the fail-closed status and outputs, the zeroization of the workspace, the failed state and an RNG failure,
+and that a create that fails (a wrong self-test answer, a refused launch, a workspace too large for the device)
+frees its self-test's device memory (counted on every device) and leaks no workspace; a leaked workspace the test
+sees only through the device's free memory where the runtime reports it (of the GPUs tested, the RTX 3050 under
+both toolchains and the Iris Xe under DPC++'s Level Zero), and smaller leaks not at all.
 
 ## Build
 
 `include/ML/KEM/CMakeLists.txt` compiles `mlkem.cpp` once and makes two libraries of it. `openpqc_mlkem` takes its
 randomness from the operating system; `openpqc_mlkem_testrng` calls the application's `randombytes()` and exists for
-the tests. `openpqc_mlkem_sycl` is added when a SYCL compiler is found (see the top-level README).
+the tests: never link it into a program for production use, nor together with a production library (both define
+`opqc_randombytes`, and the linker keeps the first definition it finds, without an error). `openpqc_mlkem_sycl` is
+added when a SYCL compiler is found (see the top-level README). The CMake option `OPENPQC_MLKEM_KEYGEN_PCT` compiles
+the pair-wise consistency test into both CPU libraries; the presets `gcc-release-pct` and `clang-release-pct` build
+with it (and with ML-DSA's `OPENPQC_MLDSA_KEYGEN_PCT`) and run the quick ML-KEM and ML-DSA tests, without the
+constant-time ones, against those libraries.
 
 ## Tests
 
@@ -231,12 +338,23 @@ mlkem-native's own test programs run against this library and against the unmodi
 | `mlkemNNN_func` | functional tests |
 | `mlkemNNN_kat` | known-answer tests; the output is hashed and compared with `META.yml` |
 | `mlkemNNN_rng_fail` | behaviour when `randombytes()` fails |
-| `mlkem_acvp`, `mlkem_wycheproof` | NIST ACVP and Wycheproof vectors (downloaded on first use; label `network`) |
-| `mlkemNNN_ct` | constant-time test under valgrind (when valgrind is found) |
+| `mlkem_acvp`, `mlkem_wycheproof` | NIST ACVP and Wycheproof vectors, run through `tests/ML-KEM/pinned_vectors.py`: the files of ACVP-Server 975de31e (435 cases) and Wycheproof 3fa63dd0 (1725 cases) are downloaded once per build tree, checked by SHA-256 on every run, and every driver run is checked: a changed file, fewer cases, a crash (not a rejection), a sanitizer report, a wrong error code or any output on stderr fails the test (label `network`) |
+| `mlkem_acvp_control_info`, `mlkem_wycheproof_control_crash`, `mlkem_wycheproof_control_sanitizer` | positive controls of those checks: a driver that runs only part of the cases, crashes on a rejected vector or reports a sanitizer error must fail (label `network`) |
+| `mlkem_fresh`, `mlkem_fresh_control` | keypair and enc draw fresh random values on every call (FIPS 203 §3.3): no ek, dk, z, ciphertext or key repeats over 32 calls, none equals that of all-zero seeds, every key decapsulates; the control runs the same checks against a `randombytes()` that repeats itself, which they must notice |
+| `mlkemNNN_ct` | constant-time test under valgrind (when valgrind is found and the build has no sanitizer), at the build's optimization level |
+| `mlkemNNN_O1_ct`, `_O2_ct`, `_O3_ct`, `_Os_ct` | the same with the library compiled at -O1, -O2, -O3 and -Os whatever the build type, so that a Debug build checks optimized code too (label `slow`); with the constant-time helpers from before their barriers moved, a Clang build fails them at the Decaps cmov |
 | `mlkem_math` | the math core against direct transcriptions of FIPS 203, exhaustively where feasible |
 | `mlkem_differential` | this library against mlkem-native, byte for byte, on random and malformed inputs |
 | `mlkem_stack`, `mlkem_stack_pct`, `mlkem_stack_O0`, `_O1`, `_O2`, `_Os` | nothing of KeyGen, Encaps and Decaps (also of a rejected ciphertext) left on the stack (FIPS 203 §3.3): the stack is copied after each call of the C API and searched for the call's secrets, recomputed from FIPS 203 with the math core and checked against the call's outputs; and (x86-64) the copies after calls with other keys and messages must agree in every byte below the call, which also sees partial and rearranged copies such as spilled vector registers; with positive controls (Linux). `mlkem_stack_pct`: the same against the library with the pair-wise consistency test, whose Encaps and Decaps inside KeyGen are searched for too; `mlkem_stack_O0` ... `_Os`: against the library compiled at these optimization levels, whatever the build type |
+| `mlkem_stack_noburn`, `mlkem_stack_noburn_pct` | the search of `mlkem_stack` against copies of the library compiled without the stack burn (`OPENPQC_MLKEM_TEST_NO_STACK_BURN`, for the tests only), without and with the pair-wise consistency test: the burn overwrites the frames in which the named wipes (`ZeroizeOnExit`) and the destructor of `Poly` run, so only here are they tested on their own; deleting the zeroization in `~Poly`, the eight `ZeroizeOnExit` of the scheme layer or any one of them fails one of the two (GCC 16 and Clang 23, -O3). The comparison of the copies is left out, since only the burn removes what it sees, and each test checks that its library really has no burn (Linux) |
+| `mlkem_thread_stack`, `mlkem_thread_stack_pct` | the stack each C function needs, on a thread: at most the documented 48, 58 and 68 KiB below the caller (9 KiB for `check_pk` and `check_sk`), every function returns on a stack of that size, and on stacks that are too small KeyGen, Encaps and Decaps end in a fault at the guard page without writing below it (`-fstack-clash-protection`; the same objects compiled without it write up to 15 KB below the guard page with Clang 23 and 9 KB with GCC 16, -O3); `_pct` for the library with the pair-wise consistency test (Linux, threads; skipped under AddressSanitizer) |
 | `mlkem_pct`, `mlkem_pct_fail`, `mlkem_pct_odr` | the library built with the pair-wise consistency test (`OPENPQC_MLKEM_KEYGEN_PCT`): KeyGen succeeds, draws the test's m (also `keypair_derand`), and zeroizes both keys when that fails; and built so that the test fails (`OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_MLKEM_ERR_PCT_FAIL` with both keys zeroized, which shows that the test is compiled in and its result used; `mlkem_pct_odr`: the same with an application's own KeyGen, compiled without the test, linked first, which must not take the place of the library's |
+| `mlkem_pct_library` | only with the CMake option `OPENPQC_MLKEM_KEYGEN_PCT`: the test of `mlkem_pct` against the library as built, which fails unless the option has put the pair-wise consistency test into it (against the default library: 18 failed checks) |
 | `mlkemNNN_pct_func`, `_kat`, `_rng_fail`, `mlkem_differential_pct` | mlkem-native's functional, known-answer and RNG-failure tests, and the differential test, against the library with the pair-wise consistency test (the known-answer hash is the one in `META.yml`) |
-| `mlkem_sycl` | the SYCL backend against this library on every SYCL device (label `gpu`) |
+| `mlkem_sycl` | the SYCL backend against this library on every SYCL device, the status and error contract, fresh coins and two threads on one context (label `gpu`) |
+| `mlkem_sycl_faults` | the SYCL backend when its work fails part way (white-box fault injection): fail-closed status and outputs, workspace zeroization, the failed state, an RNG failure, and creates that fail, which must free their self-test's device memory and, where the runtime reports a GPU's free memory, leak no workspace (label `gpu`) |
 | `reference_mlkemNNN_unit`, `_alloc` | mlkem-native's tests of its own internals |
+
+Two tests in `tests/` cover the C APIs of all three schemes: `c_api_errors` drives every error path and checks the
+result code and every output buffer against the headers' Results (unchanged or zero), with positive controls, and
+`c_api_must_check` checks that every function of the three C headers draws a warning when its result is ignored.

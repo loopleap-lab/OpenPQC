@@ -1065,7 +1065,10 @@ extern "C" int opqc_sycl_mlkem_create(opqc_sycl_mlkem** out, int level, std::siz
 }
 
 // Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device
-// still accepts work; a device error never ends the process here (Core/sycl/opqc_sycl_context.hpp)
+// still accepts work; a device error found here does not end the process
+// (Core/sycl/opqc_sycl_context.hpp names what it cannot catch: an error that the SYCL runtime gives
+// to the handler of the SYCL context instead of the queue's, and a failure inside the runtime itself,
+// such as DPC++ on CUDA aborting in an event's destructor after a sticky fault)
 extern "C" void opqc_sycl_mlkem_destroy(opqc_sycl_mlkem* ctx) { openpqc::gpu::destroy(ctx); }
 
 extern "C" const char* opqc_sycl_mlkem_device_name(const opqc_sycl_mlkem* ctx) {

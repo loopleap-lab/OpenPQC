@@ -1,8 +1,11 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // mldsa_sycl.cpp  --  batched ML-DSA (FIPS 204) on GPUs with SYCL 2020
 //
 // Runs many independent ML-DSA operations at once on a SYCL device (NVIDIA and
-// AMD GPUs, Intel GPUs, CPUs), compiled with Intel DPC++ or AdaptiveCpp. The
-// results are byte-identical to the CPU library.
+// Intel GPUs, CPUs; AMD GPUs are untested), compiled with Intel DPC++ or
+// AdaptiveCpp. The results are byte-identical to the CPU library.
 //
 // The mathematics is the C11 math core -- Core/opqc_keccak.h, Core/opqc_sha3.h
 // and ML/DSA/math -- the same functions the CPU library runs. This file decides
@@ -36,6 +39,18 @@
 // What is public follows the CPU code (scheme/mldsa_internal.hpp): rho and A^,
 // the rejection decisions and c~ of every attempt, and z and h of the attempt
 // that succeeds; the kernels branch on nothing else derived from secrets.
+//
+// When the device fails (Core/sycl/opqc_sycl_context.hpp): the context has failed
+// for good, every later call whose arguments are accepted returns -2 (refused
+// arguments still give -1), and the first call or sync that finds the failure
+// zeroizes the whole workspace (a copy does not). Signing reads its counters back
+// after every round and stops as soon as the context has failed, or when the
+// counters are not those a complete round leaves. Verification fills its status
+// entries with OPENPQC_MLDSA_ERR_INVALID_SIGNATURE before its first kernel, so
+// that an entry no kernel decides never reads as valid. create runs a known-answer
+// self-test on the device (mldsa_sycl_self_test.hpp), and a build with
+// OPENPQC_MLDSA_KEYGEN_PCT tests every key pair that KeyGen makes, as the CPU
+// library's option does.
 
 #include "ML/DSA/sycl/openpqc_mldsa_sycl.h"
 
@@ -45,12 +60,16 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "Core/opqc_platform.h"
+#include "Core/opqc_sha3.h"
 #include "Core/sycl/opqc_sycl_context.hpp"
 #include "Core/sycl/opqc_sycl_messages.hpp"
 #include "Core/sycl/opqc_sycl_runtime.hpp"
@@ -65,6 +84,7 @@
 #include "ML/DSA/scheme/encoding.hpp"
 #include "ML/DSA/scheme/mldsa_internal.hpp"
 #include "ML/DSA/scheme/parameter_sets.hpp"
+#include "ML/DSA/sycl/mldsa_sycl_self_test.hpp"
 
 namespace openpqc::mldsa::gpu {
 namespace {
@@ -97,6 +117,12 @@ constexpr unsigned COPY_LANES = 32;    // work-items per signature when copying 
 template <class P>
 inline constexpr std::size_t sig_stride = (Sizes<P>::sig + 7) / 8 * 8;
 
+} // namespace
+
+// The types of the members of the C API's context (opqc_sycl_mldsa, below) are outside the
+// anonymous namespace, so that a type with external linkage has no member of a type without
+// (GCC: -Wsubobject-linkage)
+
 // Device workspace: struct of arrays over the operations of one launch. A "slot" is
 // one attempt of the signing loop (Sign) or one operation (Verify); there are as many
 // slots as operations per launch.
@@ -118,11 +144,23 @@ struct Workspace {
     std::uint32_t* c;          // 1 polynomial: c = SampleInBall(c~)                            public
     std::uint8_t* sig;         // sig_stride B: the signature of the attempt (Sign)            secret
     std::uint32_t* flags;      // 2 words: result of the attempt (Sign); checks (Verify)        public
+    // per operation, only in a build with the pair-wise consistency test (keygen_pct)
+    std::uint8_t* pct_zero;    // 32 B: zeros (rnd of the test's signatures, and its messages' offsets)  public
+    std::uint8_t* pct_sig;     // sig_stride B: the test's signature                            secret
+    std::int32_t* pct_status;  // 4 B: the test's result                                        public
     // per call
     std::uint8_t* ctx;         // 256 B: the context string                                     public
-    std::uint32_t* count;      // [0] signatures left for the next round, [1] signatures that   public
-                               // reached the signing limit (Appendix C)
+    std::uint32_t* count;      // signing: [0] signatures left for the next round, [1]          public
+                               // signatures finished in the round, [2] signatures that reached
+                               // the signing limit (Appendix C); KeyGen's test: [0] failures
 };
+
+// Whether KeyGen tests the pair-wise consistency of every key pair it makes (keygen_pct)
+#if defined(OPENPQC_MLDSA_KEYGEN_PCT)
+constexpr bool KEYGEN_PCT = true;
+#else
+constexpr bool KEYGEN_PCT = false;
+#endif
 
 // The scheduling of the signing loop (see the top of the file). On the RTX 3050, these
 // defaults were within 9 % of the best setting measured for every batch size from 8 to
@@ -131,12 +169,18 @@ struct Workspace {
 struct Schedule {
     unsigned max_attempts = 16;  // attempts per signature and round, at most
     std::size_t fill = 512;      // attempts per round the device should have, at least
+    // The bound of the loop (Appendix C, as NIST's errata correct it). The C API never changes
+    // it; only a white-box test lowers it, to reach the end of the loop, as the CPU library's
+    // tests do with sign_mu<P, MaxAttempts>.
+    unsigned bound = max_signing_attempts;
 };
 
 struct SignStats {
     std::size_t rounds = 0, attempts = 0;
-    std::size_t limit = 0;   // signatures that reached max_signing_attempts (all zeros)
+    std::size_t limit = 0;   // signatures that reached the signing limit (all zeros)
 };
+
+namespace {
 
 // ------------------------------------------------------------------ launching
 
@@ -283,8 +327,9 @@ inline constexpr unsigned register_stride = M == STRIDE32 ? 32 : M == STRIDE4 ? 
 // Where coefficient j is kept in local memory: in row j / 32, at column (j % 32) XOR
 // f(row) with f(b) = b XOR 4b. Every mapping then has its 32 work-items read or write 32
 // different memory banks: STRIDE32 one row, STRIDE4 and CHUNK four columns of eight rows,
-// which f spreads over all banks (the plain layout would serialize them 8-fold).
-OPQC_KERNEL_INLINE inline unsigned local_index(unsigned j) {
+// which f spreads over all banks (the plain layout would serialize them 8-fold). Unused where
+// the layered NTT is chosen (Intel GPUs under DPC++).
+[[maybe_unused]] OPQC_KERNEL_INLINE inline unsigned local_index(unsigned j) {
     const unsigned row = j / 32;
     return 32 * row + ((j % 32) ^ ((row ^ (row << 2)) & 31));
 }
@@ -496,7 +541,7 @@ void expand_s(sycl::queue& q, const Workspace& ws, std::size_t n) {
         // the work-items of a warp write to different polynomials. out.count is j.
         Store16<8> out(s_bytes<P>(secrets, op) + MLDSA_N * r);
         const auto append = [&](std::int32_t z) {   // lines 9-10 and 13-14
-            out.append(static_cast<std::uint64_t>(P::eta - z));
+            out.append(static_cast<std::uint64_t>(static_cast<std::int32_t>(P::eta) - z));   // in [0, 2 eta]
         };
         for (;;) {
 #pragma unroll
@@ -580,10 +625,17 @@ void expand_mask(sycl::queue& q, const Workspace& ws, const std::uint32_t* list,
         absorb<SHAKE256_RATE_WORDS, 8>(s, [&](unsigned i) { return load64(w.rho_pp + op * 64 + 8 * i); });
         pad_and_permute<SHAKE256_RATE_WORDS, 8>(s, (kappa + r) & 0xFFFF, 2, OPQC_SHAKE_SUFFIX);
         std::uint8_t* out = w.ybytes + (slot * l + r) * Sizes<P>::z;
+        // v is squeezed a block of the rate at a time, each word read from the state at an index fixed at
+        // compile time: with an index computed at run time (word i of v is lane i mod 17), the compiler
+        // keeps the state in per-thread local memory, device memory outside the workspace that nothing
+        // clears, where the last state would stay after the kernel (Keccak-f is invertible, so it gives
+        // rho'' and every y of the slot)
+        for (unsigned block = 0; block < words; block += SHAKE256_RATE_WORDS) {
+            if (block > 0) opqc_keccak_f1600(s);
 #pragma unroll
-        for (unsigned i = 0; i < words; i++) {
-            if (i > 0 && i % SHAKE256_RATE_WORDS == 0) opqc_keccak_f1600(s);
-            store64(out + 8 * i, s[i % SHAKE256_RATE_WORDS]);
+            for (unsigned i = 0; i < SHAKE256_RATE_WORDS; i++) {
+                if (block + i < words) store64(out + 8 * (block + i), s[i]);
+            }
         }
     });
 }
@@ -920,8 +972,10 @@ void sign_respond(sycl::queue& q, const Workspace& ws, const std::uint32_t* list
                         store_chunk(r + MLDSA_N * i, h, g);
                     },
                     t.active && !rejected);
-            const bool rejected2 = (team_or(t, bad2) != 0) | (team_sum(t, ones) > P::omega);
-            succeeded = t.active && !rejected && !rejected2;
+            // both reductions run in every work-item (they hold barriers): | and not ||
+            const unsigned rejected2 = static_cast<unsigned>(team_or(t, bad2) != 0) |
+                                       static_cast<unsigned>(team_sum(t, ones) > P::omega);
+            succeeded = t.active && !rejected && rejected2 == 0;
             t.barrier();   // h is complete in the workspace
             // line 33: HintBitPack(h) completes the signature
             if (succeeded && g == 0) mldsa_hint_bit_pack(sig + Lay::sig_h, r, k, P::omega);
@@ -931,14 +985,25 @@ void sign_respond(sycl::queue& q, const Workspace& ws, const std::uint32_t* list
     });
 }
 
+// Adds 1 to a counter in device memory; returns its value before
+OPQC_KERNEL_INLINE inline std::uint32_t count_up(std::uint32_t& counter) {
+    sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                     sycl::access::address_space::global_space>
+            c(counter);
+    return c.fetch_add(1u);
+}
+
 // Sign, after every round (Algorithm 7, lines 10 and 32): a signature with a successful
 // attempt in this round takes the first of them, and is done (status 0); one whose last
 // allowed attempt failed is done with signing_limit (Appendix C: the signature is all
-// zeros), and counted in count[1]. The others are added to the list of the next round
-// (count[0]). COPY_LANES work-items per signature copy it.
+// zeros), and counted in count[2]. Both are counted in count[1], the signatures finished
+// in the round. The others are added to the list of the next round (count[0]); the host
+// checks that count[0] + count[1] is the number of signatures the round began with
+// (round_counters). COPY_LANES work-items per signature copy it.
 template <class P>
 void sign_select(sycl::queue& q, const Workspace& ws, const std::uint32_t* list, std::uint32_t* next, unsigned spec,
-                 unsigned first, std::size_t unfinished, std::uint8_t* sig_base, std::int32_t* status) {
+                 unsigned first, unsigned bound, std::size_t unfinished, std::uint8_t* sig_base,
+                 std::int32_t* status) {
     using S = Sizes<P>;
     const Workspace w = ws;
     for_each_item(q, unfinished * COPY_LANES, [=](std::size_t t) {
@@ -953,21 +1018,19 @@ void sign_select(sycl::queue& q, const Workspace& ws, const std::uint32_t* list,
         if (win < spec) {
             const std::uint8_t* from = w.sig + (e * spec + win) * sig_stride<P>;
             for (std::size_t i = lane; i < S::sig; i += COPY_LANES) sig[i] = from[i];
-            if (lane == 0 && status) status[op] = 0;
-        } else if (first + spec >= max_signing_attempts) {
+            if (lane == 0) {
+                if (status) status[op] = 0;
+                count_up(w.count[1]);
+            }
+        } else if (first + spec >= bound) {
             for (std::size_t i = lane; i < S::sig; i += COPY_LANES) sig[i] = 0;
             if (lane == 0) {
                 if (status) status[op] = OPENPQC_MLDSA_ERR_SIGNING_LIMIT;
-                sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                                 sycl::access::address_space::global_space>
-                        limit(w.count[1]);
-                limit.fetch_add(1u);
+                count_up(w.count[1]);
+                count_up(w.count[2]);
             }
         } else if (lane == 0) {
-            sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                             sycl::access::address_space::global_space>
-                    count(*w.count);
-            next[count.fetch_add(1u)] = op;
+            next[count_up(w.count[0])] = op;
         }
     });
 }
@@ -1059,13 +1122,14 @@ void keygen(sycl::queue& q, const Workspace& ws, std::uint8_t* pk, std::uint8_t*
     hash_pk<P>(q, pk, sk + 64, Sizes<P>::sk, n);      // tr
 }
 
-// The number of attempts per unfinished signature in a round
+// The number of attempts per unfinished signature in a round (first < schedule.bound: a
+// signature that has made them all is done, round_counters)
 inline unsigned attempts_per_round(const Schedule& schedule, std::size_t unfinished, std::size_t max_slots,
                                    unsigned first) {
     std::size_t a = schedule.fill / unfinished;
     a = std::min<std::size_t>(a, schedule.max_attempts);
     a = std::min<std::size_t>(a, max_slots / unfinished);
-    a = std::min<std::size_t>(a, max_signing_attempts - first);
+    a = std::min<std::size_t>(a, schedule.bound - first);
     return static_cast<unsigned>(std::max<std::size_t>(a, 1));
 }
 
@@ -1075,13 +1139,47 @@ struct NoProbe {
     void operator()(const char*) const {}
 };
 
+// The counters of a round (Workspace::count: [0] signatures that go on, [1] signatures
+// finished, [2] signatures at the signing limit), and whether they are those that a complete
+// round of `unfinished` signatures leaves: each of them finished or goes on, and none goes on
+// after the last attempt that Appendix C allows (`last`)
+using Counters = std::uint32_t[3];
+inline bool complete_round(const Counters& counts, std::size_t unfinished, bool last) {
+    return std::size_t{counts[0]} + counts[1] == unfinished && (!last || counts[0] == 0);
+}
+
+// Reads the counters of a round back, which waits for the round (the queue is in order), and
+// returns whether the signing loop may go on. On a context's queue (Core's ContextQueue) the
+// copy reports the device errors that its wait finds (Core's copy: -2), and the loop stops as
+// soon as the context has failed, now or before: what was read may then be stale (under
+// AdaptiveCpp a copy that fails leaves the host's counters as they were, and a loop that went on
+// with them never ended). Counters that a complete round does not leave fail the context too: a
+// stage did not run as it was queued. The call then returns -2 (chunked), and the workspace is
+// zeroized. On a plain queue, as the stage profiler (bench/gpu/profile_mldsa_stages_sycl.cpp)
+// runs the stages, such counters throw, as does a device error that DPC++ reports at the wait.
+template <class Queue>
+bool round_counters(Queue& q, Counters& counts, const std::uint32_t* device, std::size_t unfinished, bool last) {
+    if constexpr (std::is_base_of_v<openpqc::gpu::ContextQueue, Queue>) {
+        if (openpqc::gpu::copy(q, counts, device, sizeof counts, true) != 0) return false;
+        if (complete_round(counts, unfinished, last)) return true;
+        q.fail("ML-DSA signing: the counters of a round are not those of a complete round (a stage did not run)");
+        return false;
+    } else {
+        q.memcpy(counts, device, sizeof counts).wait();
+        if (!complete_round(counts, unfinished, last))
+            throw std::runtime_error("ML-DSA signing: the counters of a round are not those of a complete round");
+        return true;
+    }
+}
+
 // Signs n messages (Message) or message representatives mu; returns the largest number
 // of slots a round used. Waits for the end of every round. sk holds n secret keys
 // (key_step 1) or one key for all signatures (key_step 0): then A^, s1^, s2^ and t0^ are
-// computed once.
-template <class P, bool Message, class Probe = NoProbe>
-std::size_t sign(sycl::queue& q, const Workspace& ws, const Schedule& schedule, std::size_t max_slots,
-                 SignStats& stats, std::uint8_t* sig, const std::uint8_t* sk, std::size_t key_step, Messages msgs,
+// computed once. Stops after the round in which the context failed (round_counters); the
+// call's result is then -2.
+template <class P, bool Message, class Queue, class Probe = NoProbe>
+std::size_t sign(Queue& q, const Workspace& ws, const Schedule& schedule, std::size_t max_slots, SignStats& stats,
+                 std::uint8_t* sig, const std::uint8_t* sk, std::size_t key_step, Messages msgs,
                  const std::uint8_t* mu, const std::uint8_t* rnd, std::int32_t* status, std::size_t n,
                  Probe probe = {}) {
     using S = Sizes<P>;
@@ -1093,13 +1191,14 @@ std::size_t sign(sycl::queue& q, const Workspace& ws, const Schedule& schedule, 
     sign_setup<P>(q, ws, sk, keys);                          // s1^, s2^, t0^
     std::uint32_t* list = ws.lists;
     std::uint32_t* next = ws.lists + max_slots;
-    for_each_item(q, n, [=](std::size_t i) { list[i] = static_cast<std::uint32_t>(i); });
-    q.memset(ws.count, 0, 2 * sizeof(std::uint32_t));
+    sycl::queue& base = q;   // the launch helpers of this file (ADL would also find Core's for a ContextQueue)
+    for_each_item(base, n, [=](std::size_t i) { list[i] = static_cast<std::uint32_t>(i); });
+    q.memset(ws.count, 0, sizeof(Counters));
     probe("NTT of s1 s2 t0");
 
     std::size_t unfinished = n, slots_max = 0;
     unsigned first = 0;                       // the first attempt of the round
-    std::uint32_t counts[2] = {0, 0};         // count[0] and count[1] after the round
+    Counters counts = {0, 0, 0};              // Workspace::count after the round
     while (unfinished > 0) {
         const unsigned spec = attempts_per_round(schedule, unfinished, max_slots, first);
         const std::size_t slots = unfinished * spec;
@@ -1111,18 +1210,19 @@ std::size_t sign(sycl::queue& q, const Workspace& ws, const Schedule& schedule, 
         probe("c~ + SampleInBall");
         sign_respond<P>(q, ws, list, spec, key_step, slots);
         probe("z r0 ct0 h");
-        q.memset(ws.count, 0, sizeof(std::uint32_t));
-        sign_select<P>(q, ws, list, next, spec, first, unfinished, sig, status);
-        q.memcpy(counts, ws.count, sizeof counts).wait();
+        q.memset(ws.count, 0, 2 * sizeof(std::uint32_t));   // count[0] and count[1]
+        sign_select<P>(q, ws, list, next, spec, first, schedule.bound, unfinished, sig, status);
+        const bool go_on = round_counters(q, counts, ws.count, unfinished, first + spec >= schedule.bound);
         probe("select");
         stats.rounds++;
         stats.attempts += slots;
         slots_max = std::max(slots_max, slots);
+        if (!go_on) return slots_max;
         first += spec;
         unfinished = counts[0];
         std::swap(list, next);
     }
-    stats.limit += counts[1];
+    stats.limit += counts[2];
     return slots_max;
 }
 
@@ -1140,27 +1240,78 @@ void verify(sycl::queue& q, const Workspace& ws, const std::uint8_t* sig, Messag
     verify_final<P>(q, ws, sig, status, n);                          // c~' and the result
 }
 
+// KeyGen's pair-wise consistency test, after it: pk and sk of every operation whose test
+// failed (pct_status != 0) are overwritten with zeros, and the failures counted in count[0].
+// COPY_LANES work-items per operation.
+template <class P>
+void discard_failed_pairs(sycl::queue& q, const Workspace& ws, std::uint8_t* pk_base, std::uint8_t* sk_base,
+                          std::size_t n) {
+    using S = Sizes<P>;
+    const Workspace w = ws;
+    for_each_item(q, n * COPY_LANES, [=](std::size_t t) {
+        const std::size_t op = t / COPY_LANES;
+        const unsigned lane = static_cast<unsigned>(t % COPY_LANES);
+        if (w.pct_status[op] == 0) return;
+        std::uint8_t* pk = pk_base + op * S::pk;
+        std::uint8_t* sk = sk_base + op * S::sk;
+        for (std::size_t i = lane; i < S::pk; i += COPY_LANES) pk[i] = 0;
+        for (std::size_t i = lane; i < S::sk; i += COPY_LANES) sk[i] = 0;
+        if (lane == 0) count_up(w.count[0]);
+    });
+}
+
+// The pair-wise consistency test of KeyGen (a build with OPENPQC_MLDSA_KEYGEN_PCT; FIPS 140-3
+// asks it of validated modules, as the CPU library's option does, scheme/ml_dsa.hpp): each of
+// the n key pairs at pk and sk signs the empty message, with the empty context string and
+// rnd = 0 (M' = 0 || 0, Algorithm 2, line 10; Algorithm 7), and the signature must verify
+// under its public key (Algorithm 3). Signing reads tr from sk and verification computes it
+// from pk, so the test covers every part of the key pair. The status entries are set to
+// "invalid" before verification, so that a verification that does not run fails the test. The
+// pk and sk of every pair that fails are overwritten with zeros, and their number is added to
+// `failures`. Returns the largest number of slots signing used, for the zeroization after the
+// chunk. Waits (signing, and the copy of the count); a context that fails stops it.
+template <class P>
+std::size_t keygen_pct(openpqc::gpu::ContextQueue& q, const Workspace& ws, const Schedule& schedule,
+                       std::size_t max_slots, std::uint8_t* pk, std::uint8_t* sk, std::size_t n, std::size_t& failures) {
+    // the empty messages: n + 1 offsets of 0 (pct_zero has 32 bytes per operation, at least 8 (n + 1))
+    const Messages empty{ws.pct_zero, reinterpret_cast<const std::uint64_t*>(ws.pct_zero), 0};
+    SignStats stats;
+    const std::size_t slots = sign<P, true>(q, ws, schedule, max_slots, stats, ws.pct_sig, sk, 1, empty, nullptr,
+                                            ws.pct_zero, ws.pct_status, n);
+    if (q.failed()) return slots;
+    q.fill(ws.pct_status, std::int32_t{OPENPQC_MLDSA_ERR_INVALID_SIGNATURE}, n);
+    verify<P, true>(q, ws, ws.pct_sig, empty, nullptr, pk, 1, ws.pct_status, n);
+    q.memset(ws.count, 0, sizeof(std::uint32_t));
+    discard_failed_pairs<P>(q, ws, pk, sk, n);
+    std::uint32_t failed = 0;
+    if (openpqc::gpu::copy(q, &failed, ws.count, sizeof failed, true) == 0) failures += failed;
+    return slots;
+}
+
 // The context string, copied into the workspace by a kernel that receives it by value:
 // the caller may reuse its memory as soon as the call returns (Core/sycl/opqc_sycl_messages.hpp)
 using openpqc::gpu::put_context;
 
 // ------------------------------------------------------------------ workspace layout
 
-// The sections of the workspace and their sizes in bytes per operation (or per slot)
+// The sections of the workspace and their sizes in bytes per operation (or per slot); those of
+// KeyGen's pair-wise consistency test are empty in a build without it
 enum Section : unsigned { SEEDS, COINS, MATRIX, SECRETS, MU, TR, RHO_PP, LISTS, YBYTES, SCRATCH, W, W1, C, SIG,
-                          FLAGS, SECTIONS };
+                          FLAGS, PCT_ZERO, PCT_SIG, PCT_STATUS, SECTIONS };
 template <class P>
 constexpr std::array<std::size_t, SECTIONS> section_bytes() {
     using S = Sizes<P>;
-    constexpr std::size_t poly = 4 * MLDSA_N, k = P::k, l = P::l;
-    return {128, 32, k * l * poly, (l + 2 * k) * poly, 64, 64, 64, 8, l * S::z, (l + k) * poly, k * poly, S::w1,
-            poly, sig_stride<P>, 8};
+    constexpr std::size_t poly = 4 * MLDSA_N, k = P::k, l = P::l, pct = KEYGEN_PCT ? 1 : 0;
+    return {128,  32,           k * l * poly, (l + 2 * k) * poly, 64,       64,       64,                  8,
+            l * S::z,           (l + k) * poly, k * poly,         S::w1,    poly,     sig_stride<P>,       8,
+            pct * 32,           pct * sig_stride<P>,              pct * 4};
 }
 
 // The secret sections that each operation uses (bit i = section i)
 constexpr unsigned bit(Section s) { return 1u << s; }
-constexpr unsigned KEYGEN_SECRETS = bit(SEEDS) | bit(SECRETS);
 constexpr unsigned SIGN_SECRETS = bit(SECRETS) | bit(RHO_PP) | bit(YBYTES) | bit(SCRATCH) | bit(W) | bit(W1) | bit(SIG);
+constexpr unsigned KEYGEN_SECRETS =
+        bit(SEEDS) | bit(SECRETS) | (KEYGEN_PCT ? SIGN_SECRETS | bit(PCT_SIG) : 0u);   // with the test's signing
 constexpr unsigned SLOT_SECTIONS = bit(YBYTES) | bit(SCRATCH) | bit(W) | bit(W1) | bit(C) | bit(SIG) | bit(FLAGS);
 
 } // namespace
@@ -1196,15 +1347,17 @@ void zeroize_workspace(opqc_sycl_mldsa* ctx, std::size_t ops, std::size_t slots,
     ctx->zeroize(sections, [&](unsigned i) { return gpu::SLOT_SECTIONS & (1u << i) ? slots : ops; });
 }
 
-// Runs f(offset, count) over chunks of at most max_batch operations; f returns the number
-// of slots it used. The secret sections are zeroized after each chunk -- and, if a chunk
-// fails part way (an exception of the SYCL runtime), in the whole workspace, as far as the
-// device still accepts work (FIPS 204, Section 3.6.3).
+// Runs f(offset, count) over chunks of at most max_batch operations (Core's chunked); f returns
+// the number of slots it used. The secret sections are zeroized after each chunk, and the whole
+// workspace once the context has failed (an exception of the SYCL runtime, or a device error
+// that a check or a wait found), as far as the device still accepts work (FIPS 204, Section
+// 3.6.3). Once the context has failed, the chunks that remain queue no work (signing finds a
+// failure after every round). Called with the lock held. Returns 0 or -2.
 template <class F>
 int chunked(opqc_sycl_mldsa* ctx, std::size_t n, unsigned sections, F f) {
-    return openpqc::gpu::chunked(ctx, n, sections, f, [&](std::size_t ops, std::size_t slots, unsigned mask) {
-        zeroize_workspace(ctx, ops, slots, mask);
-    });
+    return openpqc::gpu::chunked(
+            ctx, n, sections, [&](std::size_t off, std::size_t m) { return ctx->failed() ? std::size_t{0} : f(off, m); },
+            [&](std::size_t ops, std::size_t slots, unsigned mask) { zeroize_workspace(ctx, ops, slots, mask); });
 }
 
 template <class F>
@@ -1222,102 +1375,68 @@ bool aligned(const T*... p) {
     return openpqc::gpu::aligned(openpqc::gpu::BUFFER_ALIGN, p...);
 }
 
-} // namespace
+// A status buffer that the kernels can write: 4-byte aligned (a misaligned one would fault on the
+// device, and on CUDA that fault is sticky). NULL passes here.
+bool status_aligned(const std::int32_t* status) {
+    return openpqc::gpu::aligned(alignof(std::int32_t), status);
+}
 
-extern "C" int opqc_sycl_mldsa_create(opqc_sycl_mldsa** out, int level, std::size_t max_batch, int device) {
-    if (!out || (level != 44 && level != 65 && level != 87) || max_batch == 0 || max_batch > UINT32_MAX) return -1;
-    *out = nullptr;
-    return guarded([&] {
-        sycl::device dev;
-        if (!openpqc::gpu::select_device(device, dev)) return -1;
-        auto* ctx = new opqc_sycl_mldsa(dev, level, max_batch);
-        std::array<std::size_t, gpu::SECTIONS> per_op{};
-        with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
-        std::uint8_t* extra = nullptr;
-        try {
-            extra = ctx->allocate(per_op, 256 + 256);   // 256-byte aligned sections; the context string, the counter
-        } catch (...) {
-            delete ctx;
-            throw;
-        }
-        if (!extra) {
-            delete ctx;
-            return -1;
-        }
-        const auto at = [&](Section s) { return ctx->section(s); };
-        const auto words = [&](Section s) { return reinterpret_cast<std::uint32_t*>(at(s)); };
-        ctx->ws = Workspace{at(gpu::SEEDS),   at(gpu::COINS), words(gpu::MATRIX), words(gpu::SECRETS),
-                            at(gpu::MU),      at(gpu::TR),     at(gpu::RHO_PP),   words(gpu::LISTS), at(gpu::YBYTES),
-                            words(gpu::SCRATCH), words(gpu::W), at(gpu::W1),      words(gpu::C),
-                            at(gpu::SIG),     words(gpu::FLAGS), extra,
-                            reinterpret_cast<std::uint32_t*>(extra + 256)};
-        *out = ctx;
+// Whether the kernels can use p: not NULL, aligned to `alignment`, and USM memory of the context's
+// SYCL context (device, host or shared: sycl::get_pointer_type). Anything else (pageable host
+// memory, memory of another SYCL context) would make the device fault, or, as on Intel GPUs under
+// Level Zero, be read as zeros, and the call would report results computed from them.
+bool usable(const opqc_sycl_mldsa* ctx, const void* p, std::size_t alignment = openpqc::gpu::BUFFER_ALIGN) {
+    if (!p || !openpqc::gpu::aligned(alignment, p)) return false;
+    try {
+        return sycl::get_pointer_type(p, ctx->queue.get_context()) != sycl::usm::alloc::unknown;
+    } catch (...) {
+        return false;
+    }
+}
+bool usable_status(const opqc_sycl_mldsa* ctx, const std::int32_t* status) {
+    return usable(ctx, status, alignof(std::int32_t));
+}
+
+// Whether a signing call's arguments are acceptable (else -1, before anything is queued or any
+// randomness drawn): a context string of at most 255 bytes (FIPS 204, Algorithm 2, lines 1-3),
+// given if it is not empty; the messages (msg and offsets) or the message representatives mu;
+// and, for n > 0, buffers that the kernels can use (usable): the signatures and messages, which
+// may start at any byte, the buffers that the kernels read in 8-byte words, 8-byte aligned, and
+// a status buffer, if any, 4-byte aligned. rnd: nullptr for the randomized calls before they draw
+// it (it is then in the workspace); the signing itself (sign_any) requires it.
+bool sign_accepts(const opqc_sycl_mldsa* ctx, const gpu::Messages& msgs, const std::uint8_t* ctxstr,
+                  const std::uint8_t* mu, const std::uint8_t* rnd, const std::uint8_t* sk, const std::uint8_t* sig,
+                  const std::int32_t* status, std::size_t n) {
+    if (msgs.ctxlen > openpqc::gpu::MAX_CONTEXT_BYTES || (msgs.ctxlen > 0 && !ctxstr)) return false;
+    if (msgs.msg ? !msgs.offsets : !mu) return false;
+    if (!aligned(msgs.offsets, mu, rnd, sk) || !status_aligned(status)) return false;
+    if (n == 0) return true;
+    const bool messages = msgs.msg ? usable(ctx, msgs.msg, 1) && usable(ctx, msgs.offsets) : usable(ctx, mu);
+    return messages && usable(ctx, sig, 1) && usable(ctx, sk) && (!rnd || usable(ctx, rnd)) &&
+           (!status || usable_status(ctx, status));
+}
+
+// put_context for the call: the context string into the workspace. Called with the lock held, on
+// a context that has not failed. An exception fails the context (Context::guard: what was queued
+// cannot be trusted), and check() then zeroizes the whole workspace.
+int put_context(opqc_sycl_mldsa* ctx, const std::uint8_t* ctxstr, std::size_t ctxlen) {
+    const int rc = ctx->guard([&] {
+        gpu::put_context(ctx->queue, ctx->ws.ctx, ctxstr, ctxlen);
         return 0;
     });
+    return rc == 0 ? 0 : ctx->check();
 }
-
-extern "C" void opqc_sycl_mldsa_destroy(opqc_sycl_mldsa* ctx) {
-    if (!ctx) return;
-    ctx->release();   // waits, wipes the whole workspace and frees it
-    delete ctx;
-}
-
-extern "C" const char* opqc_sycl_mldsa_device_name(const opqc_sycl_mldsa* ctx) {
-    return ctx ? ctx->device_name.c_str() : "";
-}
-
-extern "C" int opqc_sycl_mldsa_sync(opqc_sycl_mldsa* ctx) {
-    if (!ctx) return -1;
-    const Lock lock(ctx->mutex);
-    return guarded([&] {
-        ctx->queue.wait_and_throw();
-        return 0;
-    });
-}
-
-extern "C" int opqc_sycl_mldsa_set_speculation(opqc_sycl_mldsa* ctx, unsigned max_attempts, std::size_t fill) {
-    if (!ctx || max_attempts == 0) return -1;
-    const Lock lock(ctx->mutex);
-    ctx->schedule = gpu::Schedule{max_attempts, fill};
-    return 0;
-}
-
-extern "C" int opqc_sycl_mldsa_sign_stats(const opqc_sycl_mldsa* ctx, std::size_t* rounds, std::size_t* attempts) {
-    if (!ctx) return -1;
-    const Lock lock(ctx->mutex);
-    if (rounds) *rounds = ctx->stats.rounds;
-    if (attempts) *attempts = ctx->stats.attempts;
-    return 0;
-}
-
-extern "C" int opqc_sycl_mldsa_keypair_derand(opqc_sycl_mldsa* ctx, std::uint8_t* pk, std::uint8_t* sk,
-                                              const std::uint8_t* seeds, std::size_t n) {
-    if (!ctx || !aligned(pk, sk, seeds)) return -1;
-    const Lock lock(ctx->mutex);
-    return chunked(ctx, n, gpu::KEYGEN_SECRETS, [&](std::size_t off, std::size_t m) {
-        with_level(ctx->level, [&](auto p) {
-            using P = decltype(p);
-            gpu::keygen<P>(ctx->queue, ctx->ws, pk + off * Sizes<P>::pk, sk + off * Sizes<P>::sk, seeds + off * 32, m);
-        });
-        return std::size_t{0};
-    });
-}
-
-namespace {
 
 // Signing, with messages (msgs.msg != nullptr) or with message representatives mu, under
 // a secret key per signature or (one_key) one secret key for all
 int sign_any(opqc_sycl_mldsa* ctx, std::uint8_t* sig, gpu::Messages msgs, const std::uint8_t* ctxstr,
              const std::uint8_t* mu, const std::uint8_t* rnd, const std::uint8_t* sk, bool one_key,
              std::int32_t* status, std::size_t n) {
-    if (!ctx || msgs.ctxlen > 255 || (msgs.ctxlen > 0 && !ctxstr)) return -1;
-    if (!aligned(msgs.offsets, mu, rnd, sk)) return -1;   // signatures and messages: byte by byte
+    if (!ctx || (n > 0 && !rnd) || !sign_accepts(ctx, msgs, ctxstr, mu, rnd, sk, sig, status, n)) return -1;
     const Lock lock(ctx->mutex);
     ctx->stats = {};
-    const int rc = guarded([&] {
-        gpu::put_context(ctx->queue, ctx->ws.ctx, ctxstr, msgs.ctxlen);
-        return 0;
-    });
+    int rc = ctx->check();   // a context that has failed queues nothing: -2
+    if (rc == 0) rc = put_context(ctx, ctxstr, msgs.ctxlen);
     if (rc != 0) return rc;
     const int result = chunked(ctx, n, gpu::SIGN_SECRETS, [&](std::size_t off, std::size_t m) {
         std::size_t slots = 0;
@@ -1345,44 +1464,304 @@ int sign_any(opqc_sycl_mldsa* ctx, std::uint8_t* sig, gpu::Messages msgs, const 
     return result;
 }
 
-// Verification, with messages (msgs.msg != nullptr) or with message representatives mu,
-// under a public key per signature or (one_key) one public key for all
+// Fail closed (openpqc_mldsa_sycl.h, Status): queues the fill of the n status entries of a
+// verification call with OPENPQC_MLDSA_ERR_INVALID_SIGNATURE (Core's fill_status), also on a
+// context that has failed, as far as the device still accepts work. A status buffer that cannot
+// be used (NULL, or not 4-byte aligned) is left alone. `done`: also waits for the fill, and so for
+// the work queued before it, so that a refused or failed call leaves no write into the caller's
+// status behind it: the caller may read, reuse or free status as soon as the call returns
+// (sycl::free does not wait, and on a host device a pending fill would write into freed memory).
+// Called with the lock held. An exception fails the context, and check() then zeroizes the
+// whole workspace.
+int fail_closed(opqc_sycl_mldsa* ctx, std::int32_t* status, std::size_t n, bool done) {
+    int rc = openpqc::gpu::fill_status(ctx, status, std::int32_t{OPENPQC_MLDSA_ERR_INVALID_SIGNATURE}, n);
+    if (rc == 0 && done && status && n > 0) {
+        rc = ctx->guard([&] {
+            ctx->queue.wait();
+            return 0;
+        });
+    }
+    return rc == -2 ? ctx->check() : rc;
+}
+
+// Verification, with messages (msgs.msg != nullptr) or with message representatives mu, under a
+// public key per signature or (one_key) one public key for all. The verdicts exist only in status,
+// which is therefore required: a call without one would compute them and throw them away, and
+// its result 0 says nothing about the signatures (the calls are asynchronous; and 0 is what the
+// CPU library returns for a valid signature). The only device write of a verdict is
+// verify_final's, in a chunk's last stage: every entry is set to "invalid" first, on the in-order
+// queue before put_context and the first kernel, so that an entry that the kernels never reach
+// (a call that fails part way, a device fault found only by a later sync or copy) reads as
+// invalid instead of keeping what an earlier call left there, which may be a 0 ("valid"). A
+// refused call (-1) and a failed one (-2) set every entry to "invalid" (again), and return once
+// that is done.
 int verify_any(opqc_sycl_mldsa* ctx, const std::uint8_t* sig, gpu::Messages msgs, const std::uint8_t* ctxstr,
                const std::uint8_t* mu, const std::uint8_t* pk, bool one_key, std::int32_t* status, std::size_t n) {
-    if (!ctx || msgs.ctxlen > 255 || (msgs.ctxlen > 0 && !ctxstr)) return -1;
-    if (!aligned(msgs.offsets, mu, pk)) return -1;
+    if (!ctx) return -1;
+    // the buffers the kernels use, for n > 0 (usable); a status buffer that is not usable is not filled
+    // either: a fill into it would fault the device or be lost
+    const bool status_ok = status && status_aligned(status) && (n == 0 || usable_status(ctx, status));
+    const bool buffers_ok = n == 0 || (usable(ctx, sig, 1) && usable(ctx, pk) &&
+                                       (msgs.msg ? usable(ctx, msgs.msg, 1) && usable(ctx, msgs.offsets)
+                                                 : usable(ctx, mu)));
     const Lock lock(ctx->mutex);
-    const int rc = guarded([&] {
-        gpu::put_context(ctx->queue, ctx->ws.ctx, ctxstr, msgs.ctxlen);
+    if (!status_ok || !buffers_ok || msgs.ctxlen > openpqc::gpu::MAX_CONTEXT_BYTES || (msgs.ctxlen > 0 && !ctxstr) ||
+        (msgs.msg ? !msgs.offsets : !mu) || !aligned(msgs.offsets, mu, pk)) {
+        fail_closed(ctx, status_ok ? status : nullptr, n, true);
+        return -1;
+    }
+    int rc = ctx->check();   // a context that has failed runs no kernel: -2, and the fill below
+    if (rc == 0) rc = fail_closed(ctx, status, n, false);
+    if (rc == 0) rc = put_context(ctx, ctxstr, msgs.ctxlen);
+    if (rc == 0) {
+        rc = chunked(ctx, n, 0, [&](std::size_t off, std::size_t m) {
+            with_level(ctx->level, [&](auto p) {
+                using P = decltype(p);
+                using S = Sizes<P>;
+                const std::uint8_t* keys = one_key ? pk : pk + off * S::pk;
+                const std::size_t key_step = one_key ? 0 : 1;
+                if (msgs.msg) {
+                    const gpu::Messages part{msgs.msg, msgs.offsets + off, msgs.ctxlen};
+                    gpu::verify<P, true>(ctx->queue, ctx->ws, sig + off * S::sig, part, nullptr, keys, key_step,
+                                         status + off, m);
+                } else {
+                    gpu::verify<P, false>(ctx->queue, ctx->ws, sig + off * S::sig, msgs, mu + off * 64, keys,
+                                          key_step, status + off, m);
+                }
+            });
+            return std::size_t{0};
+        });
+    }
+    if (rc != 0) fail_closed(ctx, status, n, true);   // behind the kernels that did run
+    return rc;
+}
+
+// The self-test of create (openpqc_mldsa_sycl.h, Self-test), on the context's device, through
+// the C API below: KeyGen from the seed xi of mldsa_sycl_self_test.hpp (with the pair-wise
+// consistency test in a build that has it), the deterministic signature (rnd = 0) of its message
+// with its context string under that key, and, in one call, the verification of that signature
+// and of a copy with one bit flipped (FIPS 204, Algorithms 2, 3 and 6-8). The SHA3-256 hashes of
+// pk, sk and the signature must be the CPU library's, and the status entries of the signature and
+// of the two verifications 0, 0 and OPENPQC_MLDSA_ERR_INVALID_SIGNATURE. Its device memory holds
+// no secret. All of it but the inputs is set to a pattern first (0xA5: no answer, and no status
+// the test accepts), so that only what the kernels write can pass: device memory is not cleared
+// when it is allocated, and the memory of an earlier self-test, with its answers, can come back at
+// the same address, where a device that ran no kernel would read them. It is zeroed before it is
+// freed. Returns 0, OPQC_SYCL_MLDSA_SELF_TEST_FAIL, -1 (no device memory) or -2 (an exception, or
+// the context has failed).
+int self_test(opqc_sycl_mldsa* ctx) {
+    namespace st = gpu::self_test;
+    const st::Answers* answers = nullptr;
+    for (const st::Answers& a : st::answers) {
+        if (a.level == ctx->level) answers = &a;
+    }
+    if (!answers) return OPQC_SYCL_MLDSA_SELF_TEST_FAIL;
+    std::size_t pk = 0, sk = 0, sig = 0;
+    with_level(ctx->level, [&](auto p) {
+        using S = Sizes<decltype(p)>;
+        pk = S::pk;
+        sk = S::sk;
+        sig = S::sig;
+    });
+    constexpr std::size_t M = st::MESSAGE_BYTES;
+    // device memory: xi | rnd = 0 | 3 offsets (the message twice) | the message twice | pk twice |
+    // sk | the signature and its tampered copy | 3 status entries
+    const std::size_t o_rnd = 32, o_offsets = 64, o_msg = o_offsets + 24, o_pk = (o_msg + 2 * M + 7) / 8 * 8,
+                      o_sk = o_pk + 2 * pk, o_sig = o_sk + sk, o_st = (o_sig + 2 * sig + 7) / 8 * 8, total = o_st + 16;
+    // the device memory's host copy: the inputs, then the pattern (may throw: before the device memory exists)
+    std::vector<std::uint8_t> h(total, std::uint8_t{0xA5});
+    for (std::size_t i = 0; i < 32; i++) h[i] = st::xi(i);
+    std::memset(&h[o_rnd], 0, 32);
+    const std::uint64_t offsets[3] = {0, M, 2 * M};
+    std::memcpy(&h[o_offsets], offsets, sizeof offsets);
+    for (std::size_t i = 0; i < M; i++) h[o_msg + i] = h[o_msg + M + i] = st::message(i);
+    std::uint8_t ctxstr[st::CONTEXT_BYTES];
+    for (std::size_t i = 0; i < st::CONTEXT_BYTES; i++) ctxstr[i] = st::context(i);
+
+    auto* d = static_cast<std::uint8_t*>(openpqc::gpu::device_malloc(ctx->queue, total));
+    if (!d) return -1;
+    auto* status = reinterpret_cast<std::int32_t*>(d + o_st);
+    const auto* offs = reinterpret_cast<const std::uint64_t*>(d + o_offsets);
+    const auto put = [&](std::size_t off, std::size_t bytes) {
+        return openpqc::gpu::copy(ctx, d + off, h.data() + off, bytes, true);
+    };
+    const auto get = [&](std::size_t off, std::size_t bytes) {
+        return openpqc::gpu::copy(ctx, h.data() + off, d + off, bytes, true);
+    };
+    int rc = put(0, total);   // the inputs, and the pattern everywhere else
+    if (rc == 0) rc = opqc_sycl_mldsa_keypair_derand(ctx, d + o_pk, d + o_sk, d, 1);
+    if (rc == 0)
+        rc = opqc_sycl_mldsa_sign_derand(ctx, d + o_sig, d + o_msg, offs, ctxstr, st::CONTEXT_BYTES, d + o_rnd,
+                                         d + o_sk, status, 1);
+    if (rc == 0) rc = get(o_pk, pk);
+    if (rc == 0) rc = get(o_sig, sig);
+    if (rc == 0) {
+        std::memcpy(&h[o_pk + pk], &h[o_pk], pk);        // the same key for both
+        std::memcpy(&h[o_sig + sig], &h[o_sig], sig);
+        h[o_sig + sig + st::TAMPERED_BYTE] ^= 1;          // the tampered signature
+        rc = put(o_pk + pk, pk);
+    }
+    if (rc == 0) rc = put(o_sig + sig, sig);
+    if (rc == 0)
+        rc = opqc_sycl_mldsa_verify(ctx, d + o_sig, d + o_msg, offs, ctxstr, st::CONTEXT_BYTES, d + o_pk, status + 1,
+                                    2);
+    if (rc == 0) rc = get(o_sk, sk);
+    if (rc == 0) rc = get(o_st, 3 * sizeof(std::int32_t));
+    const int wiped = ctx->guard([&] {   // before the free, which does not wait
+        ctx->queue.memset(d, 0, total).wait();
         return 0;
     });
-    if (rc != 0) return rc;
-    return chunked(ctx, n, 0, [&](std::size_t off, std::size_t m) {
-        with_level(ctx->level, [&](auto p) {
-            using P = decltype(p);
-            using S = Sizes<P>;
-            std::int32_t* st = status ? status + off : nullptr;
-            const std::uint8_t* keys = one_key ? pk : pk + off * S::pk;
-            const std::size_t key_step = one_key ? 0 : 1;
-            if (msgs.msg) {
-                const gpu::Messages part{msgs.msg, msgs.offsets + off, msgs.ctxlen};
-                gpu::verify<P, true>(ctx->queue, ctx->ws, sig + off * S::sig, part, nullptr, keys, key_step, st, m);
-            } else {
-                gpu::verify<P, false>(ctx->queue, ctx->ws, sig + off * S::sig, msgs, mu + off * 64, keys, key_step,
-                                      st, m);
-            }
-        });
-        return std::size_t{0};
-    });
+    openpqc::gpu::device_free(ctx->queue, d);
+    if (rc == 0) rc = wiped;
+    if (rc == -2) return -2;
+    if (rc != 0) return OPQC_SYCL_MLDSA_SELF_TEST_FAIL;   // a refusal or a failed pair-wise consistency test
+    std::uint8_t hash[32];
+    bool ok = true;
+    opqc_sha3_256(hash, &h[o_pk], pk);
+    ok = ok && std::memcmp(hash, answers->pk.data(), 32) == 0;
+    opqc_sha3_256(hash, &h[o_sk], sk);
+    ok = ok && std::memcmp(hash, answers->sk.data(), 32) == 0;
+    opqc_sha3_256(hash, &h[o_sig], sig);
+    ok = ok && std::memcmp(hash, answers->sig.data(), 32) == 0;
+    std::int32_t s[3];
+    std::memcpy(s, &h[o_st], sizeof s);
+    ok = ok && s[0] == 0 && s[1] == 0 && s[2] == OPENPQC_MLDSA_ERR_INVALID_SIGNATURE;
+    return ok ? 0 : OPQC_SYCL_MLDSA_SELF_TEST_FAIL;
+}
+
+// The randomized calls: xi or rnd from the operating system, 32 bytes per operation, copied into
+// the workspace and destroyed whatever happened (Core/sycl/opqc_sycl_context.hpp, with_random_coins:
+// xi is as secret as the key it expands to), then the derandomized operation. A result `sticky`
+// of a chunk (a signature at the signing limit; a key pair that failed KeyGen's pair-wise
+// consistency test) is remembered while the other chunks go on.
+template <class F>
+int with_random_coins(opqc_sycl_mldsa* ctx, std::size_t n, int sticky, F f) {
+    return openpqc::gpu::with_random_coins(ctx, n, 32, ctx->ws.coins, OPENPQC_MLDSA_ERR_RNG_FAIL, sticky, f,
+                                           [&](std::size_t m) { zeroize_workspace(ctx, m, 0, gpu::bit(gpu::COINS)); });
 }
 
 } // namespace
+
+extern "C" int opqc_sycl_mldsa_create(opqc_sycl_mldsa** out, int level, std::size_t max_batch, int device) {
+    if (!out) return -1;
+    *out = nullptr;
+    if ((level != 44 && level != 65 && level != 87) || max_batch == 0 || max_batch > UINT32_MAX) return -1;
+    return guarded([&] {
+        sycl::device dev;
+        if (!openpqc::gpu::select_device(device, dev)) return -1;
+        // destroyed on every way out but the last (an exception included: no leak of device memory)
+        std::unique_ptr<opqc_sycl_mldsa, void (*)(opqc_sycl_mldsa*)> ctx(
+                new opqc_sycl_mldsa(dev, level, max_batch), [](opqc_sycl_mldsa* c) { openpqc::gpu::destroy(c); });
+        std::array<std::size_t, gpu::SECTIONS> per_op{};
+        with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
+        // 256-byte aligned sections; then the context string and the counters
+        std::uint8_t* extra = ctx->allocate(per_op, 256 + 256);
+        if (!extra) return -1;
+        const auto at = [&](Section s) { return ctx->section(s); };
+        const auto words = [&](Section s) { return reinterpret_cast<std::uint32_t*>(at(s)); };
+        ctx->ws = Workspace{at(gpu::SEEDS),       at(gpu::COINS),    words(gpu::MATRIX),
+                            words(gpu::SECRETS),  at(gpu::MU),       at(gpu::TR),
+                            at(gpu::RHO_PP),      words(gpu::LISTS), at(gpu::YBYTES),
+                            words(gpu::SCRATCH),  words(gpu::W),     at(gpu::W1),
+                            words(gpu::C),        at(gpu::SIG),      words(gpu::FLAGS),
+                            at(gpu::PCT_ZERO),    at(gpu::PCT_SIG),  reinterpret_cast<std::int32_t*>(at(gpu::PCT_STATUS)),
+                            extra,                reinterpret_cast<std::uint32_t*>(extra + 256)};
+        const int rc = self_test(ctx.get());
+        if (rc != 0) return rc;
+        ctx->stats = {};
+        *out = ctx.release();
+        return 0;
+    });
+}
+
+// Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device
+// still accepts work; a device error found here does not end the process
+// (Core/sycl/opqc_sycl_context.hpp names what it cannot catch: an error that the SYCL runtime gives
+// to the handler of the SYCL context instead of the queue's, and a failure inside the runtime itself,
+// such as DPC++ on CUDA aborting in an event's destructor after a sticky fault)
+extern "C" void opqc_sycl_mldsa_destroy(opqc_sycl_mldsa* ctx) { openpqc::gpu::destroy(ctx); }
+
+extern "C" const char* opqc_sycl_mldsa_device_name(const opqc_sycl_mldsa* ctx) {
+    return ctx ? ctx->device_name.c_str() : "";
+}
+
+// Waits for all the work queued on the context: 0, or -2 if the context has failed, before or
+// during the wait (the first time, the whole workspace is zeroized); -1 for NULL
+extern "C" int opqc_sycl_mldsa_sync(opqc_sycl_mldsa* ctx) { return openpqc::gpu::sync(ctx); }
+
+extern "C" int opqc_sycl_mldsa_set_speculation(opqc_sycl_mldsa* ctx, unsigned max_attempts, std::size_t fill) {
+    if (!ctx || max_attempts == 0) return -1;
+    const Lock lock(ctx->mutex);
+    ctx->schedule = gpu::Schedule{max_attempts, fill};
+    return 0;
+}
+
+extern "C" int opqc_sycl_mldsa_sign_stats(const opqc_sycl_mldsa* ctx, std::size_t* rounds, std::size_t* attempts) {
+    if (!ctx) return -1;
+    const Lock lock(ctx->mutex);
+    if (rounds) *rounds = ctx->stats.rounds;
+    if (attempts) *attempts = ctx->stats.attempts;
+    return 0;
+}
+
+namespace {
+
+// Fail closed for KeyGen (openpqc_mldsa_sycl.h, Return values): a call that failed (no randomness,
+// an exception, a device error) zeroes pk and sk of all n operations, behind the work it queued and
+// also on a context that has failed, as far as the device still accepts work, and waits for that,
+// so that no key pair of the call, whole (the chunks before the failure) or partial, is left in the
+// caller's buffers, and no write into them is left queued. Called with the lock held. (A key pair
+// that failed the pair-wise consistency test is zeroed by the test, and the others are kept.)
+void zero_key_pairs(opqc_sycl_mldsa* ctx, std::uint8_t* pk, std::uint8_t* sk, std::size_t n) {
+    if (n == 0) return;
+    with_level(ctx->level, [&](auto p) {
+        using P = decltype(p);
+        ctx->guard([&] {
+            ctx->queue.memset(pk, 0, Sizes<P>::pk * n);
+            ctx->queue.memset(sk, 0, Sizes<P>::sk * n);
+            return 0;
+        });
+    });
+    ctx->guard([&] {
+        ctx->queue.wait();
+        return 0;
+    });
+    ctx->check();
+}
+
+} // namespace
+
+// KeyGen from n seeds xi; in a build with OPENPQC_MLDSA_KEYGEN_PCT followed by the pair-wise
+// consistency test (keygen_pct): the call then returns OPENPQC_MLDSA_ERR_PCT_FAIL if a key pair
+// failed it, and that pair's pk and sk are zeros. Any other failure zeroes all of pk and sk.
+extern "C" int opqc_sycl_mldsa_keypair_derand(opqc_sycl_mldsa* ctx, std::uint8_t* pk, std::uint8_t* sk,
+                                              const std::uint8_t* seeds, std::size_t n) {
+    if (!ctx || !aligned(pk, sk, seeds)) return -1;
+    if (n > 0 && (!usable(ctx, pk) || !usable(ctx, sk) || !usable(ctx, seeds))) return -1;
+    const Lock lock(ctx->mutex);
+    std::size_t failed_pairs = 0;
+    const int rc = chunked(ctx, n, gpu::KEYGEN_SECRETS, [&](std::size_t off, std::size_t m) {
+        std::size_t slots = 0;
+        with_level(ctx->level, [&](auto p) {
+            using P = decltype(p);
+            std::uint8_t* pk_chunk = pk + off * Sizes<P>::pk;
+            std::uint8_t* sk_chunk = sk + off * Sizes<P>::sk;
+            gpu::keygen<P>(ctx->queue, ctx->ws, pk_chunk, sk_chunk, seeds + off * 32, m);
+            if constexpr (gpu::KEYGEN_PCT)
+                slots = gpu::keygen_pct<P>(ctx->queue, ctx->ws, ctx->schedule, ctx->max_batch, pk_chunk, sk_chunk, m,
+                                           failed_pairs);
+        });
+        return slots;
+    });
+    if (rc != 0) zero_key_pairs(ctx, pk, sk, n);
+    return rc == 0 && failed_pairs > 0 ? OPENPQC_MLDSA_ERR_PCT_FAIL : rc;
+}
 
 extern "C" int opqc_sycl_mldsa_sign_derand(opqc_sycl_mldsa* ctx, std::uint8_t* sig, const std::uint8_t* msg,
                                            const std::uint64_t* offsets, const std::uint8_t* ctxstr,
                                            std::size_t ctxlen, const std::uint8_t* rnd, const std::uint8_t* sk,
                                            std::int32_t* status, std::size_t n) {
-    if (!msg || !offsets) return -1;
+    if (!msg) return -1;
     return sign_any(ctx, sig, {msg, offsets, ctxlen}, ctxstr, nullptr, rnd, sk, false, status, n);
 }
 
@@ -1390,7 +1769,7 @@ extern "C" int opqc_sycl_mldsa_sign_one_key_derand(opqc_sycl_mldsa* ctx, std::ui
                                                    const std::uint64_t* offsets, const std::uint8_t* ctxstr,
                                                    std::size_t ctxlen, const std::uint8_t* rnd, const std::uint8_t* sk,
                                                    std::int32_t* status, std::size_t n) {
-    if (!msg || !offsets) return -1;
+    if (!msg) return -1;
     return sign_any(ctx, sig, {msg, offsets, ctxlen}, ctxstr, nullptr, rnd, sk, true, status, n);
 }
 
@@ -1401,10 +1780,10 @@ extern "C" int opqc_sycl_mldsa_sign_mu_derand(opqc_sycl_mldsa* ctx, std::uint8_t
     return sign_any(ctx, sig, {nullptr, nullptr, 0}, nullptr, mu, rnd, sk, false, status, n);
 }
 
+// msg == NULL: refused (verify_any) as a call without messages
 extern "C" int opqc_sycl_mldsa_verify(opqc_sycl_mldsa* ctx, const std::uint8_t* sig, const std::uint8_t* msg,
                                       const std::uint64_t* offsets, const std::uint8_t* ctxstr, std::size_t ctxlen,
                                       const std::uint8_t* pk, std::int32_t* status, std::size_t n) {
-    if (!msg || !offsets) return -1;
     return verify_any(ctx, sig, {msg, offsets, ctxlen}, ctxstr, nullptr, pk, false, status, n);
 }
 
@@ -1412,50 +1791,40 @@ extern "C" int opqc_sycl_mldsa_verify_one_key(opqc_sycl_mldsa* ctx, const std::u
                                               const std::uint64_t* offsets, const std::uint8_t* ctxstr,
                                               std::size_t ctxlen, const std::uint8_t* pk, std::int32_t* status,
                                               std::size_t n) {
-    if (!msg || !offsets) return -1;
     return verify_any(ctx, sig, {msg, offsets, ctxlen}, ctxstr, nullptr, pk, true, status, n);
 }
 
 extern "C" int opqc_sycl_mldsa_verify_mu(opqc_sycl_mldsa* ctx, const std::uint8_t* sig, const std::uint8_t* mu,
                                          const std::uint8_t* pk, std::int32_t* status, std::size_t n) {
-    if (!mu) return -1;
     return verify_any(ctx, sig, {nullptr, nullptr, 0}, nullptr, mu, pk, false, status, n);
 }
 
-// Randomized calls: xi or rnd from the operating system, copied into the workspace
-// (zeroized at the end of the call, like the other secrets), then the derandomized
-// operation.
-namespace {
-
-// (Core/sycl/opqc_sycl_context.hpp) 32 bytes per operation; the coins are destroyed whatever
-// happened: xi is as secret as the key it expands to. A signature that reached the signing
-// limit is remembered while the other chunks go on.
-template <class F>
-int with_random_coins(opqc_sycl_mldsa* ctx, std::size_t n, F f) {
-    if (!ctx) return -1;
-    return openpqc::gpu::with_random_coins(ctx, n, 32, ctx->ws.coins, OPENPQC_MLDSA_ERR_RNG_FAIL,
-                                           OPENPQC_MLDSA_ERR_SIGNING_LIMIT, f, [&](std::size_t m) {
-                                               zeroize_workspace(ctx, m, 0, gpu::bit(gpu::COINS));
-                                           });
-}
-
-} // namespace
-
+// The randomized calls check their arguments before they draw any randomness (a refused call
+// returns -1, as its derandomized form does), and pass the coins in the workspace to it
 extern "C" int opqc_sycl_mldsa_keypair(opqc_sycl_mldsa* ctx, std::uint8_t* pk, std::uint8_t* sk, std::size_t n) {
-    return with_random_coins(ctx, n, [&](std::size_t off, std::size_t m, const std::uint8_t* xi) {
-        int rc = 0;
+    if (!ctx || !aligned(pk, sk)) return -1;
+    if (n > 0 && (!usable(ctx, pk) || !usable(ctx, sk))) return -1;
+    const Lock lock(ctx->mutex);
+    const int rc = with_random_coins(ctx, n, OPENPQC_MLDSA_ERR_PCT_FAIL, [&](std::size_t off, std::size_t m,
+                                                                            const std::uint8_t* xi) {
+        int r = 0;
         with_level(ctx->level, [&](auto p) {
             using P = decltype(p);
-            rc = opqc_sycl_mldsa_keypair_derand(ctx, pk + off * Sizes<P>::pk, sk + off * Sizes<P>::sk, xi, m);
+            r = opqc_sycl_mldsa_keypair_derand(ctx, pk + off * Sizes<P>::pk, sk + off * Sizes<P>::sk, xi, m);
         });
-        return rc;
+        return r;
     });
+    if (rc != 0 && rc != OPENPQC_MLDSA_ERR_PCT_FAIL) zero_key_pairs(ctx, pk, sk, n);   // the earlier chunks' too
+    return rc;
 }
 
 extern "C" int opqc_sycl_mldsa_sign(opqc_sycl_mldsa* ctx, std::uint8_t* sig, const std::uint8_t* msg,
                                     const std::uint64_t* offsets, const std::uint8_t* ctxstr, std::size_t ctxlen,
                                     const std::uint8_t* sk, std::int32_t* status, std::size_t n) {
-    return with_random_coins(ctx, n, [&](std::size_t off, std::size_t m, const std::uint8_t* rnd) {
+    if (!ctx || !msg || !sign_accepts(ctx, {msg, offsets, ctxlen}, ctxstr, nullptr, nullptr, sk, sig, status, n))
+        return -1;
+    return with_random_coins(ctx, n, OPENPQC_MLDSA_ERR_SIGNING_LIMIT, [&](std::size_t off, std::size_t m,
+                                                                         const std::uint8_t* rnd) {
         int rc = 0;
         with_level(ctx->level, [&](auto p) {
             using P = decltype(p);
@@ -1470,7 +1839,10 @@ extern "C" int opqc_sycl_mldsa_sign_one_key(opqc_sycl_mldsa* ctx, std::uint8_t* 
                                             const std::uint64_t* offsets, const std::uint8_t* ctxstr,
                                             std::size_t ctxlen, const std::uint8_t* sk, std::int32_t* status,
                                             std::size_t n) {
-    return with_random_coins(ctx, n, [&](std::size_t off, std::size_t m, const std::uint8_t* rnd) {
+    if (!ctx || !msg || !sign_accepts(ctx, {msg, offsets, ctxlen}, ctxstr, nullptr, nullptr, sk, sig, status, n))
+        return -1;
+    return with_random_coins(ctx, n, OPENPQC_MLDSA_ERR_SIGNING_LIMIT, [&](std::size_t off, std::size_t m,
+                                                                         const std::uint8_t* rnd) {
         int rc = 0;
         with_level(ctx->level, [&](auto p) {
             using P = decltype(p);
@@ -1494,10 +1866,12 @@ extern "C" void opqc_sycl_mldsa_free(opqc_sycl_mldsa* ctx, void* p) {
     if (ctx) openpqc::gpu::device_free(ctx->queue, p);
 }
 
+// Copies behind the context's work: -1 for a NULL pointer (bytes > 0), -2 once the context has
+// failed (the copy is still made as far as the device allows)
 extern "C" int opqc_sycl_mldsa_memcpy(opqc_sycl_mldsa* ctx, void* dst, const void* src, std::size_t bytes) {
-    return ctx ? openpqc::gpu::copy(ctx->queue, dst, src, bytes, true) : -1;
+    return openpqc::gpu::copy(ctx, dst, src, bytes, true);
 }
 
 extern "C" int opqc_sycl_mldsa_memcpy_async(opqc_sycl_mldsa* ctx, void* dst, const void* src, std::size_t bytes) {
-    return ctx ? openpqc::gpu::copy(ctx->queue, dst, src, bytes, false) : -1;
+    return openpqc::gpu::copy(ctx, dst, src, bytes, false);
 }

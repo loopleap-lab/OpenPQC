@@ -515,25 +515,33 @@ void test_sha2_outlen() {
 #define TEST_HASH_UNINITIALIZED
 #endif
 
-// --- what the computations leave in registers (x86-64) ---------------------------------------------------
+// --- what the computations leave in registers (x86-64 and 32-bit x86) --------------------------------------
 //
 // When Keccak-f's rounds or a one-shot computation return, the registers that a function may change without saving
-// them (rax, rcx, rdx, rsi, rdi, r8 to r11 and xmm0 to xmm15 in the System V ABI) are read at once and must hold
+// them (rax, rcx, rdx, rsi, rdi, r8 to r11 and xmm0 to xmm15 in the System V ABI for x86-64; eax, ecx, edx and xmm0
+// to xmm7 for 32-bit x86, where GCC 16 computes Keccak-f with lanes in SSE registers) are read at once and must hold
 // none of the computation's values: Core clears them on return where the compiler can (OPQC_STACK_BURN_REGS,
 // Core/opqc_keccak.h), as a caller may store one in its frame later, out of reach of any clearing of the stack (GCC
 // 16 stored a lane of Keccak-f's last round, left in r11, into the frame of ML-DSA's ExpandMask). Positive
 // control: two values left in registers by a function of the test are found. The registers are set to zero before the
 // call (test_hash_clear_regs), so that only the computation can have put values there, and read right after it by a
 // function of its own in assembler (test_hash_capture_regs), followed by an empty assembler statement so that the
-// caller's epilogue (which may pop a register) cannot come first.
-#if defined(TEST_HASH_RESIDUE) && defined(__x86_64__) && defined(__ELF__) && defined(OPQC_STACK_BURN_REGS)
+// caller's epilogue (which may pop a register) cannot come first. test_hash_regs is `used`: only the assembler code
+// writes it, which GCC's link-time optimization does not see, and without the attribute GCC -flto made the array
+// read-only (a SIGSEGV at the first capture). On 32-bit x86 the capture finds the array through the GOT (ecx, after
+// it has saved eax and ecx on the stack), so that it works in position-independent executables too, and stores eax,
+// edx (where a function returns 64 bits: an 8-byte value there is found at offset 0), ecx, then xmm0 to xmm7 from
+// offset 16.
+#if defined(TEST_HASH_RESIDUE) && (defined(__x86_64__) || defined(__i386__)) && defined(__ELF__) &&                \
+    defined(OPQC_STACK_BURN_REGS)
 #define TEST_HASH_REGISTERS 1
 } // namespace
 extern "C" {
-__attribute__((visibility("hidden"))) std::uint64_t test_hash_regs[9 + 2 * 16];
+__attribute__((visibility("hidden"), used)) std::uint64_t test_hash_regs[9 + 2 * 16];
 void test_hash_capture_regs();
 void test_hash_clear_regs();
 }
+#if defined(__x86_64__)
 __asm__(".text\n"
         ".p2align 4\n"
         ".globl test_hash_capture_regs\n"
@@ -580,6 +588,48 @@ __asm__(".text\n"
         "  pxor %xmm12, %xmm12\n  pxor %xmm13, %xmm13\n  pxor %xmm14, %xmm14\n  pxor %xmm15, %xmm15\n"
         "  ret\n"
         ".size test_hash_clear_regs, .-test_hash_clear_regs\n");
+#else
+__asm__(".text\n"
+        ".p2align 4\n"
+        ".globl test_hash_capture_regs\n"
+        ".hidden test_hash_capture_regs\n"
+        ".type test_hash_capture_regs, @function\n"
+        "test_hash_capture_regs:\n"
+        "  pushl %eax\n"
+        "  pushl %ecx\n"
+        "  call 1f\n"
+        "1:\n"
+        "  popl %ecx\n"
+        "2:\n"
+        "  addl $_GLOBAL_OFFSET_TABLE_+(2b-1b), %ecx\n"
+        "  leal test_hash_regs@GOTOFF(%ecx), %ecx\n"
+        "  movl %edx, 4(%ecx)\n"
+        "  movl 4(%esp), %edx\n"
+        "  movl %edx, 0(%ecx)\n"
+        "  movl 0(%esp), %edx\n"
+        "  movl %edx, 8(%ecx)\n"
+        "  movdqu %xmm0, 16(%ecx)\n"
+        "  movdqu %xmm1, 32(%ecx)\n"
+        "  movdqu %xmm2, 48(%ecx)\n"
+        "  movdqu %xmm3, 64(%ecx)\n"
+        "  movdqu %xmm4, 80(%ecx)\n"
+        "  movdqu %xmm5, 96(%ecx)\n"
+        "  movdqu %xmm6, 112(%ecx)\n"
+        "  movdqu %xmm7, 128(%ecx)\n"
+        "  addl $8, %esp\n"
+        "  ret\n"
+        ".size test_hash_capture_regs, .-test_hash_capture_regs\n"
+        ".p2align 4\n"
+        ".globl test_hash_clear_regs\n"
+        ".hidden test_hash_clear_regs\n"
+        ".type test_hash_clear_regs, @function\n"
+        "test_hash_clear_regs:\n"
+        "  xorl %eax, %eax\n  xorl %ecx, %ecx\n  xorl %edx, %edx\n"
+        "  pxor %xmm0, %xmm0\n  pxor %xmm1, %xmm1\n  pxor %xmm2, %xmm2\n  pxor %xmm3, %xmm3\n"
+        "  pxor %xmm4, %xmm4\n  pxor %xmm5, %xmm5\n  pxor %xmm6, %xmm6\n  pxor %xmm7, %xmm7\n"
+        "  ret\n"
+        ".size test_hash_clear_regs, .-test_hash_clear_regs\n");
+#endif
 namespace {
 #endif
 
@@ -820,10 +870,11 @@ __attribute__((noinline)) TEST_HASH_NO_CANARY void op_sha512_last_call() {
     sink = static_cast<std::uint8_t>(frame[k]);
     opqc_sha512(output.data(), secret.data(), secret.size());
 }
-// PH(M) of HashML-DSA and HashSLH-DSA with the SHA-3 functions: the sponge's state is prehash's to destroy,
-// Keccak-f's frames Core's
+// PH(M) of HashML-DSA and HashSLH-DSA, computed with Core's one-shot functions
 __attribute__((noinline)) void op_prehash_sha3_256() { openpqc::prehash(output, openpqc::PreHash::SHA3_256, secret); }
 __attribute__((noinline)) void op_prehash_shake256() { openpqc::prehash(output, openpqc::PreHash::SHAKE256, secret); }
+__attribute__((noinline)) void op_prehash_sha2_256() { openpqc::prehash(output, openpqc::PreHash::SHA2_256, secret); }
+__attribute__((noinline)) void op_prehash_sha2_512() { openpqc::prehash(output, openpqc::PreHash::SHA2_512, secret); }
 
 // The positive controls. The arrays' addresses go into empty assembler statements that may read them, so that
 // each is one array in memory in the frame.
@@ -865,7 +916,8 @@ __attribute__((noinline)) void leak_sha256_schedule() {
 
 #if defined(TEST_HASH_REGISTERS)
 // How many of the values the captured registers hold (their low `width` bytes, at offsets that are multiples of
-// `align` within each register)
+// `align` within each register; reg_align: 8 on x86-64, 4 on 32-bit x86, where a 64-bit value can be in edx:eax)
+constexpr unsigned reg_align = sizeof(void*) == 8 ? 8 : 4;
 std::size_t register_hits(const std::vector<std::uint64_t>& values, unsigned width, unsigned align) {
     std::uint8_t regs[sizeof test_hash_regs];
     std::memcpy(regs, test_hash_regs, sizeof regs);
@@ -891,8 +943,8 @@ std::size_t register_hits(const std::vector<std::uint64_t>& values, unsigned wid
 std::uint64_t reg_state[OPQC_KECCAK_LANES], reg_input[OPQC_KECCAK_LANES];
 std::uint64_t reg_H[8], reg_W[16], planted[2];
 __attribute__((noinline)) std::uint64_t leave_in_registers() {
-    const std::uint64_t a = planted[0], b = planted[1];
-    __asm__ volatile("movq %0, %%xmm3" : : "r"(b) : "xmm3");
+    const std::uint64_t a = planted[0];
+    __asm__ volatile("movq %0, %%xmm3" : : "m"(planted[1]) : "xmm3");
     return a;
 }
 __attribute__((noinline)) void regs_after_planted() {
@@ -1014,6 +1066,8 @@ void test_residue() {
         {"opqc_sha512 at the end of a large frame", op_sha512_last_call, nullptr, sha512_hits, false},
         {"openpqc::prehash (SHA3-256)", op_prehash_sha3_256, &sha3_256, nullptr, false},
         {"openpqc::prehash (SHAKE256)", op_prehash_shake256, &shake_256, nullptr, false},
+        {"openpqc::prehash (SHA2-256)", op_prehash_sha2_256, nullptr, sha256_hits, false},
+        {"openpqc::prehash (SHA2-512)", op_prehash_sha2_512, nullptr, sha512_hits, false},
     };
     for (const auto& o : ops) {
 #if defined(TEST_HASH_UBSAN)
@@ -1034,8 +1088,9 @@ void test_registers() {
     const KeccakValues v = keccak_values(OPQC_SHA3_256_RATE, OPQC_SHA3_SUFFIX, secret);
     keccak_input(reg_input, OPQC_SHA3_256_RATE, OPQC_SHA3_SUFFIX, secret);
     const auto keccak_found = [&v]() {
-        return register_hits(v.output, 8, 8) + register_hits(v.B, 8, 8) + register_hits(v.C, 8, 8) +
-               register_hits(v.D, 8, 8) + register_hits(v.theta, 8, 8);
+        return register_hits(v.output, 8, reg_align) + register_hits(v.B, 8, reg_align) +
+               register_hits(v.C, 8, reg_align) + register_hits(v.D, 8, reg_align) +
+               register_hits(v.theta, 8, reg_align);
     };
     // SHA-512 of the secret (one block): its schedule words, the working variables after the last round
     // (H(1) - H(0)) and the 8-byte pieces of the message
@@ -1055,13 +1110,13 @@ void test_registers() {
     for (unsigned t = 0; t < 80; t++)
         if (t < 4 || t >= 16) sha512_values.push_back(W[t]);
     for (unsigned i = 0; i < 8; i++) sha512_values.push_back(H[i] - opqc_sha512_H0[i]);
-    const auto sha512_found = [&sha512_values]() { return register_hits(sha512_values, 8, 8); };
+    const auto sha512_found = [&sha512_values]() { return register_hits(sha512_values, 8, reg_align); };
 
     // the control: two values left in registers are found
     planted[0] = v.B[3];
     planted[1] = v.output[7];
     regs_after_planted();
-    CHECK(register_hits({v.B[3]}, 8, 8) == 1 && register_hits({v.output[7]}, 8, 8) == 1);
+    CHECK(register_hits({v.B[3]}, 8, reg_align) == 1 && register_hits({v.output[7]}, 8, reg_align) == 1);
     // what the computations leave without the clearing, in this build
     std::memcpy(reg_state, reg_input, sizeof reg_state);
     regs_after_rounds_uncleared();
@@ -1165,7 +1220,8 @@ int main() {
 #if defined(TEST_HASH_REGISTERS)
     test_registers();
 #else
-    std::printf("registers: not checked (x86-64 with a compiler that has zero_call_used_regs only)\n");
+    std::printf("registers: not checked (x86-64 and 32-bit x86, ELF, with a compiler that has zero_call_used_regs "
+                "only)\n");
 #endif
 #else
     std::printf("residue and depths: not checked (AddressSanitizer, or a compiler other than GCC and Clang)\n");

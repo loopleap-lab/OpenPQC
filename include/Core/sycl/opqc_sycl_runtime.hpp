@@ -22,8 +22,9 @@ namespace openpqc::gpu {
 std::vector<sycl::device> all_devices();
 
 // The device with index `index` of all_devices(); for -1, the device that the environment
-// variable OPENPQC_SYCL_DEVICE=<index> names, or else SYCL's default device. Returns false
-// if the index is out of range.
+// variable OPENPQC_SYCL_DEVICE=<index> names (decimal digits only), or SYCL's default device
+// if the variable is unset or empty. Returns false if the index is out of range, below -1, or
+// the variable holds anything other than a decimal index of at most INT_MAX.
 bool select_device(int index, sycl::device& out);
 
 // f() with every exception turned into the result -2

@@ -15,8 +15,13 @@
 #   mlkemNNN_rng_fail         behaviour when randombytes() fails
 #   mlkem_acvp                NIST ACVP vectors        (downloads them; label "network")
 #   mlkem_wycheproof          Wycheproof vectors       (downloads them; label "network")
+#                             both through pinned_vectors.py: files pinned by SHA-256, every
+#                             run of the driver checked (a crash is not a rejection), the
+#                             cases counted
 #   mlkemNNN_ct               test_mlkem under valgrind: no secret-dependent branches or
 #                             memory indices (only if valgrind is installed)
+#   mlkemNNN_O1_ct, _O2_ct, _O3_ct, _Os_ct
+#                             the same with the library compiled at these levels (label slow)
 #   reference_mlkemNNN_unit   mlkem-native's unit tests of its internals
 #   reference_mlkemNNN_alloc  mlkem-native's custom-allocator tests
 #
@@ -35,9 +40,22 @@
 #                             no secret intermediate values left on the stack, without and
 #                             with the pair-wise consistency test, and with the library
 #                             compiled at other optimization levels (Linux)
+#   mlkem_stack_noburn, mlkem_stack_noburn_pct
+#                             the same search against the library built without the stack burn, so
+#                             that the named wipes and Poly's destructor are tested on their own (Linux)
+#   mlkem_thread_stack, mlkem_thread_stack_pct
+#                             the stack each function needs, and on a stack that is too small a fault
+#                             at the guard page, never a write below it (Linux, threads)
+#   mlkem_fresh, mlkem_fresh_control
+#                             keypair and enc draw fresh random values for every call
+#   mlkem_acvp_control_info, mlkem_wycheproof_control_crash, _sanitizer
+#                             positive controls of pinned_vectors.py (label "network")
 #
 # The ACVP and Wycheproof clients (unmodified) look for the programs in
-# test/build/mlkemNNN/bin relative to their working directory, run/<target>.
+# test/build/mlkemNNN/bin relative to their working directory, run/<target>. They
+# run through pinned_vectors.py (OpenPQC's; scripts/vendor_mlkem_native.py rewrites
+# acvp/ and wycheproof/), which downloads the pinned vector files once into
+# vector-data/ of this directory, shared by both targets.
 
 find_package(Python3 COMPONENTS Interpreter)
 find_program(OPENPQC_VALGRIND valgrind)
@@ -45,6 +63,7 @@ find_path(OPENPQC_VALGRIND_INCLUDE_DIR valgrind/memcheck.h)
 
 set(_src ${CMAKE_CURRENT_SOURCE_DIR})
 set(_run ${CMAKE_CURRENT_BINARY_DIR}/run)
+set(_vectors ${CMAKE_CURRENT_BINARY_DIR}/vector-data)
 
 set(OPENPQC_BENCH_CYCLES "PERF" CACHE STRING
     "Cycle counter for the ML-KEM benchmarks: NO, PERF, PMU or MAC")
@@ -121,46 +140,98 @@ foreach(target openpqc reference)
         endif()
     endforeach()
     if(Python3_Interpreter_FOUND)
-        add_test(NAME ${prefix}mlkem_acvp
-                 COMMAND ${Python3_EXECUTABLE} ${_src}/acvp/acvp_client.py
-                 WORKING_DIRECTORY ${_run}/${target})
-        add_test(NAME ${prefix}mlkem_wycheproof
-                 COMMAND ${Python3_EXECUTABLE} ${_src}/wycheproof/wycheproof_client.py
-                 WORKING_DIRECTORY ${_run}/${target})
-        set_tests_properties(${prefix}mlkem_acvp ${prefix}mlkem_wycheproof PROPERTIES LABELS network)
+        foreach(kind acvp wycheproof)
+            add_test(NAME ${prefix}mlkem_${kind}
+                     COMMAND ${Python3_EXECUTABLE} ${_src}/pinned_vectors.py ${kind}
+                             --client ${_src}/${kind}/${kind}_client.py --cache ${_vectors}
+                     WORKING_DIRECTORY ${_run}/${target})
+        endforeach()
+        set_tests_properties(${prefix}mlkem_acvp ${prefix}mlkem_wycheproof PROPERTIES LABELS network
+                             RESOURCE_LOCK mlkem_vector_data)
     endif()
 endforeach()
+
+# positive controls of pinned_vectors.py: the drivers of the openpqc target run through a stand-in that
+# breaks them, and the test passes only if pinned_vectors.py reports the break (label "network": they
+# need the pinned files)
+#   mlkem_acvp_control_info             acvp_mlkemNNN --info lists keyGen only: the client runs 75 of
+#                                       the 435 cases and would say "ALL GOOD!"
+#   mlkem_wycheproof_control_crash      a rejected vector kills the driver with SIGSEGV, which the client
+#                                       alone counts as a rejection
+#   mlkem_wycheproof_control_sanitizer  a rejected vector ends in an AddressSanitizer report and exit
+#                                       status 1, which the client alone counts as a rejection
+if(Python3_Interpreter_FOUND)
+    foreach(control acvp/info wycheproof/crash wycheproof/sanitizer)
+        string(REPLACE "/" ";" control ${control})
+        list(GET control 0 kind)
+        list(GET control 1 inject)
+        add_test(NAME mlkem_${kind}_control_${inject}
+                 COMMAND ${Python3_EXECUTABLE} ${_src}/pinned_vectors.py ${kind}
+                         --client ${_src}/${kind}/${kind}_client.py --cache ${_vectors} --inject ${inject}
+                 WORKING_DIRECTORY ${_run}/openpqc)
+        set_tests_properties(mlkem_${kind}_control_${inject} PROPERTIES LABELS network
+                             RESOURCE_LOCK mlkem_vector_data)
+    endforeach()
+endif()
 
 # --- constant-time test (valgrind) ----------------------------------------------
 # test_mlkem marks the random coins as secret (MLK_CT_TESTING_SECRET); the library,
 # built with OPQC_CT_TESTING, declassifies what is public by design. valgrind
 # then fails on any branch or memory index that depends on secret data.
+#   mlkemNNN_ct      the library compiled as the build compiles it
+#   mlkemNNN_O1_ct, _O2_ct, _O3_ct, _Os_ct  (label slow)
+#                    the library compiled at -O1, -O2, -O3 and -Os whatever the build
+#                    type: whether an optimizer turns a mask of the constant-time code
+#                    back into a branch or a secret address depends on the level (Clang
+#                    did so in Decaps at every level from -O1 up, which a Debug build, -O0,
+#                    never sees); not in a sanitizer build, whose programs valgrind cannot run
+# Objects and programs are compiled without the x86-64 extensions that valgrind cannot
+# decode (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt).
 if(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
-    add_library(openpqc_mlkem_ct_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
-    target_include_directories(openpqc_mlkem_ct_objects PRIVATE ${PROJECT_SOURCE_DIR}/include
-                               ${OPENPQC_VALGRIND_INCLUDE_DIR})
-    target_compile_definitions(openpqc_mlkem_ct_objects PRIVATE OPQC_CT_TESTING)
-    target_compile_features(openpqc_mlkem_ct_objects PRIVATE cxx_std_20)
-    add_library(openpqc_mlkem_ct STATIC $<TARGET_OBJECTS:openpqc_mlkem_ct_objects>)
-    target_link_libraries(openpqc_mlkem_ct PUBLIC openpqc_core_testrng)
-    set_target_properties(openpqc_mlkem_ct PROPERTIES LINKER_LANGUAGE CXX)
     # valgrind needs the symbol table of the dynamic loader, which some
     # distributions (e.g. Arch Linux) strip; static executables do not use it.
     include(CheckLinkerFlag)
     check_linker_flag(CXX -static OPENPQC_HAVE_STATIC_LINK)
-    foreach(level 512 768 1024)
-        mlkem_test(openpqc test_mlkem ${level} SUFFIX _ct LIBRARY openpqc_mlkem_ct
-                   SOURCES ${_src}/src/test_mlkem.c DEFINITIONS MLK_CONFIG_CT_TESTING_ENABLED)
-        target_include_directories(test_mlkem${level}_ct PRIVATE ${OPENPQC_VALGRIND_INCLUDE_DIR})
-        if(OPENPQC_HAVE_STATIC_LINK)
-            target_link_options(test_mlkem${level}_ct PRIVATE -static)
+    set(_ct_levels "")   # the fixed levels; "" is the build's own
+    if(NOT (CMAKE_C_FLAGS MATCHES "-fsanitize" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize"))
+        set(_ct_levels O1 O2 O3 Os)
+    endif()
+    foreach(opt "" ${_ct_levels})
+        if(opt STREQUAL "")
+            set(_lib openpqc_mlkem_ct)
+            set(_suffix _ct)
+        else()
+            set(_lib openpqc_mlkem_ct_${opt})
+            set(_suffix _${opt}_ct)
         endif()
-        add_test(NAME mlkem${level}_ct
-                 COMMAND ${OPENPQC_VALGRIND} --error-exitcode=1 --track-origins=yes
-                         $<TARGET_FILE:test_mlkem${level}_ct>)
+        add_library(${_lib}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
+        target_include_directories(${_lib}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include
+                                   ${OPENPQC_VALGRIND_INCLUDE_DIR})
+        target_compile_definitions(${_lib}_objects PRIVATE OPQC_CT_TESTING)
+        target_compile_features(${_lib}_objects PRIVATE cxx_std_20)
+        # a target's options come after those of the build type, so -${opt} wins
+        target_compile_options(${_lib}_objects PRIVATE ${OPENPQC_CT_ISA_FLAGS} $<$<BOOL:${opt}>:-${opt}>)
+        add_library(${_lib} STATIC $<TARGET_OBJECTS:${_lib}_objects>)
+        target_link_libraries(${_lib} PUBLIC openpqc_core_testrng)
+        set_target_properties(${_lib} PROPERTIES LINKER_LANGUAGE CXX)
+        foreach(level 512 768 1024)
+            mlkem_test(openpqc test_mlkem ${level} SUFFIX ${_suffix} LIBRARY ${_lib}
+                       SOURCES ${_src}/src/test_mlkem.c DEFINITIONS MLK_CONFIG_CT_TESTING_ENABLED)
+            target_include_directories(test_mlkem${level}${_suffix} PRIVATE ${OPENPQC_VALGRIND_INCLUDE_DIR})
+            target_compile_options(test_mlkem${level}${_suffix} PRIVATE ${OPENPQC_CT_ISA_FLAGS})
+            if(OPENPQC_HAVE_STATIC_LINK)
+                target_link_options(test_mlkem${level}${_suffix} PRIVATE -static)
+            endif()
+            add_test(NAME mlkem${level}${_suffix}
+                     COMMAND ${OPENPQC_VALGRIND} --error-exitcode=1 --track-origins=yes
+                             $<TARGET_FILE:test_mlkem${level}${_suffix}>)
+            if(NOT opt STREQUAL "")
+                set_tests_properties(mlkem${level}${_suffix} PROPERTIES LABELS slow TIMEOUT 1800)
+            endif()
+        endforeach()
     endforeach()
 else()
-    message(STATUS "valgrind not found: constant-time tests (mlkemNNN_ct) disabled")
+    message(STATUS "valgrind or valgrind/memcheck.h not found: constant-time tests (mlkemNNN_ct) disabled")
 endif()
 
 # --- tests of mlkem-native internals (reference only) --------------------------
@@ -231,6 +302,18 @@ target_link_libraries(test_mlkem_pct_odr PRIVATE openpqc_core_testrng openpqc_st
 set_target_properties(test_mlkem_pct_odr PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
                                                     C_EXTENSIONS OFF)
 add_test(NAME mlkem_pct_odr COMMAND test_mlkem_pct_odr)
+
+#   mlkem_pct_library  in a build with the CMake option OPENPQC_MLKEM_KEYGEN_PCT (CMakeLists.txt), the test of
+#                    mlkem_pct against the library as built (openpqc_mlkem_testrng): it fails unless the option
+#                    has put the pair-wise consistency test into the library's KeyGen (keypair_derand must draw
+#                    the test's m)
+if(OPENPQC_MLKEM_KEYGEN_PCT)
+    add_executable(test_mlkem_pct_library test_mlkem_pct.c)
+    target_link_libraries(test_mlkem_pct_library PRIVATE openpqc_mlkem_testrng openpqc_strict_warnings)
+    set_target_properties(test_mlkem_pct_library PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                            C_EXTENSIONS OFF)
+    add_test(NAME mlkem_pct_library COMMAND test_mlkem_pct_library)
+endif()
 
 #   mlkemNNN_pct_func, mlkemNNN_pct_kat, mlkemNNN_pct_rng_fail, mlkem_differential_pct
 #                    mlkem-native's functional, known-answer and RNG-failure tests, and the differential
@@ -305,4 +388,76 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
         set_target_properties(test_mlkem_stack_${opt} PROPERTIES LINKER_LANGUAGE CXX)
         add_test(NAME mlkem_stack_${opt} COMMAND test_mlkem_stack_${opt})
     endforeach()
+
+    #   mlkem_stack_noburn, mlkem_stack_noburn_pct
+    #                 check 1 of mlkem_stack against a copy of the library built without the stack burn
+    #                 (OPENPQC_MLKEM_TEST_NO_STACK_BURN, scheme/ml_kem.hpp; tests only), and of the library
+    #                 with the pair-wise consistency test: the burn overwrites every frame in which the named
+    #                 wipes (ZeroizeOnExit) and the destructor of Poly run, so with it in place no test sees
+    #                 whether they still destroy what they guard. Check 2 is left out: what it sees, only the
+    #                 burn removes. As a control, no call may leave a byte that is not zero as deep as the burn
+    #                 would reach, so that the test cannot pass against a library that burns the stack after all.
+    foreach(variant noburn noburn_pct)
+        add_library(openpqc_mlkem_${variant}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
+        target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_compile_definitions(openpqc_mlkem_${variant}_objects PRIVATE OPENPQC_MLKEM_TEST_NO_STACK_BURN)
+        target_compile_features(openpqc_mlkem_${variant}_objects PRIVATE cxx_std_20)
+        target_link_libraries(openpqc_mlkem_${variant}_objects PRIVATE openpqc_strict_warnings)
+        add_executable(test_mlkem_stack_${variant} test_mlkem_stack.cpp
+                                                   $<TARGET_OBJECTS:openpqc_mlkem_${variant}_objects>)
+        target_compile_definitions(test_mlkem_stack_${variant} PRIVATE OPENPQC_TEST_NO_STACK_BURN)
+        target_include_directories(test_mlkem_stack_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/tests
+                                                                       ${PROJECT_SOURCE_DIR}/include)
+        target_link_libraries(test_mlkem_stack_${variant} PRIVATE openpqc_core_testrng openpqc_strict_warnings)
+        target_compile_features(test_mlkem_stack_${variant} PRIVATE cxx_std_20)
+        set_target_properties(test_mlkem_stack_${variant} PROPERTIES LINKER_LANGUAGE CXX)
+        add_test(NAME mlkem_stack_${variant} COMMAND test_mlkem_stack_${variant})
+    endforeach()
+    target_compile_definitions(openpqc_mlkem_noburn_pct_objects PRIVATE OPENPQC_MLKEM_KEYGEN_PCT)
+    target_compile_definitions(test_mlkem_stack_noburn_pct PRIVATE OPENPQC_TEST_PCT)
+
+    #   mlkem_thread_stack   every function on a thread whose stack leaves the room that openpqc_mlkem.h
+    #                        documents below the caller, the stack each one uses (compared with it), and
+    #                        stacks that are too small, on which KeyGen, Encaps and Decaps must end in a
+    #                        fault at the guard page, never write below it (with -fstack-clash-protection,
+    #                        cmake/OpenPQCWarnings.cmake); mlkem_thread_stack_pct the same for the library
+    #                        built with the pair-wise consistency test. Skipped (77) under AddressSanitizer.
+    find_package(Threads)
+    if(Threads_FOUND)
+        add_executable(test_mlkem_thread_stack test_mlkem_thread_stack.cpp)
+        target_link_libraries(test_mlkem_thread_stack PRIVATE openpqc_mlkem openpqc_strict_warnings Threads::Threads)
+        add_executable(test_mlkem_thread_stack_pct test_mlkem_thread_stack.cpp
+                       $<TARGET_OBJECTS:openpqc_mlkem_pct_objects>)
+        target_include_directories(test_mlkem_thread_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_link_libraries(test_mlkem_thread_stack_pct PRIVATE openpqc_core openpqc_strict_warnings
+                                                                  Threads::Threads)
+        target_compile_definitions(test_mlkem_thread_stack_pct PRIVATE OPENPQC_TEST_PCT)
+        set_target_properties(test_mlkem_thread_stack_pct PROPERTIES LINKER_LANGUAGE CXX)
+        foreach(name test_mlkem_thread_stack test_mlkem_thread_stack_pct)
+            target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/tests)
+            target_compile_features(${name} PRIVATE cxx_std_20)
+            if(OPENPQC_CXX_HAS_STACK_CLASH_PROTECTION)
+                target_compile_definitions(${name} PRIVATE OPENPQC_TEST_STACK_CLASH_PROTECTION)
+            endif()
+        endforeach()
+        add_test(NAME mlkem_thread_stack COMMAND test_mlkem_thread_stack)
+        add_test(NAME mlkem_thread_stack_pct COMMAND test_mlkem_thread_stack_pct)
+        set_tests_properties(mlkem_thread_stack mlkem_thread_stack_pct PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+    endif()
 endif()
+
+#   mlkem_fresh          keypair and enc of the library as built (randomness from the operating system)
+#                        draw fresh random values for every call (FIPS 203, Section 3.3): no ek, dk, z,
+#                        ciphertext or shared secret repeats, and none equals the output of all-zero coins
+#   mlkem_fresh_control  the same checks against openpqc_mlkem_testrng and a randombytes() that gives the
+#                        same bytes on every call: they must report the repeats
+foreach(variant fresh fresh_control)
+    add_executable(test_mlkem_${variant} test_mlkem_fresh.c)
+    target_link_libraries(test_mlkem_${variant} PRIVATE openpqc_strict_warnings)
+    set_target_properties(test_mlkem_${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                           C_EXTENSIONS OFF)
+    add_test(NAME mlkem_${variant} COMMAND test_mlkem_${variant})
+endforeach()
+target_link_libraries(test_mlkem_fresh PRIVATE openpqc_mlkem)
+target_link_libraries(test_mlkem_fresh_control PRIVATE openpqc_mlkem_testrng)
+target_compile_definitions(test_mlkem_fresh_control PRIVATE OPENPQC_FRESH_CONTROL)

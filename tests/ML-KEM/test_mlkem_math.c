@@ -121,14 +121,14 @@ static void test_encode(void)
             uint16_t F[MLKEM_N], G[MLKEM_N];
             uint8_t B[32 * 12];
             for (unsigned i = 0; i < MLKEM_N; i++) {
-                F[i] = d == 12 ? rng_q() : (uint16_t)(rng64() & ((1u << d) - 1));
+                F[i] = (uint16_t)(d == 12 ? rng_q() : (rng64() & ((1u << d) - 1)));
             }
             mlkem_byte_encode(B, F, d);
             /* Algorithm 5 then BitsToBytes: bit i*d + j of the string is bit j of F[i] */
             for (unsigned i = 0; i < MLKEM_N; i++) {
                 for (unsigned j = 0; j < d; j++) {
                     unsigned k = i * d + j;
-                    CHECK(((B[k / 8] >> (k % 8)) & 1u) == ((F[i] >> j) & 1u));
+                    CHECK((((unsigned)B[k / 8] >> (k % 8)) & 1u) == (((unsigned)F[i] >> j) & 1u));
                 }
             }
             mlkem_byte_decode(G, B, d);
@@ -285,7 +285,7 @@ static void test_sampling(void)
             /* Algorithm 8 with b = BytesToBits(B) */
             uint8_t bits[8 * 64 * 3];
             for (unsigned i = 0; i < 64 * eta; i++) {
-                for (unsigned j = 0; j < 8; j++) bits[8 * i + j] = (uint8_t)((B[i] >> j) & 1u);
+                for (unsigned j = 0; j < 8; j++) bits[8 * i + j] = (uint8_t)(((unsigned)B[i] >> j) & 1u);
             }
             for (unsigned i = 0; i < MLKEM_N; i++) {
                 int x = 0, y = 0;

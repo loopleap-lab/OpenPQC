@@ -75,7 +75,11 @@
 #if __has_attribute(zero_call_used_regs)
 #define OPQC_STACK_BURN_REGS 1
 #define OPQC_STACK_FRAME_REGS __attribute__((zero_call_used_regs("all")))
-#define OPQC_STACK_FRAME_GPRS __attribute__((zero_call_used_regs("all-gpr")))
+#if defined(__i386__)
+#define OPQC_STACK_ROUNDS_REGS __attribute__((zero_call_used_regs("all")))
+#else
+#define OPQC_STACK_ROUNDS_REGS __attribute__((zero_call_used_regs("all-gpr")))
+#endif
 #endif
 #endif
 #elif defined(_MSC_VER)
@@ -84,14 +88,14 @@
 #endif
 #if !defined(OPQC_STACK_BURN_REGS)
 #define OPQC_STACK_FRAME_REGS
-#define OPQC_STACK_FRAME_GPRS
+#define OPQC_STACK_ROUNDS_REGS
 #endif
 #if defined(OPQC_STACK_BURN)
 #define OPQC_STACK_FRAME OPQC_STACK_BURN_NOINLINE OPQC_STACK_FRAME_REGS
-#define OPQC_STACK_FRAME_GPR OPQC_STACK_BURN_NOINLINE OPQC_STACK_FRAME_GPRS
+#define OPQC_STACK_FRAME_ROUNDS OPQC_STACK_BURN_NOINLINE OPQC_STACK_ROUNDS_REGS
 #else
 #define OPQC_STACK_FRAME OPQC_INLINE
-#define OPQC_STACK_FRAME_GPR OPQC_INLINE
+#define OPQC_STACK_FRAME_ROUNDS OPQC_INLINE
 #endif
 #if !defined(OPQC_STACK_BURN_DEVICE) && !defined(OPQC_STACK_BURN_ASM)
 #include <string.h>
@@ -109,7 +113,7 @@
 #define OPQC_STACK_BURN_BYTES 3072
 #define OPQC_STACK_BURN_HASH_BYTES 3968
 #elif defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 4
-#define OPQC_STACK_BURN_BYTES 1024
+#define OPQC_STACK_BURN_BYTES 2048
 #define OPQC_STACK_BURN_HASH_BYTES 3072
 #else
 #define OPQC_STACK_BURN_BYTES 1024
@@ -669,8 +673,9 @@ OPQC_INLINE int opqc_sha512_finalize(opqc_sha512_state *s, uint8_t *out, unsigne
  * their own, and the stack where it and the compression functions' frames were
  * is cleared after they return (OPQC_BURN_STACK_HASH, the size for one-shot
  * hashes: on i686, GCC 16 at -O3 keeps the compression out of this frame and
- * the three frames reach 1.25 KiB below the caller), with the message schedule
- * and whatever the compiler spilled. In device code only the state is cleared.
+ * the three frames reach 1,208 bytes below the caller), with the message
+ * schedule and whatever the compiler spilled. In device code only the state is
+ * cleared.
  */
 OPQC_STACK_FRAME void opqc_sha256_hash(uint8_t *out, unsigned outlen, const uint32_t iv[8],
                                        const uint8_t *in, size_t inlen)

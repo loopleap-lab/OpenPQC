@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // prehash.hpp  --  the pre-hash functions of HashML-DSA (FIPS 204, Section 5.4) and HashSLH-DSA
 //                  (FIPS 205, Section 10.2.2)
 //
@@ -47,7 +50,6 @@
 
 #include "opqc_sha2.h"
 #include "opqc_sha3.h"
-#include "zeroize.hpp"
 
 namespace openpqc {
 
@@ -93,46 +95,29 @@ constexpr std::array<std::uint8_t, 11> prehash_oid(PreHash ph) {
 }
 
 // PH(M) into the first prehash_bytes(ph) bytes of out (FIPS 204, Algorithm 4, lines 10-22 and Algorithm 5,
-// lines 5-17; FIPS 205, Algorithm 23, lines 8-23 and Algorithm 25, lines 4-19). The hash state is destroyed
-// here (FIPS 204, Section 3.6.3; FIPS 205, Section 3.1): it holds the last block of M, and a SHA-3 or SHAKE
-// state holds PH(M) itself. With Core's one-shot functions, whose states are not destroyed, the stack burn
-// of SLH-DSA's signing did not remove every copy: in one build, tests/SLH-DSA/test_slhdsa_stack found
-// PH(M) of SHA3-224, -256, -384, -512 and SHAKE128 on the stack after HashSLH-DSA signing.
+// lines 5-17; FIPS 205, Algorithm 23, lines 8-23 and Algorithm 25, lines 4-19), with Core's one-shot functions.
+// What the computation holds is destroyed (FIPS 204, Section 3.6.3; FIPS 205, Section 3.1): the hash state holds
+// the last block of M, a SHA-3 or SHAKE state PH(M) itself, and SHA-2's message schedule gives the last block of M
+// back. The one-shot functions destroy their state and on CPUs clear the stack their computation used
+// (Core/opqc_sha2.h, Core/opqc_sha3.h). Hashing here with the incremental functions and states of its own, destroyed
+// here, left the message schedule of SHA-2's last compression on the stack below this function.
 inline void prehash(std::span<std::uint8_t, max_prehash_bytes> out, PreHash ph, std::span<const std::uint8_t> M) {
     std::uint8_t* d = out.data();
-    opqc_sha256_state s256;
-    opqc_sha512_state s512;
-    opqc_sponge sponge;
-    ZeroizeOnExit wipe{s256, s512, sponge};
-    const auto sha256 = [&](void (*init)(opqc_sha256_state*), unsigned len) {
-        init(&s256);
-        opqc_sha256_absorb(&s256, M.data(), M.size());
-        opqc_sha256_finalize(&s256, d, len);
-    };
-    const auto sha512 = [&](void (*init)(opqc_sha512_state*), unsigned len) {
-        init(&s512);
-        opqc_sha512_absorb(&s512, M.data(), M.size());
-        opqc_sha512_finalize(&s512, d, len);
-    };
-    const auto keccak = [&](unsigned rate, std::uint8_t suffix, std::size_t len) {
-        opqc_sponge_init(&sponge, rate);
-        opqc_sponge_absorb(&sponge, M.data(), M.size());
-        opqc_sponge_finalize(&sponge, suffix);
-        opqc_sponge_squeeze(&sponge, d, len);
-    };
+    const std::uint8_t* m = M.data();
+    const std::size_t len = M.size();
     switch (ph) {
-        case PreHash::SHA2_224: sha256(opqc_sha224_init, OPQC_SHA224_BYTES); break;
-        case PreHash::SHA2_256: sha256(opqc_sha256_init, OPQC_SHA256_BYTES); break;
-        case PreHash::SHA2_384: sha512(opqc_sha384_init, OPQC_SHA384_BYTES); break;
-        case PreHash::SHA2_512: sha512(opqc_sha512_init, OPQC_SHA512_BYTES); break;
-        case PreHash::SHA2_512_224: sha512(opqc_sha512_224_init, OPQC_SHA512_224_BYTES); break;
-        case PreHash::SHA2_512_256: sha512(opqc_sha512_256_init, OPQC_SHA512_256_BYTES); break;
-        case PreHash::SHA3_224: keccak(OPQC_SHA3_224_RATE, OPQC_SHA3_SUFFIX, 28); break;
-        case PreHash::SHA3_256: keccak(OPQC_SHA3_256_RATE, OPQC_SHA3_SUFFIX, 32); break;
-        case PreHash::SHA3_384: keccak(OPQC_SHA3_384_RATE, OPQC_SHA3_SUFFIX, 48); break;
-        case PreHash::SHA3_512: keccak(OPQC_SHA3_512_RATE, OPQC_SHA3_SUFFIX, 64); break;
-        case PreHash::SHAKE128: keccak(OPQC_SHAKE128_RATE, OPQC_SHAKE_SUFFIX, 32); break;   // SHAKE128(M, 256)
-        case PreHash::SHAKE256: keccak(OPQC_SHAKE256_RATE, OPQC_SHAKE_SUFFIX, 64); break;   // SHAKE256(M, 512)
+        case PreHash::SHA2_224: opqc_sha224(d, m, len); break;
+        case PreHash::SHA2_256: opqc_sha256(d, m, len); break;
+        case PreHash::SHA2_384: opqc_sha384(d, m, len); break;
+        case PreHash::SHA2_512: opqc_sha512(d, m, len); break;
+        case PreHash::SHA2_512_224: opqc_sha512_224(d, m, len); break;
+        case PreHash::SHA2_512_256: opqc_sha512_256(d, m, len); break;
+        case PreHash::SHA3_224: opqc_sha3_224(d, m, len); break;
+        case PreHash::SHA3_256: opqc_sha3_256(d, m, len); break;
+        case PreHash::SHA3_384: opqc_sha3_384(d, m, len); break;
+        case PreHash::SHA3_512: opqc_sha3_512(d, m, len); break;
+        case PreHash::SHAKE128: opqc_shake128(d, 32, m, len); break;   // SHAKE128(M, 256)
+        case PreHash::SHAKE256: opqc_shake256(d, 64, m, len); break;   // SHAKE256(M, 512)
     }
 }
 

@@ -103,6 +103,16 @@ namespace {
 
 namespace dsa = openpqc::mldsa;
 
+// The reference copies its context string with memcpy (avx2/sign.c), which must not get a null
+// pointer even for zero bytes (C11 7.1.4 and 7.24.1): UndefinedBehaviorSanitizer stops the test when
+// the reference gets the data() of an empty vector, which may be null. The reference gets a valid
+// pointer for an empty input; OpenPQC gets data() as it is, so that its C API is still called with
+// null pointers for empty messages and contexts.
+const std::uint8_t* nonnull(const Bytes& b) {
+    static const std::uint8_t none = 0;
+    return b.empty() ? &none : b.data();
+}
+
 // Algorithm 7 with the check of z on line 23 reversed: returns the first attempt whose
 // z has ||z||_inf >= gamma1 - beta while all the other checks pass. Its w1 is
 // reconstructed correctly by Algorithm 8 (A z - c t1 2^d = w - c s2 + c t0 does not
@@ -358,7 +368,7 @@ void run(const Level& L, int iterations) {
                 Bytes sig2(L.sig);
                 std::size_t siglen = 0;
                 script(*r);
-                check(ref.signature(sig2.data(), &siglen, m.data(), mlen, ctx.data(), ctxlen, sk.data()) == 0 &&
+                check(ref.signature(sig2.data(), &siglen, nonnull(m), mlen, nonnull(ctx), ctxlen, sk.data()) == 0 &&
                               siglen == L.sig && sig2 == sig,
                       L.name, "signature", it);
             }
@@ -370,7 +380,7 @@ void run(const Level& L, int iterations) {
 
         // Verify: the valid signature, and tampered ones
         for (const auto& [impl, ref] : L.references) {
-            check(ref.verify(sig.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, pk.data()) == 0, L.name,
+            check(ref.verify(sig.data(), L.sig, nonnull(m), mlen, nonnull(ctx), ctxlen, pk.data()) == 0, L.name,
                   "reference verify (valid)", it);
         }
         check(L.openpqc.verify(sig.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, pk.data()) == 0, L.name,
@@ -380,8 +390,8 @@ void run(const Level& L, int iterations) {
             const int r1 = L.openpqc.verify(s.data(), slen, msg.data(), msg.size(), c.data(), c.size(), key.data());
             check(r1 == OPENPQC_MLDSA_ERR_INVALID_SIGNATURE, L.name, what, it);
             for (const auto& [impl, ref] : L.references) {
-                check(ref.verify(s.data(), slen, msg.data(), msg.size(), c.data(), c.size(), key.data()) != 0, L.name,
-                      what, it);
+                check(ref.verify(s.data(), slen, nonnull(msg), msg.size(), nonnull(c), c.size(), key.data()) != 0,
+                      L.name, what, it);
             }
         };
         {
@@ -391,7 +401,7 @@ void run(const Level& L, int iterations) {
             // only if the encoding stays canonical; compare the two libraries rather than expecting a result
             const int r1 = L.openpqc.verify(bad.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, pk.data());
             for (const auto& [impl, ref] : L.references) {
-                const int r2 = ref.verify(bad.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, pk.data());
+                const int r2 = ref.verify(bad.data(), L.sig, nonnull(m), mlen, nonnull(ctx), ctxlen, pk.data());
                 check((r1 == 0) == (r2 == 0), L.name, "verify (one bit flipped)", it);
             }
         }
@@ -474,8 +484,8 @@ void run(const Level& L, int iterations) {
                     check(L.openpqc.verify(s.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, pk.data()) == 0,
                           L.name, "verify (||z||_inf = gamma1 - beta - 1)", it);
                     for (const auto& [impl, ref] : L.references) {
-                        check(ref.verify(s.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, pk.data()) == 0, L.name,
-                              "reference verify (||z||_inf = gamma1 - beta - 1)", it);
+                        check(ref.verify(s.data(), L.sig, nonnull(m), mlen, nonnull(ctx), ctxlen, pk.data()) == 0,
+                              L.name, "reference verify (||z||_inf = gamma1 - beta - 1)", it);
                     }
                 }
             }
@@ -492,7 +502,7 @@ void run(const Level& L, int iterations) {
             for (const auto& [impl, ref] : L.references) {
                 std::size_t siglen = 0;
                 script(rnd);
-                check(ref.signature(s.data(), &siglen, m.data(), mlen, long_ctx.data(), 256, sk.data()) != 0, L.name,
+                check(ref.signature(s.data(), &siglen, nonnull(m), mlen, long_ctx.data(), 256, sk.data()) != 0, L.name,
                       "reference signature (context of 256 bytes)", it);
             }
             check(L.openpqc.verify(sig.data(), L.sig, m.data(), mlen, long_ctx.data(), 256, pk.data()) ==
@@ -507,12 +517,13 @@ void run(const Level& L, int iterations) {
             std::size_t siglen = 0;
             check(L.openpqc.sign_internal(s1.data(), mp.data(), mp.size(), rnd.data(), sk.data()) == 0, L.name,
                   "sign_internal", it);
-            check(L.internal.signature_internal(s2.data(), &siglen, mp.data(), mp.size(), nullptr, 0, rnd.data(),
-                                                sk.data()) == 0 &&
+            check(L.internal.signature_internal(s2.data(), &siglen, nonnull(mp), mp.size(), nonnull({}), 0,
+                                                rnd.data(), sk.data()) == 0 &&
                           s1 == s2,
                   L.name, "signature_internal", it);
             check(L.openpqc.verify_internal(s1.data(), L.sig, mp.data(), mp.size(), pk.data()) == 0 &&
-                          L.internal.verify_internal(s1.data(), L.sig, mp.data(), mp.size(), nullptr, 0, pk.data()) == 0,
+                          L.internal.verify_internal(s1.data(), L.sig, nonnull(mp), mp.size(), nonnull({}), 0,
+                                                     pk.data()) == 0,
                   L.name, "verify_internal", it);
         }
     }

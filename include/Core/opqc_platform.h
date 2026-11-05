@@ -39,8 +39,11 @@ void opqc_zeroize(void *p, size_t len);
  *   int randombytes(uint8_t *out, size_t outlen);   (0 on success)
  *
  * The tests use this to make the randomized APIs deterministic.
+ *
+ * The result must be checked (OPQC_MUST_CHECK): after a failure out holds
+ * zeros, not random bytes.
  */
-int opqc_randombytes(uint8_t *out, size_t len);
+OPQC_MUST_CHECK int opqc_randombytes(uint8_t *out, size_t len);
 
 OPQC_EXTERN_C_END
 

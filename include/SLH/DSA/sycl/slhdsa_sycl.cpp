@@ -119,6 +119,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -1380,6 +1381,52 @@ bool aligned(const T*... p) {
     return openpqc::gpu::aligned(openpqc::gpu::BUFFER_ALIGN, p...);
 }
 
+// Whether the device can use p, a buffer of a call: USM memory of the context's SYCL context (device, host or
+// shared memory: sycl::get_pointer_type). Anything else -- pageable host memory, memory of another SYCL context --
+// would make the device fault, or, as on Intel GPUs under Level Zero, be read as zeros, and the call would report
+// results computed from them. The runtime's answer is all there is to go on, and some pointers pass that should
+// not: AdaptiveCpp's OpenMP host device takes every pointer for memory of its own, another GPU's device memory
+// included (a kernel, or verify_any's fill of status after a failure, then ended the process with SIGSEGV);
+// DPC++'s Level Zero backend and the OpenMP host device still report freed memory as the context's
+// (AdaptiveCpp's Level Zero backend refused freed buffers); and DPC++ reports device memory that the other
+// platform of the same Intel GPU allocated (Level Zero for an OpenCL context, OpenCL for a Level Zero one) as
+// device memory of this context's device (sycl::get_pointer_device says so too), and AdaptiveCpp did the same
+// with OpenCL memory and a Level Zero context, although the kernels cannot use it.
+bool usm(const opqc_sycl_slhdsa* ctx, const void* p) noexcept {
+    if (!p) return false;
+    try {
+        return sycl::get_pointer_type(p, ctx->queue.get_context()) != sycl::usm::alloc::unknown;
+    } catch (...) {
+        return false;
+    }
+}
+
+// The last of a call's argument checks, made with the lock held once NULL pointers and alignment have been
+// checked: 0 if every buffer given is USM memory of the context (usm; nullptr stands for an optional buffer that
+// was not given, addrnd), -1 if one is not (nothing has been queued), -2 if the context has failed. The failed
+// state comes first, so that a failed context's calls return -2 whatever memory their buffers are in (a NULL or
+// unaligned buffer or a bad message argument, checked before, still gives -1; openpqc_slhdsa_sycl.h, Device
+// failures).
+int usable(opqc_sycl_slhdsa* ctx, std::initializer_list<const void*> buffers) {
+    if (ctx->check() != 0) return -2;
+    for (const void* p : buffers) {
+        if (p && !usm(ctx, p)) return -1;
+    }
+    return 0;
+}
+
+// KeyGen (Algorithm 18) of n key pairs from their seeds SK.seed || SK.prf || PK.seed, the arguments checked
+// (keypair_derand; keypair, whose seeds are its coins in the workspace)
+int keygen_checked(opqc_sycl_slhdsa* ctx, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* seeds,
+                   std::size_t n) {
+    const Lock lock(ctx->mutex);
+    return chunked(ctx, gpu::Kind::keygen, n, [&](auto p, std::size_t off, std::size_t m) {
+        using P = decltype(p);
+        using S = Sizes<P>;
+        gpu::keygen<P>(ctx->queue, ctx->ws, pk + off * S::pk, sk + off * S::sk, seeds + off * S::seed, m);
+    });
+}
+
 } // namespace
 
 extern "C" std::size_t opqc_sycl_slhdsa_workspace_bytes(int param_set, std::size_t max_batch) {
@@ -1435,7 +1482,10 @@ extern "C" int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa** out, int param_set, st
 }
 
 // Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device still accepts
-// work; a device error never ends the process here (Core/sycl/opqc_sycl_context.hpp, destroy)
+// work; a device error found here does not end the process (Core/sycl/opqc_sycl_context.hpp, destroy, and the
+// end of its Device failures, which names what it cannot catch: an error that the SYCL runtime gives to the
+// handler of the SYCL context instead of the queue's, and a failure inside the runtime itself, such as DPC++ on
+// CUDA aborting in an event's destructor after a sticky fault)
 extern "C" void opqc_sycl_slhdsa_destroy(opqc_sycl_slhdsa* ctx) { openpqc::gpu::destroy(ctx); }
 
 extern "C" const char* opqc_sycl_slhdsa_device_name(const opqc_sycl_slhdsa* ctx) {
@@ -1450,11 +1500,8 @@ extern "C" int opqc_sycl_slhdsa_keypair_derand(opqc_sycl_slhdsa* ctx, std::uint8
                                                const std::uint8_t* seeds, std::size_t n) {
     if (!ctx || !pk || !sk || !seeds || !aligned(pk, sk, seeds)) return -1;
     const Lock lock(ctx->mutex);
-    return chunked(ctx, gpu::Kind::keygen, n, [&](auto p, std::size_t off, std::size_t m) {
-        using P = decltype(p);
-        using S = Sizes<P>;
-        gpu::keygen<P>(ctx->queue, ctx->ws, pk + off * S::pk, sk + off * S::sk, seeds + off * S::seed, m);
-    });
+    const int rc = usable(ctx, {pk, sk, seeds});
+    return rc != 0 ? rc : keygen_checked(ctx, pk, sk, seeds, n);
 }
 
 namespace {
@@ -1551,17 +1598,19 @@ int sign_any(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const CallMessages& m, co
              const std::uint8_t* sk, bool one_key, std::size_t n) {
     MessageInfo info;
     if (!ctx || !sig || !sk || !check_messages(m, info) || !aligned(sig, sk, addrnd)) return -1;
-    return sign_checked(ctx, sig, m, info, addrnd, sk, one_key, n);
+    const Lock lock(ctx->mutex);
+    const int rc = usable(ctx, {sig, sk, addrnd, m.msg, m.offsets});
+    return rc != 0 ? rc : sign_checked(ctx, sig, m, info, addrnd, sk, one_key, n);
 }
 
 // Fail closed (openpqc_slhdsa_sycl.h, Status): queues the fill of the n results of a verification call with
 // OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE (Core's fill_status), also on a context that has failed, as far as the
 // device still accepts work. A status buffer that cannot be used (NULL, or not 4-byte aligned: -1) is left
-// alone. `done`: also waits for the fill, and so for the work queued before it, so that a refused or failed
-// call leaves no write into the caller's status behind it: the caller may read, reuse or free status as soon
-// as the call returns (sycl::free does not wait, and on a host device a pending fill would write into freed
-// memory). Called with the lock held. An exception fails the context, and check() then zeroizes the whole
-// workspace once.
+// alone, and so is one that is not USM memory of the context, which verify_any passes as NULL. `done`: also
+// waits for the fill, and so for the work queued before it, so that a refused or failed call leaves no write
+// into the caller's status behind it: the caller may read, reuse or free status as soon as the call returns
+// (sycl::free does not wait, and on a host device a pending fill would write into freed memory). Called with
+// the lock held. An exception fails the context, and check() then zeroizes the whole workspace once.
 int fail_closed(opqc_sycl_slhdsa* ctx, std::int32_t* status, std::size_t n, bool done) {
     int rc = openpqc::gpu::fill_status(ctx, status, std::int32_t{OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE}, n);
     if (rc == 0 && done && status && n > 0) {
@@ -1578,18 +1627,20 @@ int fail_closed(opqc_sycl_slhdsa* ctx, std::int32_t* status, std::size_t n, bool
 // first, on the in-order queue before put_context and the first kernel, so that an entry that the kernels
 // never reach (a call that fails part way, a device fault found only by a later sync or copy) reads as
 // invalid instead of keeping what an earlier call left there, which may be a 0 ("valid"). A refused call
-// (-1) and a failed one (-2) set every entry to "invalid" (again), and return once that is done.
+// (-1) and a failed one (-2) set every entry to "invalid" (again), and return once that is done; a status
+// buffer that the device cannot use (NULL, unaligned, or not USM memory of the context) is left alone, since a
+// fill into it would fault the device or be lost.
 int verify_any(opqc_sycl_slhdsa* ctx, const std::uint8_t* sig, const CallMessages& m, const std::uint8_t* pk,
                bool one_key, std::int32_t* status, std::size_t n) {
     if (!ctx) return -1;
     MessageInfo info;
     const Lock lock(ctx->mutex);
-    if (!sig || !pk || !status || !check_messages(m, info) || !aligned(sig, pk) ||
-        !openpqc::gpu::aligned(alignof(std::int32_t), status)) {
-        fail_closed(ctx, status, n, true);
-        return -1;
-    }
-    int rc = ctx->check();   // a context that has failed runs no kernel: -2, and the fill below
+    // -1 for a missing or unaligned buffer or a bad message argument; then (usable) -2 for a context that has
+    // failed, which runs no kernel, and -1 for a buffer that is not USM memory of the context
+    int rc = sig && pk && status && check_messages(m, info) && aligned(sig, pk) &&
+                             openpqc::gpu::aligned(alignof(std::int32_t), status)
+                     ? usable(ctx, {status, sig, pk, m.msg, m.offsets})
+                     : -1;
     if (rc == 0) rc = fail_closed(ctx, status, n, false);
     if (rc == 0) rc = put_context(ctx, m, info);
     if (rc == 0) {
@@ -1601,7 +1652,7 @@ int verify_any(opqc_sycl_slhdsa* ctx, const std::uint8_t* sig, const CallMessage
                            status + off, count);
         });
     }
-    if (rc != 0) fail_closed(ctx, status, n, true);   // behind the kernels that did run
+    if (rc != 0) fail_closed(ctx, usm(ctx, status) ? status : nullptr, n, true);   // behind the kernels that did run
     return rc;
 }
 
@@ -1733,6 +1784,9 @@ int sign_random(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const CallMessages& m,
                 bool one_key, std::size_t n) {
     MessageInfo info;
     if (!ctx || !sig || !sk || !check_messages(m, info) || !aligned(sig, sk)) return -1;
+    const Lock lock(ctx->mutex);
+    const int rc = usable(ctx, {sig, sk, m.msg, m.offsets});
+    if (rc != 0) return rc;
     const SetSizes s = sizes_of(ctx);
     return with_random_coins(ctx, s.n, n, [&](std::size_t off, std::size_t count, const std::uint8_t* addrnd) {
         return sign_checked(ctx, sig + off * s.sig, messages_from(m, info, off), info, addrnd,
@@ -1744,9 +1798,12 @@ int sign_random(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const CallMessages& m,
 
 extern "C" int opqc_sycl_slhdsa_keypair(opqc_sycl_slhdsa* ctx, std::uint8_t* pk, std::uint8_t* sk, std::size_t n) {
     if (!ctx || !pk || !sk || !aligned(pk, sk)) return -1;
+    const Lock lock(ctx->mutex);
+    const int rc = usable(ctx, {pk, sk});
+    if (rc != 0) return rc;
     const SetSizes s = sizes_of(ctx);
     return with_random_coins(ctx, 3 * s.n, n, [&](std::size_t off, std::size_t m, const std::uint8_t* seeds) {
-        return opqc_sycl_slhdsa_keypair_derand(ctx, pk + off * s.pk, sk + off * s.sk, seeds, m);
+        return keygen_checked(ctx, pk + off * s.pk, sk + off * s.sk, seeds, m);
     });
 }
 

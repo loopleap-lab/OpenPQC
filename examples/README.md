@@ -42,22 +42,38 @@ Every backend (`opqc_sycl_mlkem_*`, `opqc_sycl_mldsa_*`, `opqc_sycl_slhdsa_*`) w
 example:
 
 ```c
+#include "ML/DSA/openpqc_mldsa.h"               /* the sizes MLDSA65_* */
 #include "ML/DSA/sycl/openpqc_mldsa_sycl.h"     /* link openpqc::mldsa_sycl */
 
 opqc_sycl_mldsa *gpu;
-opqc_sycl_mldsa_create(&gpu, 65, n, -1);         /* 1. parameter set, largest batch, device (-1: default) */
+if (opqc_sycl_mldsa_create(&gpu, 65, n, -1) != 0)   /* 1. parameter set, largest batch, device (-1: default) */
+    return -1;                                      /*    no such device, or not enough device memory */
 uint8_t *d_pk = opqc_sycl_mldsa_malloc(gpu, n * MLDSA65_PUBLICKEYBYTES);   /* 2. device buffers: */
 uint8_t *d_sk = opqc_sycl_mldsa_malloc(gpu, n * MLDSA65_SECRETKEYBYTES);   /*    n operations back to back */
-opqc_sycl_mldsa_keypair(gpu, d_pk, d_sk, n);     /* 3. one call: n key pairs */
-opqc_sycl_mldsa_memcpy(gpu, pk, d_pk, n * MLDSA65_PUBLICKEYBYTES);         /* 4. results back to the host */
-opqc_sycl_mldsa_free(gpu, d_pk);  opqc_sycl_mldsa_free(gpu, d_sk);
-opqc_sycl_mldsa_destroy(gpu);                    /* 5. done */
+int rc = d_pk && d_sk ? 0 : -1;
+if (rc == 0) rc = opqc_sycl_mldsa_keypair(gpu, d_pk, d_sk, n);              /* 3. one call: n key pairs */
+if (rc == 0) rc = opqc_sycl_mldsa_memcpy(gpu, pk, d_pk, n * MLDSA65_PUBLICKEYBYTES);   /* 4. results back */
+if (d_pk) opqc_sycl_mldsa_free(gpu, d_pk);
+if (d_sk) opqc_sycl_mldsa_free(gpu, d_sk);
+opqc_sycl_mldsa_destroy(gpu);                                               /* 5. done */
+if (rc != 0)
+    return -1;                                      /*    none of the n key pairs may be used */
 ```
 
-Messages to sign or verify lie back to back in one device buffer, with `n + 1` offsets that delimit them
-(`demo_gpu.cpp`, `message_offsets`). The calls of one context run in order; `memcpy` waits for everything before it,
-`memcpy_async` and the operations only queue the work. The headers (`ML/KEM/sycl/openpqc_mlkem_sycl.h`,
-`ML/DSA/sycl/openpqc_mldsa_sycl.h`, `SLH/DSA/sycl/openpqc_slhdsa_sycl.h`) document every function.
+Every call returns 0 or a negative error code, and its result must be checked: a call that fails produces no usable
+output. Some operations also report a result per operation in a `status` buffer of n `int32_t`, which must be
+checked as well: ML-KEM's `enc` and `dec` (required; `status[i] = 0`: operation i has a result), ML-DSA signing
+(optional; without it, a call returns `OPENPQC_MLDSA_ERR_SIGNING_LIMIT` itself when one of its signatures reaches
+the bound on the attempts) and the verification of ML-DSA and SLH-DSA (required; `status[i] = 0`: signature i is
+valid). SLH-DSA signing cannot fail on the device and has no status buffer. Messages to sign or verify lie back to
+back in one device buffer, with `n + 1` offsets that delimit them (`demo_gpu.cpp`, `message_offsets`). The calls of
+one context run in order; `memcpy` waits for everything before it, `memcpy_async` and the operations only queue the
+work. The headers (`ML/KEM/sycl/openpqc_mlkem_sycl.h`, `ML/DSA/sycl/openpqc_mldsa_sycl.h`,
+`SLH/DSA/sycl/openpqc_slhdsa_sycl.h`) document every function.
+
+The demos call the `_derand` functions, which take the random values as inputs, so that the CPU can recompute every
+GPU result: a test, which is what FIPS 203 §3.3, FIPS 204 §6 and FIPS 205 §9 reserve those interfaces for. An
+application calls `keypair`, `enc` and `sign`, which draw the randomness themselves.
 
 ## What to expect
 
@@ -89,6 +105,9 @@ SLH-DSA-SHA2-128f verify      627 /s    2.3 k/s     100 /s    44.6 k/s   1024   
   slow on the CPU: one SHA2-128f signature takes about 27 ms on a core.
 - The CPU columns are OpenPQC's portable C code (no AVX2). The numbers move by some percent between runs (clock,
   temperature); `bench/run_benchmarks.sh` measures them properly.
+- The KeyGen, Encaps and Sign rows time the `_derand` functions, with the random values copied in as inputs. The
+  randomized functions that an application calls draw the randomness on the host and copy it over in each call,
+  so on the GPU these rows are an upper bound for them.
 
 ## Live demo for a presentation
 

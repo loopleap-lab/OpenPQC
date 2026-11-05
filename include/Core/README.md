@@ -8,12 +8,12 @@ that the CPU code and the GPU kernels share, plus a small compiled part that tal
 | Conventions of the math core: what C11, C++20 and SYCL device code all accept, `OPQC_UNROLL`, which value barrier a translation unit gets | `opqc_common.h` | |
 | Keccak-f[1600] (FIPS 202 §3: θ, ρ, π, χ, ι, 24 rounds) | `opqc_keccak.h` | lane (x, y) is `A[x + 5y]`; on CPUs the rounds run in a frame of their own, which is cleared afterwards (see [Hashing](#hashing-phases-errors-destruction)) |
 | The sponge, SHA3-224/256/384/512, SHAKE128, SHAKE256 (FIPS 202 §4–§6) | `opqc_sha3.h` | incremental `opqc_sponge_init/absorb/finalize/squeeze` for rates of 8 to 192 bytes, in FIPS 202's order (a sponge records its phase; a call out of order or with an invalid rate or suffix is refused and changes nothing); one-shot functions, which destroy their state and, on CPUs, clear the stack their computation used |
-| SHA-224, SHA-256, SHA-384, SHA-512, SHA-512/224, SHA-512/256 (FIPS 180-4) | `opqc_sha2.h` | the compression functions on a block of 16 words (`opqc_sha256_compress_words`, `opqc_sha512_compress_words`: the schedule as a ring of 16 words, rounds unrolled in passes of 16, so that GPU kernels keep block and state in registers) and on 64 or 128 bytes (`opqc_sha256_compress`, `opqc_sha512_compress`, which read the words and call them: one source for CPU and GPU); H(0) of the six functions (`opqc_sha256_H0`, `opqc_sha512_H0`, `opqc_sha224_H0`, ...); incremental absorb/finalize (finalize refuses an output longer than the digest), one-shot functions, which destroy their state and, on CPUs, what the compression left on the stack; big-endian loads and stores (`opqc_load32_be`, `opqc_load64_be`, `opqc_store32_be`, `opqc_store64_be`). `OPQC_SHA256_UNROLL_PASSES` / `OPQC_SHA512_UNROLL_PASSES` (`OPQC_SHA2_UNROLL_PASSES` sets both) unroll the passes too: by default all of SHA-256's, SHA-512's only in DPC++'s code for NVIDIA GPUs, the measured best (`docs/slhdsa-notes/experiments/H1.md`) |
+| SHA-224, SHA-256, SHA-384, SHA-512, SHA-512/224, SHA-512/256 (FIPS 180-4) | `opqc_sha2.h` | the compression functions on a block of 16 words (`opqc_sha256_compress_words`, `opqc_sha512_compress_words`: the schedule as a ring of 16 words, rounds unrolled in passes of 16, so that GPU kernels keep block and state in registers) and on 64 or 128 bytes (`opqc_sha256_compress`, `opqc_sha512_compress`, which read the words and call them: one source for CPU and GPU); H(0) of the six functions (`opqc_sha256_H0`, `opqc_sha512_H0`, `opqc_sha224_H0`, ...); incremental absorb/finalize (finalize refuses an output longer than the digest), one-shot functions, which destroy their state and, on CPUs, what the compression left on the stack; big-endian loads and stores (`opqc_load32_be`, `opqc_load64_be`, `opqc_store32_be`, `opqc_store64_be`). `OPQC_SHA256_UNROLL_PASSES` / `OPQC_SHA512_UNROLL_PASSES` (`OPQC_SHA2_UNROLL_PASSES` sets both) unroll the passes too: by default all of SHA-256's, SHA-512's only in DPC++'s code for NVIDIA GPUs, the measured best (in the design notes, `docs/slhdsa-notes/experiments/H1.md`, which the repository does not track) |
 | Constant-time helpers: value barrier, 8- and 32-bit masks and selection, `opqc_ct_memcmp`, `opqc_ct_cmov`; valgrind hooks `OPQC_CT_SECRET` / `OPQC_CT_DECLASSIFY` | `opqc_ct.h` | the barrier is an empty asm statement (GCC, Clang), an XOR with a volatile variable (other compilers) or the identity (GPU code): see [Constant time](#constant-time) |
 | Randomness from the operating system, zeroization that the compiler cannot remove | `opqc_platform.h`, `opqc_platform.c` | `getrandom`, `arc4random_buf` or `BCryptGenRandom`; CPU only |
 | C++: `openpqc::fips202` and `openpqc::sha2` (spans instead of pointer/length), `openpqc::ZeroizeOnExit` | `hash.hpp`, `zeroize.hpp` | the incremental functions return false for a refused call (`squeezeblocks` also for an output too short for the blocks); `keccak_state` destroys its state |
 | C++: hashing a list of byte strings as their concatenation (`openpqc::sponge`), an incremental XOF that zeroizes its state (`openpqc::Xof`) | `xof.hpp` | how the schemes write H(a ‖ b ‖ c) and FIPS 204's H.Init/Absorb/Squeeze; `Xof::absorb` after the first squeeze is refused (returns false) |
-| The pre-hash functions of HashML-DSA and HashSLH-DSA (FIPS 204 §5.4, FIPS 205 §10.2.2): the twelve that ACVP tests (`openpqc::PreHash`), the DER encodings of their OIDs (`prehash_oid`), digest lengths (`prehash_bytes`), PH(M) (`prehash`, which destroys its hash state; with the six SHA-2 functions it hashes with the incremental functions, and the message schedule of its last compression stays on the stack below it: see [Hashing](#hashing-phases-errors-destruction)), the 255-byte limit on context strings (`max_context_bytes`); in C, the values of `ph` (`OPENPQC_PREHASH_*`, 1–12) | `prehash.hpp`, `openpqc_prehash.h` | C++20 and C; each scheme writes the two bytes of M′ before ctx (domain separator, \|ctx\|) itself, next to the line of its standard, and names the C values with its own prefix (`OPENPQC_MLDSA_PREHASH_*`) |
+| The pre-hash functions of HashML-DSA and HashSLH-DSA (FIPS 204 §5.4, FIPS 205 §10.2.2): the twelve that ACVP tests (`openpqc::PreHash`), the DER encodings of their OIDs (`prehash_oid`), digest lengths (`prehash_bytes`), PH(M) (`prehash`, which hashes with Core's one-shot functions, so that no hash state, message schedule or chaining value of the computation stays behind it: see [Hashing](#hashing-phases-errors-destruction)), the 255-byte limit on context strings (`max_context_bytes`); in C, the values of `ph` (`OPENPQC_PREHASH_*`, 1–12) | `prehash.hpp`, `openpqc_prehash.h` | C++20 and C; each scheme writes the two bytes of M′ before ctx (domain separator, \|ctx\|) itself, next to the line of its standard, and names the C values with its own prefix (`OPENPQC_MLDSA_PREHASH_*`) |
 | Umbrella header of the C API | `openpqc_core.h` | |
 
 What the GPU backends of all schemes share (`sycl/`, SYCL 2020):
@@ -24,11 +24,18 @@ What the GPU backends of all schemes share (`sycl/`, SYCL 2020):
 | How kernels share out work: one work-item per sponge (`for_each_item`), a team of work-items per operation with its part of local memory (`for_each_team`, `Team`), team reductions (`team_or`, `team_sum`, over every bit of the word: 64-bit words are reduced in 64 bits, narrower ones in 32), clearing local memory before a kernel ends (LeftoverLocals: `clear_local` for polynomials, `clear_local_words` for any number of words); 16-byte stores of a work-item's own output (`store16`, and `Store16<Bits>`, which collects values of 8 to 64 bits) | `sycl/opqc_sycl_team.hpp` | header-only device code |
 | The sponge in GPU kernels: absorb and pad whole 64-bit words at compile-time positions (fixed-length inputs), or block by block for inputs whose length is known only at run time (messages), on top of `opqc_keccak_f1600` | `sycl/opqc_sycl_sponge.hpp` | every index into the state is a constant, so the state stays in registers |
 | SHA-256 and SHA-512 in GPU kernels, the analogue of the sponge helpers on top of `opqc_sha256_compress_words` / `opqc_sha512_compress_words`: `Sha256`, `Sha512` (sizes, H(0), the compression), `sha2_block`, `sha2_fixed<Sha, PrefixBytes, Bytes>` (data, padding and length at compile-time positions, continuing from a midstate), `sha2_absorb_and_pad` (run-time lengths), `Concat` (byte strings that do not end on a word boundary, joined with constant shifts), HMAC (FIPS 198-1: `hmac_init`, `hmac_finish`), MGF1 (RFC 8017 B.2.1: `mgf1`), `trunc_lanes` (Trunc_n as 64-bit lanes), big-endian loads | `sycl/opqc_sycl_sha2.hpp` | big-endian words; keys up to the block size |
-| The messages of a batched signature call (`Messages`: one buffer and n + 1 offsets) and the formatted message M′ of FIPS 204 and FIPS 205 read in place, never copied (`FormattedMessage<true>`: domain ‖ \|ctx\| ‖ ctx ‖ OID ‖ M, pure or pre-hash; `FormattedMessage<false>`: M′ given whole, for the internal functions), as bytes, SHAKE lanes or big-endian SHA-2 words; `put_context` copies ctx (and an OID) into the workspace | `sycl/opqc_sycl_messages.hpp` | used by ML-DSA's backend; SLH-DSA's will use all three forms |
-| The host side of a backend context: `Context<Sections>` (in-order queue, one workspace divided into sections, the lock; an async handler that records device errors instead of ending the process, after which the context has failed for good: `failed`, `check`, `guard`; the queue is a `ContextQueue`, whose `wait_and_throw` also throws once the context has failed, so that any wait through it reports the failure), `chunked` (calls split into launches, secret sections zeroized after each; a failed context runs nothing, and the first call or sync that finds the failure zeroizes the whole workspace), `with_random_coins` (coins from the OS RNG, wiped on host and device), the C APIs' `sync`, `destroy` and `copy` (memcpy), which report a failed context as −2 and a null pointer to copy as −1, `fill_status` (a verification's status entries set to the failure code before its first kernel and again after a failure), and the memory functions (`device_malloc`, `host_malloc`, `device_free`). The top of the header states the error contract: what −2 and −1 mean, what becomes of the workspace and of status after a device fault, what a backend calls where, and what AdaptiveCpp's one list of errors per process implies (an error fails every context, and the contexts also take the asynchronous errors of the application's own queues) | `sycl/opqc_sycl_context.hpp` | ML-DSA's backend derives its context from it |
+| The messages of a batched signature call (`Messages`: one buffer and n + 1 offsets) and the formatted message M′ of FIPS 204 and FIPS 205 read in place, never copied (`FormattedMessage<true>`: domain ‖ \|ctx\| ‖ ctx ‖ OID ‖ M, pure or pre-hash; `FormattedMessage<false>`: M′ given whole, for the internal functions), as bytes, SHAKE lanes or big-endian SHA-2 words; `put_context` copies ctx (and an OID) into the workspace | `sycl/opqc_sycl_messages.hpp` | used by the ML-DSA and SLH-DSA backends (SLH-DSA reads M′ as bytes and builds its SHAKE lanes and SHA-2 words itself) |
+| The host side of a backend context: `Context<Sections>` (in-order queue, one workspace divided into sections, the lock, a recursive mutex that every helper here which uses the workspace, the page-locked coin buffer or the record of the zeroization after a failure takes itself, so that no helper's work runs between the steps of another thread's call, while a backend still holds it across each whole call, which nothing checks; an async handler that records the device errors given to the queue instead of ending the process, after which the context has failed for good: `failed`, `check`, `guard`; not covered are errors that the runtime gives to the SYCL context's handler, whose default ends the process, and failures inside the runtime itself, such as DPC++ on CUDA aborting in an event's destructor after a sticky fault; the queue is a `ContextQueue`, whose `wait_and_throw` also throws once the context has failed, so that any wait through it reports the failure), `chunked` (calls split into launches, secret sections zeroized after each; a failed context runs nothing, and the first call or sync that finds the failure zeroizes the whole workspace), `with_random_coins` (coins from the OS RNG, wiped on host and device), the C APIs' `sync`, `destroy` and `copy` (memcpy), which report a failed context as −2 and a null pointer to copy as −1, `fill_status` (a verification's status entries set to the failure code before its first kernel, and again after a refusal or failure, which the call then waits for, so that it leaves no write into the caller's status buffer behind it), and the memory functions (`device_malloc`, `host_malloc`, `device_free`). The top of the header states the error contract: what −2 and −1 mean, what becomes of the workspace and of status after a device fault (on CUDA a sticky fault leaves the device unusable for the process: every context on it fails, a new create on it fails (ML-KEM's and ML-DSA's returned −1), and only a new process can use it again), what a backend calls where, and what AdaptiveCpp's one list of errors per process implies (an error fails every context, and the contexts also take the asynchronous errors of the application's own queues) | `sycl/opqc_sycl_context.hpp` | the ML-KEM, ML-DSA and SLH-DSA backends derive their contexts from it, so that a change here is checked by the tests of all three and by `core_sycl` |
 
-The CPU code is plain C without SIMD. Its Keccak-f[1600] takes 246 ns on a Core i7-11370H (GCC 16, -O3), against
-230 ns for mlkem-native's scalar C version.
+The C API of `sycl/openpqc_sycl.h` parses `OPENPQC_SYCL_DEVICE` strictly for every backend: a value other than a
+decimal index, an index out of range, or a device index below −1 makes `create` fail with −1;
+`opqc_sycl_device_name` and `opqc_sycl_device_platform` return "" when the SYCL runtime reports an error, and their
+string lives until the next call of the same function on the same thread.
+
+The CPU code is plain C without SIMD. Its Keccak-f[1600] took 246 ns on a Core i7-11370H (GCC 16, -O3) in the
+author's measurement, against 230 ns for mlkem-native's scalar C version; the review of October 2026 measured 347 ns
+(1,384 to 1,488 cycles) on the same machine, and no benchmark in the tree reproduces either figure. Keccak-f now also
+clears its stack and registers, at about 1.5 to 4 % (below).
 
 ## Usage
 
@@ -47,6 +54,11 @@ rc |= opqc_sponge_squeeze(&s, out, sizeof out);  /* then squeeze, as often as ne
 opqc_zeroize(&s, sizeof s);
 if (rc != OPQC_SPONGE_OK) { /* a call was refused: a bug in the caller */ }
 ```
+
+The functions of the schemes' C APIs, and `opqc_randombytes`, are declared `OPQC_MUST_CHECK` (`opqc_common.h`), so
+that a compiler warns about a result that is not used; Core's other functions that return a status (the sponge and
+the SHA-2 finalize functions) are not, because OpenPQC's own code calls the sponge in an order the standards fix and
+does not look at the status. A caller with an order of its own checks the status, as above.
 
 ```cpp
 #include "Core/hash.hpp"
@@ -68,8 +80,9 @@ convention of the schemes' C APIs for invalid arguments; a refused squeeze sets 
 bytes. So no sequence of calls writes past the 25 lanes (an absorb after a squeeze that ended on a block boundary
 would, without the check), and absorbing after finalize, squeezing before it, finalizing twice, a zero-initialized
 `opqc_sponge` or an invalid rate give an error instead of output that is not FIPS 202. `opqc_sha256_finalize` and
-`opqc_sha512_finalize` refuse in the same way an `outlen` above the digest size. The C++ wrappers report a refused call as `false` (`hash.hpp`'s incremental functions, `Xof::absorb`,
-`openpqc::sponge`); `hash.hpp`'s `squeezeblocks` also refuses an output too short for the blocks.
+`opqc_sha512_finalize` refuse in the same way an `outlen` above the digest size. The C++ wrappers report a refused
+call as `false` (`hash.hpp`'s incremental functions, `Xof::absorb`, `openpqc::sponge`); `hash.hpp`'s `squeezeblocks`
+also refuses an output too short for the blocks.
 
 What is destroyed (FIPS 203 §3.3, FIPS 204 §3.6.3, FIPS 205 §3.1): the one-shot functions destroy their state before
 they return; an incremental state belongs to the caller, who destroys it (`opqc_zeroize` in C; `Xof`, `sponge` and
@@ -77,33 +90,46 @@ they return; an incremental state belongs to the caller, who destroys it (`opqc_
 the compiler keeps it in registers and spill slots: Keccak-f's round temporaries (the last round's B determines the
 output state, and that the input) and SHA-2's message schedule (any 16 consecutive words give the block back). So in
 CPU code (GCC, Clang and MSVC; not SYCL or CUDA code), Keccak-f's 24 rounds and each one-shot hash (SHA-2, SHA-3,
-SHAKE) run in a frame of their own, and after they return the stack below the caller is overwritten with zeros:
-1 KiB after Keccak-f, and 2 KiB after a one-shot hash (3 KiB on 32-bit processors) in optimized builds; 3 KiB and
-3,968 bytes at -O0, with sanitizers and with MSVC, each less than a 4 KiB page, so that a stack too short for it
-faults at the guard page. Where the math core may use inline assembly (GCC, Clang) an empty assembler statement keeps
-the zeros; elsewhere, and with `OPQC_CONFIG_NO_ASM_VALUE_BARRIER`, `memset` called through a volatile pointer writes
-them (the MSVC code was compiled only by clang-cl in MSVC mode). With GCC and Clang on x86 and AArch64 these frames
-also set the registers that a function may change without saving them to zero on return (`zero_call_used_regs`; only
-the general-purpose ones after Keccak-f's rounds, which use no others): a value left there is out of reach of any
-clearing of the stack, and GCC 16 stored a lane of Keccak-f's last round, left in r11, into the frame of ML-DSA's
-ExpandMask. How deep the computations write depends on the processor, the compiler and the translation unit: measured
-with the clearing removed, at most @KMAX@ bytes for Keccak-f and @SMAX@ bytes for a one-shot hash in optimized builds
-(i686: GCC 16 at -O3 keeps SHA-512's compression in frames of their own when the unit has other callers of it), and
-@KDEEP@ and @SDEEP@ bytes at -O0 with sanitizers (`opqc_keccak.h` has the table for x86-64, i686, Armv7-A, AArch64,
-RV64GC and RV32GC); `test_hash` measures them again in each build it runs in. The incremental
-functions clear nothing: their code runs in the caller's frame, SHA-2's compression leaves its message schedule below
-it, and in unoptimized or instrumented builds a squeeze can leave a copy of a lane of the state there (one lane with
-Clang 23 at -O0 with UndefinedBehaviorSanitizer). A caller that hashes secrets with them clears its stack itself
-(SLH-DSA does, `SLH/DSA/scheme/slhdsa_internal.hpp`). `prehash` computes the six SHA-2 pre-hashes with the
-incremental functions in its own frame and destroys its state, but clears nothing: the message schedule of its last
-compression stays on the stack below it. In GPU kernels these values stay in registers, and nothing is cleared.
+SHAKE) run in a frame of their own, and after they return the stack below the caller is overwritten with zeros: in
+optimized builds 1 KiB after Keccak-f and 2 KiB after a one-shot hash on 64-bit processors, 2 KiB and 3 KiB on 32-bit
+ones; 3 KiB and 3,968 bytes at -O0, with sanitizers and with MSVC, each less than a 4 KiB page, so that a stack too
+short for it faults at the guard page. Where the math core may use inline assembly (GCC, Clang) an empty assembler
+statement keeps the zeros; elsewhere, and with `OPQC_CONFIG_NO_ASM_VALUE_BARRIER`, `memset` called through a volatile
+pointer writes them (the MSVC code was compiled only by clang-cl with `__clang__` and `__GNUC__` undefined, as cl.exe
+has neither, and never by cl.exe; clang-cl itself takes the GCC and Clang code). With GCC and Clang on x86 and AArch64
+these frames also set the registers that a function may change without saving them to zero on return
+(`zero_call_used_regs`): a value left there is out of reach of any clearing of the stack, and GCC 16 stored a lane of
+Keccak-f's last round, left in r11, into the frame of ML-DSA's ExpandMask. After Keccak-f's rounds only the
+general-purpose registers are cleared on x86-64 and AArch64, where the rounds use no others; on 32-bit x86, where GCC
+computes with lanes in SSE registers, all of them. How deep the computations write depends on the processor, the
+compiler, its options and the translation unit: measured with the clearing removed, in optimized builds at most 376
+bytes for Keccak-f and 816 for a one-shot hash on x86-64 and 628 and 1,208 on i686 (where GCC 16 at -O3 keeps SHA-512's
+compression in frames of its own when the unit has other callers of it), 1,572 and 1,828 on i686 with `-march=native`
+(Clang 23 computes the rounds in AVX registers and spills them); and 1,624 and 2,900 bytes at -O0 with AddressSanitizer
+(`opqc_keccak.h` has the table for x86-64, i686, Armv7-A, AArch64, RV64GC and RV32GC). `test_hash` measures them again
+in each build it runs in. The incremental functions clear nothing: their code runs in the caller's frame, SHA-2's
+compression leaves its message schedule below it, and in unoptimized or instrumented builds the absorbing and squeezing
+code can leave a copy of a lane of the state or of the input there (one lane of the state with Clang 23 at -O0 with
+UndefinedBehaviorSanitizer, 8 bytes of the input in `openpqc::sponge`'s caller with GCC 16 at -O3 with
+AddressSanitizer). A caller that hashes secrets with them clears its stack itself (SLH-DSA does,
+`SLH/DSA/scheme/slhdsa_internal.hpp`). `prehash` computes PH(M) with the one-shot functions (`opqc_sha224` …
+`opqc_sha512_256`, `opqc_sha3_*`, `opqc_shake128`, `opqc_shake256`), so it keeps no hash state of its own and leaves
+no SHA-2 message schedule below it (with the incremental functions it had left 15 to 26 of SHA-256's 56 schedule words
+and 16 or 17 of SHA-512's 68); `test_hash` and `slhdsa_stack` search for them. In GPU kernels these values stay in
+registers, and nothing is cleared.
 
-What this costs (cycles, i7-11370H, against the code without the checks and the clearing): Keccak-f alone +3 to +4 %
-with GCC 16, +1.5 % with Clang 23 (the clearing: about 50 and 20 cycles per permutation); the sponge as ML-KEM and
-ML-DSA use it -2 to +2 %; SHA-256 and SHA-512 one-shot on 32 bytes +3 to +6 % (a fixed 45-60 cycles), on 1 KiB 0-1 %.
-The phase check costs about 10 instructions per incremental call with Clang (2 with GCC), which shows in byte-wise
-squeezing: ML-DSA's SampleInBall sponge +9 % with Clang. ML-KEM-768 changed by -1 to +1 %, ML-DSA-65 KeyGen by +2 %
-and Sign by under 1 %; Verify +0.4 % with Clang, +8 % with GCC (its instructions +1.5 %).
+What this costs on an i7-11370H, against the code without the checks and the clearing (instructions executed, which
+do not depend on the load; GCC 16 / Clang 23, -O3). Keccak-f alone: +1.3 % / +1.6 % instructions (the call of the
+1 KiB clearing, and 9 instructions that clear the registers), +3 to +4 % / +1.5 % cycles (the clearing: about 50 and
+20 cycles per permutation). The sponge as ML-KEM and ML-DSA use it: +0.6 to +3.8 % instructions, -2 to +2 % cycles.
+One-shot hashes of 32 bytes: +3 to +6 % instructions (their frame, the 2 KiB clearing and all registers: about 100
+instructions, 190 for SHA3-256), of 1 KiB +0.3 to +5 %. The phase check costs about 10 instructions per incremental
+call with Clang (2 with GCC), which shows in byte-wise squeezing: ML-DSA's SampleInBall sponge +9 % with Clang.
+ML-DSA-65: KeyGen +3.4 % / +2.9 % instructions, Verify +1.9 % / +0.8 % (without the stack clearing +1.9 % / +2.3 %
+and +1.4 % / +0.2 %); ML-KEM-768 -1 to +1 % cycles. Cycles were measured for these headers before the register clearing
+and the larger clearing after one-shot hashes were added, which do not change the hot paths beyond those 9 instructions
+per permutation: ML-DSA-65 KeyGen +2 %, Sign under 1 %, Verify +0.4 % with Clang and +8 % with GCC. On 32-bit
+processors Keccak-f clears 2 KiB.
 
 ## Constant time
 
@@ -124,7 +150,12 @@ on the compiler (`opqc_common.h`):
 What is tested: the valgrind tests (`core_*_ct`, `mlkem*_ct`, `mldsa_ct`, `slhdsa_ct`) run on x86-64 Linux with the
 compiler the build was configured with; GCC 16 and Clang 23 are the compilers checked. `core_*_ct` builds the helpers,
 and their users in the ML-KEM and ML-DSA math cores, at -O0, -O1, -O2, -O3 and -Os with both barriers, whatever the
-build type; the scheme tests run at the build's optimization level only. Other processors are checked only from the
+build type. The scheme tests run at the build's optimization level, and again with the scheme libraries compiled at
+fixed levels whatever the build type: `mlkemNNN_O1_ct` … `_Os_ct`, `mldsa_O1_ct` … `_Os_ct` and `slhdsa_O2_ct`
+(the CI presets `ct-{gcc,clang}-{O0,O2,O3,Os}` run the schemes' tests at those levels as well). The constant-time
+objects are compiled without AVX-512, GFNI, VAES, VPCLMULQDQ and APX on x86-64, so that a `-march=native` build on a
+processor that has them still runs under valgrind; the libraries keep the build's flags. Other processors are checked
+only from the
 assembly: `core_ct_asm` has Clang compile each helper and each of those users on its own for x86-64, i686, AArch64,
 RV64GC (with and without Zicond), Armv7-M and Armv6-M, at -O1 to -Os with both barriers, and fails on any conditional
 branch or select in them (RV64GC and Armv6-M have no select instruction, so there a select the compiler forms on a
@@ -139,14 +170,28 @@ full: EINTR is retried, and an error, or an answer that a working `getrandom` ne
 filter that returns 0, or more bytes than were asked for), is such a failure rather than a loop without end. A library
 built with `OPQC_CONFIG_EXTERNAL_RANDOMBYTES` calls the application's `int randombytes(uint8_t *out, size_t outlen)`
 instead. The CMake target `openpqc_core_testrng` is built this way: the tests link it with a deterministic generator
-(`tests/ML-KEM/notrandombytes`), which must never be used in production. On Windows, `opqc_zeroize` calls
-`SecureZeroMemory` in both variants; no test builds the Windows code.
+(`tests/ML-KEM/notrandombytes`), which must never be used in production. The same holds for
+`openpqc_mlkem_testrng`, `openpqc_mldsa_testrng` and `openpqc_slhdsa_testrng`, which link it. Never link a test
+variant into a program together with a production library: both define `opqc_randombytes`, and the linker keeps the
+first definition it finds, without an error, for every scheme. `opqc_randombytes` is declared `OPQC_MUST_CHECK`: after
+a failure the buffer holds zeros, not random bytes. On Windows, `opqc_zeroize` calls `SecureZeroMemory` in both
+variants; no test builds the Windows code.
+
+The operating system's generator is not what the standards ask of a validated module: FIPS 203 §3.3, FIPS 204 §3.6.1
+and FIPS 205 §3.1 require the random values of key generation (and ML-KEM's m) to come from an approved random bit
+generator (SP 800-90A, B and C) of the parameter set's security strength, and Core has no DRBG and no health tests.
+An integrator who has one supplies it through the hook above: build the library with
+`OPQC_CONFIG_EXTERNAL_RANDOMBYTES` and define `randombytes()` to draw from the approved DRBG, returning 0 only for a
+full buffer (top-level README, [Security notes](../../README.md#security-notes)). The hook is a global symbol without a
+prefix, and no CMake target builds a production library that uses it.
 
 ## Tests
 
 - `tests/Core/test_core_sha3.c`: Keccak-f[1600] on the zero state (the Keccak team's intermediate values), known
-  answers for the six functions (Python's `hashlib`), and incremental absorbing and squeezing in every chunk size from
-  1 to 200 bytes.
+  answers for SHA3-256, SHA3-512, SHAKE128 and SHAKE256 (Python's `hashlib`; for SHA3-256 also the inputs of one
+  block minus one byte and of one block; SHA3-224 and SHA3-384 are in `test_core_sha2.c`), and incremental absorbing
+  and squeezing in every chunk size from 1 to 200 bytes. The padding boundaries of SHA3-512, SHAKE128 and SHAKE256
+  are covered by the incremental comparison and by ACVP, not by known answers.
 - `tests/Core/test_core_sha2.c`: the six SHA-2 functions, and SHA3-224 and SHA3-384, against known answers (Python's
   `hashlib`): the FIPS 180-4 examples, a million times "a", and the message lengths on both sides of every padding
   boundary; absorbing in pieces of every size from 1 to 200 bytes, and in pieces of random sizes from 0 to 300 bytes,
@@ -197,12 +242,24 @@ instead. The CMake target `openpqc_core_testrng` is built this way: the tests li
   message schedule words), and four positive controls must be found. How deep Keccak-f's rounds and the one-shot SHA-2
   computations write below their caller is measured without the clearing and printed; a computation deeper than the
   clearing after it, or a clearing that does not reach its size, fails (not measured where stack probes store zeros
-  into the measuring frame, as Clang's `-fstack-clash-protection` does). On x86-64, the registers that a function may
-  change without saving them are read right after Keccak-f's rounds and the one-shot SHA3-256 and SHA-512
-  computations and must hold none of their values, and the same computations written in the test without the
-  clearing must leave some there. It runs with GCC and Clang, also with
-  `OPQC_CONFIG_NO_ASM_VALUE_BARRIER`, not under AddressSanitizer, and under UndefinedBehaviorSanitizer without `Xof`
-  and `keccak_state` (the copy of a lane described [above](#hashing-phases-errors-destruction)); in any GCC or Clang
-  CPU build the test does not compile if the clearing is off.
+  into the measuring frame, as Clang's `-fstack-clash-protection` does). On x86-64 and 32-bit x86, the registers that
+  a function may change without saving them are read right after Keccak-f's rounds and the one-shot SHA3-256 and
+  SHA-512 computations and must hold none of their values, and the same computations written in the test without the
+  clearing must leave some there. It runs with GCC and Clang, also with `OPQC_CONFIG_NO_ASM_VALUE_BARRIER`, not
+  under AddressSanitizer, and under UndefinedBehaviorSanitizer without `Xof` and `keccak_state` (the copy of a lane
+  described [above](#hashing-phases-errors-destruction)); in any GCC or Clang CPU build the test does not compile if
+  the clearing is off. `hash_m32` builds the same test for i686 (`-m32`) on x86-64 hosts whose compiler can link
+  32-bit programs (the 32-bit C and C++ libraries: `lib32-glibc` and `lib32-gcc-libs` on Arch, `gcc-multilib` and
+  `g++-multilib` on Debian), so that the 32-bit depths and register clearing stated above are checked by CTest.
+  The residue search also covers `prehash` with SHA2-256 and SHA2-512.
+- `tests/gpu/test_core_sycl.cpp` (`core_sycl`, label `gpu`, on every SYCL device): the team reductions over 8- to
+  64-bit words, a context's failure handling (asynchronous errors, waits through the queue, exceptions, the
+  zeroization after a failure), the coins, allocations, the arguments of the copies and `fill_status`, the lock that
+  each of the eleven locking helpers takes itself (each called by a second thread while the test holds the lock must
+  wait for it; on AdaptiveCpp's OpenMP host device `release`'s lock is seen only on its return), and the device
+  selection by `OPENPQC_SYCL_DEVICE`; `core_sycl_sticky` makes a real fault on an NVIDIA GPU in a process of its own.
+- `tests/test_c_api_errors.c` and `tests/check_must_check.py` (`c_api_errors`, `c_api_must_check`): every error path
+  of the three schemes' C APIs with the state of every output buffer, and the must-check attribute on every function
+  of their headers.
 - Every ML-KEM and ML-DSA test also exercises Core: the hash functions of both standards, HashML-DSA's twelve pre-hash
   functions (ACVP), and on the GPU the sponge helpers, and for ML-DSA the message, store and host helpers of `sycl/`.

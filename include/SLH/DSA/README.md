@@ -57,7 +57,8 @@ and the spreadsheet address that NIST uses for FIPS 203 and FIPS 204 returns 404
 | Algorithm 23 hash_slh_sign | `hash_sign`, `hash_sign_deterministic`, `hash_sign_derand`; the twelve pre-hash functions, their OIDs and digest lengths: `PreHash`, `prehash`, `prehash_oid`, `prehash_bytes` (`Core/prehash.hpp`, shared with HashML-DSA); the C values `OPENPQC_SLHDSA_PREHASH_*` = `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`) |
 | Algorithms 24, 25 slh_verify, hash_slh_verify | `verify`, `hash_verify` |
 | §10.2 the formatted message M′ | the two bytes before ctx (domain separator, \|ctx\|) are written at each call site, next to its line of the standard; M′ is passed as a list of byte strings and never copied |
-| §3.1 randomness | `opqc_randombytes` (`Core/opqc_platform.h`); KeyGen draws SK.seed, SK.prf and PK.seed in one call of 3n bytes, in that order, as the reference does; hedged signing draws addrnd (n bytes) after the context string has been checked |
+| §3.1 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which asks the operating system and fails closed; KeyGen draws SK.seed, SK.prf and PK.seed in one call of 3n bytes, in that order, as the reference does; hedged signing draws addrnd (n bytes) after the context string has been checked. FIPS 205 requires the three seeds to come from an approved RBG (SP 800-90A/B/C) of at least 8n bits of strength, and recommends one for addrnd; the operating system's generator is not one within a module boundary, so the integrator supplies it (top-level README, [Security notes](../../../README.md#security-notes)) |
+| §9 testing interfaces | `keypair_derand`, `sign_derand` and `prehash_sign_derand` with addrnd given, and the internal functions of the C API, take values that the module would otherwise generate or format itself ([Usage](#usage)) |
 | §3.1 destruction of sensitive data | every n-byte value is a `Value<n>`, which zeroizes itself, unnamed temporaries included; every hash state that saw a secret is zeroized after its last use; `ZeroizeOnExit` (`Core/zeroize.hpp`) for named byte strings; `burn_stack` for what the compression functions leave in their dead frames (see below); `slhdsa_stack` checks the result |
 | §3.1 key checks | `check_secret_key` ("assurance of private key possession via regeneration": PK.root recomputed from SK.seed and PK.seed); the lengths are fixed by the types (C++) and by the array sizes of the C prototypes, which C does not check |
 | §3.1 floating point | none |
@@ -93,24 +94,37 @@ reference's NIST KAT generator gives upstream's SHA-256 for all twelve sets thro
   addrnd, and so everything computed from them, marked secret. The library releases exactly what FIPS 205 makes public,
   where it becomes public (`OPQC_CT_DECLASSIFY`): PK.seed and PK.root, R, PK_FORS, the root of each hypertree layer and
   the signature. The test also checks, with `VALGRIND_GET_VBITS`, that the release is not too broad: after each call
-  every byte of SK.seed and SK.prf must still be secret.
+  every byte of SK.seed and SK.prf must still be secret. It runs at the build's optimization level, and
+  `slhdsa_O2_ct` runs it with the library compiled at -O2 whatever the build type. Scope: x86-64 Linux, GCC 16 and
+  Clang 23; nothing is claimed for other compilers, other processors or the GPU backend (top-level README,
+  [Security notes](../../../README.md#security-notes)).
 - **Memory.** There is no heap and there are no exceptions. The algorithms themselves need about 7 KiB of stack (the
   deepest is SHA2-256s signing; GCC 16 at -O0 and -O3, Clang 23 at -O3). Every function, verification included, then
-  overwrites 32 KiB below its own frame, so it needs about 35 KiB below the call (measured: 34.6–34.8 KiB for every set,
-  GCC 16 and Clang 23 at -O3); built with `OPENPQC_SLHDSA_KEYGEN_PCT`, KeyGen needs up to 84 KiB (SLH-DSA-*-256f),
-  because the test holds a signature. Before it clears that stack, the burn touches it from the top down in frames of
-  2 KiB, so a stack that is too short ends in a fault at its guard page instead of a write beyond it (`touch_stack`;
-  `slhdsa_stack` checks 16, 24 and 32 KiB thread stacks for the fault and 40 and 64 KiB for success). The C++ API's
-  signature types are arrays of up to 49,856 bytes. The overwriting assumes one contiguous native stack (not SafeStack,
-  split stacks or the fake stacks of AddressSanitizer's use-after-return detection).
+  overwrites 32 KiB below its own frame, so it needs about 35 KiB below the call (measured on x86-64: 34.3–34.9 KiB
+  for every set and function, GCC 16 and Clang 23 at -O3), plus room for the thread itself (its descriptor, TLS and
+  first frames: the review measured another 4,592 bytes with glibc). Built with `OPENPQC_SLHDSA_KEYGEN_PCT`, KeyGen
+  needs the size of a signature more, because the test holds one: 42.4, 50.6, 51.4, 63.8, 69.5 and 83.4 KiB for the
+  128s, 192s, 128f, 256s, 192f and 256f sets, with either compiler (the test runs out of line, so Clang no longer
+  merges its signature into KeyGen's frame, which had needed about 99 KiB). Before it clears its stack, the burn touches
+  it from the top down in frames of 2 KiB (`touch_stack`), and on x86-64 every other frame is smaller than 3.5 KiB
+  (measured at most 2.9 KiB, GCC 16 and Clang 23 at -O2 and -O3; `slhdsa_stack_pct` checks the compiler's report of
+  the frames), so that on a stack that is too short every function ends in a fault at the guard page and writes
+  nothing below it, with or without `-fstack-clash-protection` (`slhdsa_stack` checks 16, 24 and 32 KiB thread stacks
+  for the fault and 40 and 64 KiB for success, `slhdsa_stack_pct` the same for the PCT build). Without optimization
+  and on other architectures (not measured) the frames are larger: build with `-fstack-clash-protection` there, as
+  OpenPQC's own CMake files do. The C++ API's signature types are arrays of up to 49,856 bytes. The overwriting assumes
+  one contiguous native stack (not SafeStack, split stacks or the fake stacks of AddressSanitizer's use-after-return
+  detection; the stack tests turn those off).
 - **Destruction of intermediate values.** Named byte strings are zeroized on exit, n-byte values and hash states destroy
   themselves, and the stack burn (`burn_stack` in `scheme/slhdsa_internal.hpp`) removes what the code cannot name: the
   SHA-2 compression keeps words of its message block, byte-swapped, in its dead frame, and Keccak-f keeps copies of its
-  state. After a PRF call those words are those of SK.seed: without the burn, `slhdsa_stack` found all of SK.seed on the
-  stack after signing with SLH-DSA-SHA2-192s and -256s (GCC 16, -O3, with the SHA-2 code before the ring schedule of
-  `Core/opqc_sha2.h`). With all of this, signing took between 4.6 % less and 1.9 % more time than a build in which
-  `opqc_zeroize` does nothing (GCC 16, -O3, i7-11370H, medians of five interleaved runs): no cost that the measurement
-  can separate from changes in code layout. The burn itself takes about 0.31 µs.
+  state. After a PRF call those words are those of SK.seed: without the burn, `slhdsa_stack` finds them, as the
+  compression's schedule words, after every SHA2 set (GCC 16 and Clang 23), and before the ring schedule of
+  `Core/opqc_sha2.h` it found all of SK.seed after signing with SLH-DSA-SHA2-192s and -256s. With the pair-wise
+  consistency test, KeyGen also zeroizes the test's signature before it returns. Under AddressSanitizer the burn is not
+  instrumented, so that it clears its whole region there too. With all of this, signing took between 4.6 % less and
+  1.9 % more time than a build in which `opqc_zeroize` does nothing (GCC 16, -O3, i7-11370H, medians of five interleaved
+  runs): no cost that the measurement can separate from changes in code layout. The burn itself takes about 0.31 µs.
 - **Buffers.** The signing functions read the message, the context string and addrnd (M′ and addrnd for `sign_internal`)
   before they write the signature, so the signature may overlap them, e.g. to sign in place over the message:
   `slh_sign_internal` computes R into a local value and runs H_msg before it writes SIG[0 : n]. The signature must not
@@ -131,15 +145,17 @@ uint8_t pk[SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[SLHDSA_SHA2_128F_SECRETKEYBYTES]
 static uint8_t sig[SLHDSA_SHA2_128F_BYTES];               /* 17,088 bytes */
 static const uint8_t ctx[] = "example";                   /* context string, at most 255 bytes; may be NULL, 0 */
 if (openpqc_slhdsa_sha2_128f_keypair(pk, sk) != 0 ||      /* randomness from the operating system */
-    openpqc_slhdsa_sha2_128f_sign(sig, msg, msglen, ctx, sizeof ctx - 1, sk) != 0) {   /* hedged signing */
-    /* error: OPENPQC_SLHDSA_ERR_* */
-}
+    openpqc_slhdsa_sha2_128f_sign(sig, msg, msglen, ctx, sizeof ctx - 1, sk) != 0)   /* hedged signing */
+    return -1;                                            /* OPENPQC_SLHDSA_ERR_*: no key pair or no signature */
 int valid = openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, msglen, ctx, sizeof ctx - 1, pk) == 0;
 
-/* the deterministic variant: addrnd = NULL */
-openpqc_slhdsa_sha2_128f_sign_derand(sig, msg, msglen, ctx, sizeof ctx - 1, NULL, sk);
+/* the deterministic variant (addrnd = NULL), for platforms without a random bit generator (FIPS 205, Section 9.2) */
+if (openpqc_slhdsa_sha2_128f_sign_derand(sig, msg, msglen, ctx, sizeof ctx - 1, NULL, sk) != 0)
+    return -1;
 /* HashSLH-DSA: the message is hashed first, here with SHA-256 */
-openpqc_slhdsa_sha2_128f_prehash_sign(sig, msg, msglen, ctx, sizeof ctx - 1, OPENPQC_SLHDSA_PREHASH_SHA2_256, sk);
+if (openpqc_slhdsa_sha2_128f_prehash_sign(sig, msg, msglen, ctx, sizeof ctx - 1, OPENPQC_SLHDSA_PREHASH_SHA2_256,
+                                          sk) != 0)
+    return -1;
 ```
 
 C++ (`SLH/DSA/slhdsa.hpp`; sizes are part of the types):
@@ -147,10 +163,12 @@ C++ (`SLH/DSA/slhdsa.hpp`; sizes are part of the types):
 ```cpp
 using DSA = openpqc::slhdsa::SLHDSA_SHAKE_128f;
 DSA::public_key pk; DSA::secret_key sk; DSA::signature sig;
-if (DSA::keypair(pk, sk) != 0 || DSA::sign(sig, message, sk) != 0) { /* error */ }   // optional context string last
+if (DSA::keypair(pk, sk) != 0 || DSA::sign(sig, message, sk) != 0)   // optional context string last
+    return -1;                                                         // no key pair or no signature
 bool valid = DSA::verify(sig, message, pk) == 0;
-DSA::sign_deterministic(sig, message, sk);
-DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk);                       // HashSLH-DSA
+if (DSA::sign_deterministic(sig, message, sk) != 0 ||
+    DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk) != 0)              // HashSLH-DSA
+    return -1;
 ```
 
 To experiment with the algorithms themselves, include `SLH/DSA/scheme/slh_dsa.hpp` and call the templates, e.g.
@@ -159,18 +177,26 @@ To experiment with the algorithms themselves, include `SLH/DSA/scheme/slh_dsa.hp
 The `_derand` functions take the seeds SK.seed ‖ SK.prf ‖ PK.seed (KeyGen, 3n bytes) or addrnd (Sign, n bytes) as
 arguments; addrnd = NULL is the deterministic variant (opt_rand = PK.seed, Algorithm 19, line 2). FIPS 205 (§9) says
 that interfaces taking them should be offered to applications only for testing, as the module must generate the
-randomness itself, and that slh_keygen_internal may also serve the regeneration check of §3.1 (`check_secret_key`);
-`openpqc_slhdsa.h` names expanding stored seeds as a further use. The `_internal` functions of the C API take the
-formatted message M′ (§9) and are meant for tests, ACVP among them; the C++ API leaves them out. Every function returns
-0 or an `OPENPQC_SLHDSA_ERR_*` code; signing with a context string longer than 255 bytes fails with
-`OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT` and writes nothing, and verifying with one, or with a signature of the wrong
-length, returns `OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE`.
+randomness itself. So addrnd given (not NULL) is for testing only: `sign` and `prehash_sign` draw it from the
+operating system. The deterministic variant (NULL) is "available for platforms where a random bit generator is not
+available" (§9.2), while the hedged variant "should be used on platforms where side-channel attacks are a concern".
+`keypair_derand` serves testing, the regeneration check of §3.1 (`check_secret_key`; §9 names it), and, as OpenPQC's
+own use, the expansion of seeds stored in place of sk (FIPS 205 has no explicit exception for that; the seeds need the
+protection of sk and must come from an approved random bit generator). The `_internal` functions of the C API take
+the formatted message M′ (§9) and are for tests, ACVP among them; the C++ API leaves them out. Every function returns
+0 or an `OPENPQC_SLHDSA_ERR_*` code and is declared `OPQC_MUST_CHECK` (`openpqc_slhdsa.h`, Results). A signing call
+that fails (a context string longer than 255 bytes or an unknown pre-hash function,
+`OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT`; no randomness, `OPENPQC_SLHDSA_ERR_RNG_FAIL`) writes nothing, `keypair` leaves
+pk and sk unchanged when there is no randomness and zeroes them after a failed pair-wise consistency test, and
+verifying with a context string over 255 bytes, or with a signature of the wrong length, returns
+`OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE`. The library is C++ inside: a C program links it with the C++ compiler driver
+or adds `-lstdc++` (`openpqc_slhdsa.h`, Linking).
 
 The pair-wise consistency test that FIPS 140-3 asks of validated modules is compiled into KeyGen when `slhdsa.cpp` is
-built with the definition `OPENPQC_SLHDSA_KEYGEN_PCT` (as `OPENPQC_MLDSA_KEYGEN_PCT` for ML-DSA; there is no CMake
-option for it, and the tests compile their own object library with it). It costs one signature and one verification per
-key pair, 0.6–1.6 s for the s sets on one core. A failing test returns `OPENPQC_SLHDSA_ERR_PCT_FAIL` and zeroizes both
-keys. The GPU backend's KeyGen has no such test.
+built with the definition `OPENPQC_SLHDSA_KEYGEN_PCT` (as `OPENPQC_MLDSA_KEYGEN_PCT` for ML-DSA, which has a CMake
+option of that name; SLH-DSA has none yet, and the tests compile their own object library with the definition). It
+costs one signature and one verification per key pair, 0.6–1.6 s for the s sets on one core. A failing test returns
+`OPENPQC_SLHDSA_ERR_PCT_FAIL` and zeroizes both keys. The GPU backend's KeyGen has no such test.
 
 ## GPU backend (`sycl/`)
 
@@ -182,14 +208,21 @@ byte-identical to the CPU library:
 #include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"   /* link openpqc::slhdsa_sycl */
 
 opqc_sycl_slhdsa *ctx;
-opqc_sycl_slhdsa_create(&ctx, OPENPQC_SLHDSA_SHA2_128F, max_batch, -1);   /* -1: default (or OPENPQC_SYCL_DEVICE) */
-uint8_t *pk = opqc_sycl_slhdsa_malloc(ctx, n * SLHDSA_SHA2_128F_PUBLICKEYBYTES);   /* ... likewise sk, sig, msg */
-opqc_sycl_slhdsa_keypair(ctx, pk, sk, n);
+if (opqc_sycl_slhdsa_create(&ctx, OPENPQC_SLHDSA_SHA2_128F, max_batch, -1) != 0)  /* -1: default device */
+    return -1;                                        /* no such device, or the set is not in this build */
+uint8_t *pk = opqc_sycl_slhdsa_malloc(ctx, n * SLHDSA_SHA2_128F_PUBLICKEYBYTES);  /* likewise sk, sig, msg, ... */
 /* message i is msg[offsets[i] .. offsets[i + 1]); one context string for all, in host memory */
-opqc_sycl_slhdsa_sign(ctx, sig, msg, offsets, ctxstr, ctxlen, sk, n);          /* hedged */
-opqc_sycl_slhdsa_verify(ctx, sig, msg, offsets, ctxstr, ctxlen, pk, status, n);   /* status[i] = 0: valid */
-opqc_sycl_slhdsa_sync(ctx);
+int rc = opqc_sycl_slhdsa_keypair(ctx, pk, sk, n);
+if (rc == 0) rc = opqc_sycl_slhdsa_sign(ctx, sig, msg, offsets, ctxstr, ctxlen, sk, n);          /* hedged; no status */
+if (rc == 0) rc = opqc_sycl_slhdsa_verify(ctx, sig, msg, offsets, ctxstr, ctxlen, pk, status, n);  /* status required */
+if (rc == 0) rc = opqc_sycl_slhdsa_sync(ctx);
+if (rc == 0) rc = opqc_sycl_slhdsa_memcpy(ctx, host_status, status, n * sizeof(int32_t));
+/* ... copy the results back to the host likewise, then free every buffer */
+opqc_sycl_slhdsa_free(ctx, pk);
 opqc_sycl_slhdsa_destroy(ctx);
+if (rc != 0)
+    return -1;                                        /* no result of these calls may be used */
+/* signature i is valid only if host_status[i] == 0 */
 ```
 
 Also: the `_derand` variants (seeds; addrnd, NULL for the deterministic variant), HashSLH-DSA on pre-hashes PH(M)
@@ -198,14 +231,34 @@ ctx ‖ OID ‖ PH(M) in place), the internal functions on caller-built M′ (`_
 the `_one_key` forms of every signing and verification function (one key for the whole batch), and
 `opqc_sycl_slhdsa_workspace_bytes`, the device memory a context will take. Key, seed, addrnd, PH(M), offset and
 signature buffers must be 8-byte aligned and status buffers 4-byte aligned, as those of `opqc_sycl_slhdsa_malloc` are;
-messages may start at any byte. Sign has no status buffer: SLH-DSA signing cannot fail on the device. The functions
-return 0, −1 (invalid arguments, a parameter set not in this build, a device without enough local memory, memory that
-cannot be allocated, a max_batch for which a launch would exceed 2³¹ work-items), −2 (an exception of the SYCL runtime,
-or, for the randomized calls, page-locked host memory that cannot be allocated) or `OPENPQC_SLHDSA_ERR_RNG_FAIL`.
+messages may start at any byte. Every buffer must be USM memory of the context (`opqc_sycl_slhdsa_malloc` or
+`_malloc_host`, from any place inside the allocation): pageable host memory and the memory of a context on another
+device are refused with −1 before anything is queued (verification fails closed), also when n is 0. The check asks
+the SYCL runtime, which lets some memory through: AdaptiveCpp's OpenMP host device takes every pointer for its own
+(host memory, which it then uses, and another GPU's device memory, which the host cannot read: the process then ends
+with a segmentation fault, in a kernel or, on a failed context, in the fill of a verification's status); a buffer that
+has been freed is not refused under DPC++'s Level Zero (AdaptiveCpp's refused it) and on the OpenMP host device, where
+the runtime still reports it as the context's; and DPC++ and AdaptiveCpp take device memory of the other platform of
+the same Intel GPU (Level Zero or OpenCL; AdaptiveCpp seen with a Level Zero context and OpenCL memory) for this
+context's, and the kernels then compute wrong results from it while every call returns 0 (seen on an Iris Xe). Pass
+only buffers of the context that are still allocated. Sign has no status buffer: SLH-DSA signing cannot fail on the
+device. The functions return 0, −1 (invalid arguments, a parameter set not in this build, a device without enough
+local memory, memory that cannot be allocated, a max_batch for which a launch would exceed 2³¹ work-items, a
+malformed `OPENPQC_SYCL_DEVICE`; for `memcpy` and `memcpy_async` also a NULL dst or src), −2 (an exception of the SYCL
+runtime; for the randomized calls page-locked host memory that cannot be allocated; or a context that has failed: a
+device error found by a call, `sync` or `memcpy`, or an earlier exception, after which every call, `sync` and
+`memcpy` returns −2, a call with a buffer that is not USM memory included, and the calls run no more kernels (a NULL
+or unaligned buffer still gives −1); destroy the context and create a new one, and after a sticky CUDA fault, which
+leaves the device unusable for the rest of the process, start a new process; a device error found through the
+context's queue does not end the process) or `OPENPQC_SLHDSA_ERR_RNG_FAIL`. Every function that returns a status is
+declared `OPQC_MUST_CHECK`. The `_derand` and internal functions are testing interfaces as on the CPU (addrnd = NULL:
+the deterministic variant). The calls are asynchronous, except that the randomized calls wait for the copy of each
+launch's coins, and that a refused or failed verification waits for its fail-closed fill.
 
 ### Design
 
-The baseline, called E0 below, is a staged pipeline on one in-order queue, with no host wait inside a call:
+The baseline, called E0 below, is a staged pipeline on one in-order queue, with no host wait inside a call other than
+the copy of each launch's coins in the randomized calls:
 
 - **KeyGen** (5 kernels, 4 for SHAKE): the PK.seed states (SHA2 sets, one work-item per key), the WOTS+ chains of the
   top tree (one work-item per chain: PRF, then 15 F), the WOTS+ public keys (one work-item per leaf: T_len), the tree
@@ -231,21 +284,43 @@ The baseline, called E0 below, is a staged pipeline on one in-order queue, with 
 - **Secrets on the device.** The workspace is divided into sections: secret (the coins of the randomized calls, the FORS
   leaves and WOTS+ chain ends, the XMSS leaves) and public (PK.seed states, digests, roots, digits). Every section a
   call used is zeroized after every chunk, public ones included, as FIPS 205 §3.1 counts verification data as sensitive
-  in some applications; all of them if a chunk fails; `destroy` wipes the whole workspace. The tree stages clear their
-  local memory before they end. Control flow and memory indices depend only on the digest, the indices taken from it and
-  the digits of public messages. The randomized calls draw their coins on the host into page-locked memory that the
-  context holds and wipes after every launch: a copy from pageable memory would leave them in a staging buffer of the
-  driver, which the library cannot wipe.
-- **Fail closed.** When a verification call is refused (−1: a context string over 255 bytes, a bad pre-hash value, an
-  unaligned or missing buffer) or fails (−2), every entry of `status` is set to `OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE`,
-  as long as the context and the status buffer themselves are usable, so that a caller who ignores the return code never
-  reads a stale 0. ML-DSA's backend does not do this (it returns −1 and leaves `status` untouched); it was left
-  unchanged.
+  in some applications; when the context fails, the whole workspace is zeroized once, by the first call or `sync` that
+  finds the failure, and `destroy` wipes it again, each as far as the device still accepts work (after a sticky CUDA
+  fault it accepts none, and what the kernels wrote stays in device memory until the driver reuses it). The tree
+  stages clear their local memory before they end. Control flow and memory indices depend only on the digest, the
+  indices taken from it and the digits of public messages; this is a property of the source, as the value barrier is
+  the identity in device code and no check of the generated code exists. The
+  randomized calls draw their coins on the host into page-locked memory that the context holds and wipes after each
+  launch's copy: a copy from pageable memory would leave them in a staging buffer of the driver, which the library
+  cannot wipe. NVIDIA's driver has nevertheless been seen to keep copies of such small transfers in memory of its own,
+  also after `destroy`. `opqc_sycl_slhdsa_free` frees without wiping.
+- **Fail closed.** A verification call first sets every entry of `status` to `OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE`,
+  before its first kernel, and the kernels overwrite each entry they decide, so that an entry no kernel decides (a call
+  that fails part way, a device fault that only a later `sync` or `memcpy` reports, a dropped launch) reads as invalid,
+  never as a stale 0 of an earlier call. When a call is refused (−1: a context string over 255 bytes, a bad pre-hash
+  value, an unaligned or missing buffer, or one that is not USM memory of the context) or fails (−2), every entry is
+  set again and the call waits for that fill, so that it leaves no write into `status` behind it and `status` may be
+  read, reused or freed at once. The fills need a usable context and status buffer (a status buffer that is not USM
+  memory of the context is never written) and a device that still accepts work: after a fault that loses the device
+  no fill runs and `memcpy` returns −2 without copying, so take the entries as verdicts only when the call, `sync` and
+  `memcpy` all returned 0. ML-DSA's backend now does the same.
 - **One key.** The `_one_key` functions compute the PK.seed states once per launch. E0 shares nothing else between the
   signatures of one key, so they run at the speed of the general calls (kernel-mode ratios 0.97–1.02 on the RTX with
   DPC++, 0.98–1.03 with AdaptiveCpp, 0.89–1.17 in the Iris Xe's noisier rows).
 - **Threads.** A context is locked while a call queues its work; several host threads can share it, and their calls take
-  turns.
+  turns (`memcpy` does not take the lock, and `destroy` must not run while another thread uses the context).
+- **Device failures.** A device error found by a call, `sync` or `memcpy`, and every exception of the SYCL runtime,
+  fail the context for good (`Core/sycl/opqc_sycl_context.hpp`): every later call, `sync` and `memcpy` returns −2 and
+  the calls launch no kernel and write nothing into the workspace (verification still fills its status). The failed
+  state is checked before the memory of the buffers, so a buffer that is not USM memory gives −2 there too, while a
+  NULL or unaligned one still gives −1 (ML-KEM's and ML-DSA's backends give −1 for both). On CUDA a fault that is
+  sticky (an invalid address) leaves the device unusable for the rest of the process: every context on it fails, a
+  new create on it fails, and only a new process can use the device again. Under AdaptiveCpp, which keeps one list of
+  asynchronous errors per process, an error fails every context of the process, and the contexts take the errors of
+  the application's own SYCL queues as well. No device error found through the queue ended the process (shown with a
+  real CUDA illegal-address fault under both toolchains); the header names the three cases the library cannot catch:
+  an error that the SYCL runtime gives to the SYCL context's handler instead of the queue's, a failure inside the
+  runtime itself and, on AdaptiveCpp's OpenMP host device, a call with another GPU's device memory (above).
 - **Differences from the CPU library.** `msg`, `mprime` and `ph_m` must not be NULL even when every message is empty
   (the call cannot see that no byte will be read): NULL is refused with −1, and verification then fails closed, where
   the CPU library accepts NULL for an empty message. A signature of the wrong length cannot be passed: the sizes are the
@@ -255,7 +330,10 @@ The baseline, called E0 below, is a staged pipeline on one in-order queue, with 
 Iris Xe (Level Zero and OpenCL), and AdaptiveCpp 25.10 on the same three and on the CPU (OpenMP), every output equals
 the CPU library's: `test_slhdsa_sycl` passed for all 12 sets, 36 configurations per device with 0 failed checks, in the
 final re-run of 2026-10-25 (with every SLH-DSA, ML-DSA and ML-KEM GPU test and the quick CPU suite, 50 steps). The
-benchmark runs of E0 also checked their devices' keys and signatures against the CPU library for all 12 sets.
+benchmark runs of E0 also checked their devices' keys and signatures against the CPU library for all 12 sets. After
+the fixes of the GPU review's findings (the fail-closed fills, the failed context, the coin checks), the test passed
+for sets 1 and 12 on DPC++ (RTX 3050 and Iris Xe, Level Zero) and AdaptiveCpp (RTX 3050 and the OpenMP host); the
+review reproduced byte identity on five of the seven combinations (not the two AdaptiveCpp Iris Xe ones).
 
 **Build cost.** DPC++ generates the device code of all twelve sets whenever an executable links the backend: 594 s and
 1.2 GiB peak for `test_slhdsa_sycl`, 583–665 s for the benchmark programs; the backend's own compile takes 73 s and
@@ -546,7 +624,9 @@ work.
 ## Build
 
 `include/SLH/DSA/CMakeLists.txt` compiles `slhdsa.cpp` once and makes two libraries of it: `openpqc_slhdsa` takes its
-randomness from the operating system, `openpqc_slhdsa_testrng` calls the application's `randombytes()` (tests only).
+randomness from the operating system, `openpqc_slhdsa_testrng` calls the application's `randombytes()` (tests only;
+never link it into a program together with a production library: both define `opqc_randombytes`, and the linker
+keeps the first definition it finds, without an error).
 `openpqc_slhdsa_sycl` is added when a SYCL compiler is found (see the top-level README), with the development option
 `OPENPQC_SLHDSA_SYCL_SETS` described above.
 
@@ -565,10 +645,14 @@ The reference's own test programs run against this library and against the unmod
 | `slhdsa_differential` | this library against the reference (C and AVX2), byte for byte, on all twelve sets: KeyGen from seeds and randomized, deterministic, given-addrnd and hedged signing with messages of 0 … 2999 bytes and context strings of 0 … 255 bytes, HashSLH-DSA with each of the twelve pre-hash functions, the internal functions, and the rejection of tampered signatures (R, SIG_FORS, SIG_HT, message, context, PK.seed, PK.root, lengths, pure against pre-hash), of a flipped bit in each byte of the public key and in each n-byte block of an f-set signature, and of a 256-byte context string; a failing RNG and unknown pre-hash functions. 10,836 checks in 6–7 minutes (label `slow`) |
 | `test_slhdsa_cxx` | the C++ API: round trips, determinism, the domains of SLH-DSA and HashSLH-DSA against Algorithms 22 and 23 written out (the twelve OIDs typed in), 255- and 256-byte context strings and wrong signature lengths at every entry point, the context check of Verify, signing in place, the root comparison of `ht_verify` byte by byte, the key check, and the `ParameterSet` concept |
 | `slhdsa_pct`, `slhdsa_pct_fail` | the library built with the pair-wise consistency test (`OPENPQC_SLHDSA_KEYGEN_PCT`); and built so that the test fails (`OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_SLHDSA_ERR_PCT_FAIL` with both keys zeroized, which shows that the test is compiled in and its result used |
-| `slhdsa_stack` | no secret intermediate value on the stack after KeyGen, Sign, HashSLH-DSA and Verify (FIPS 205 §3.1): the stack is copied after each call and searched, also in the byte-swapped views of SHA-2's message schedule, for SK.seed, SK.prf, HMAC's key blocks, opt_rand, every unrevealed WOTS+ and FORS value and tree node, the message, its digest and PH(M) (for all twelve pre-hash functions); the scheme layer's own destruction without the burn; and a fault, not a write beyond the guard page, on thread stacks that are too short; with positive controls (Linux, GCC or Clang) |
-| `slhdsa_ct` | constant-time test under valgrind (when valgrind is found), with the check that the declassification is not too broad (label `slow`) |
+| `slhdsa_pct_odr` | an application's own KeyGen, compiled without the pair-wise consistency test and linked first, must not take the place of the library's (key generation lives in an inline namespace named after its configuration) |
+| `slhdsa_stack` | no secret intermediate value on the stack after KeyGen, Sign, HashSLH-DSA and Verify (FIPS 205 §3.1): the stack is copied after each call and searched, also in the byte-swapped views of SHA-2's message schedule and for the 4-byte words that SHA-256's and SHA-512's compressions leave (of HMAC and of the pre-hash functions too), for SK.seed, SK.prf, HMAC's key blocks, opt_rand, every unrevealed WOTS+ and FORS value and tree node, the message, its digest and PH(M) (for all twelve pre-hash functions, and the compression words of Core's pre-hash for the six SHA-2 ones); positive controls on the library's own compression path and without the burn (a library built without the burn fails it for every SHA2 set, GCC 16 and Clang 23); the scheme layer's own destruction without the burn; and a fault, not a write beyond the guard page, on thread stacks that are too short (Linux, GCC or Clang; also under AddressSanitizer, with its fake stacks turned off) |
+| `slhdsa_stack_pct` | the same for the library with the pair-wise consistency test, built without `-fstack-clash-protection`: KeyGen's residue and the test's signature for all twelve sets, short stacks for KeyGen, Sign and Verify of SHA2-256f, and in optimized x86-64 builds the compiler's report of the library's frames checked against the header (every frame over a page touched first, every other frame under 3.5 KiB) |
+| `slhdsa_ct` | constant-time test under valgrind (when valgrind is found and the build has no sanitizer), with the check that the declassification is not too broad (label `slow`) |
+| `slhdsa_O2_ct` | the same with the library compiled at -O2 whatever the build type, so that a Debug build checks optimized code too (label `slow`, about 10 minutes) |
 | `core_sha2` | Core's SHA-2, including the word-level compression against the FIPS 180-4 examples and a transcription with the full schedule |
 | `slhdsa_sycl` | the SYCL backend against this library on every SYCL device (labels `gpu` and `slow`, below) |
+| `slhdsa_sycl_faults`, `slhdsa_sycl_faults_sticky` | the SYCL backend when its work fails, by fault injection (white-box: the test compiles the backend's source for SHA2-128f and SHAKE-128f): the fail-closed status after a refusal, a failure part way and launches that never ran, the failed context (also with pageable buffers, which then give −2; a pageable status buffer may afterwards hold only its old entries or invalid ones), the zeroization of the whole workspace after a failure and of verification's sections after a call; `_sticky` with a real CUDA illegal-address fault in a process of its own (label `gpu`; skipped without an NVIDIA device) |
 
 Running them:
 
@@ -583,7 +667,8 @@ The `slow` label marks the tests that take more than about a minute: the s-set K
 each), `slhdsa_differential` (410 s), `slhdsa_ct` (441 s), and `slhdsa_acvp` and `reference_slhdsa_acvp` (129 s and
 100 s; the AVX2 run took 28 s and carries only `network`), all measured with GCC 16 on the i7-11370H. The whole
 project's quick offline run without the GPU tests (`ctest -LE "network|slow|gpu" -j2`) took 332 s for its 112 tests on
-2026-10-22; the SLH-DSA part of the quick run is 53 tests. The KAT tests write their response files into a temporary
+2026-10-22, when the SLH-DSA part of the quick run was 53 tests; tests have been added since, and configuring prints
+the current count in its summary line. The KAT tests write their response files into a temporary
 directory: if `TMPDIR` is a small tmpfs that fills up, the file is truncated while the generator still exits 0, and the
 hash check fails; point `TMPDIR` at a disk then.
 
@@ -594,14 +679,21 @@ context string. It covers KeyGen, signing with given, PK.seed and NULL addrnd, H
 pre-hash function), the internal functions, the one-key forms, end to end through page-locked memory and `memcpy_async`,
 verification of ten kinds of tampered signature (among them one made with a key whose PK.root differs only in its last
 byte, so that only the final comparison tells), also with another context string, every refusal with its fail-closed
-status, the randomized calls checked by the CPU, and two host threads on one context. Usage: `test_slhdsa_sycl [sets:
+status, memory that is not the context's (pageable host memory for every kind of buffer of every signing,
+verification and KeyGen function, and the host and device memory of a context on a GPU of another name) refused with
+−1 everywhere but on the OpenMP host device, which uses host memory, and buffers that start inside an allocation
+accepted, the randomized calls checked by the CPU, and two host threads on one context. It also checks that the
+randomized calls draw fresh coins (line `coins` of its output): the keys equal `keypair_derand` of their seeds, the
+seeds are nonzero and pairwise distinct over two calls, no key is the key of all-zero seeds, and the R of hedged
+signatures of one message under one key are pairwise distinct over the four randomized forms and never the R of
+addrnd = 0ⁿ or of the deterministic variant. Usage: `test_slhdsa_sycl [sets:
 all or ids, e.g. 3,4] [devices: all or indices, e.g. 2 or 0,3] [scale]` and `test_slhdsa_sycl --list-devices`; it prints
 one result line per device and exits with 0 (all requested sets tested and passed), 1 (a check failed), 2 (malformed
 arguments) or 77 (no SYCL device, or a requested set not in this build). In the re-run of 2026-10-25 one process took
 542 s for the RTX 3050 with DPC++, 1110 s for both Iris Xe devices with DPC++, 2583 s for the RTX and the OpenMP host
-with AdaptiveCpp and 3692 s for both Iris Xe devices with AdaptiveCpp (its JIT; the CPU oracle included each time). Not
-tested: the refusal of a device with too little local memory, and the fail-closed path after a SYCL exception, which
-cannot be provoked from the test.
+with AdaptiveCpp and 3692 s for both Iris Xe devices with AdaptiveCpp (its JIT; the CPU oracle included each time),
+before the coin checks were added. Not tested: the refusal of a device with too little local memory. The failure
+paths, which this test cannot provoke, are `slhdsa_sycl_faults`'s.
 
 **Mutation testing.** 55 mutants of the CPU library (41 that the test plan required and 14 of the testers' own), each
 applied to a scratch copy and run against the fast offline tests and the f-set part of the differential test (GCC 16;
@@ -642,8 +734,12 @@ FORS_ROOTS, the domain separator, the OID length, the chunk's key offset, the id
 Verify failing open on a refusal, and a root comparison of the first lane only) all make `test_slhdsa_sycl` fail on
 AdaptiveCpp's RTX build; the root comparison and the removed lock only since the test gained the PK.root kind of
 tampering and the threads check on a context of max_batch 1. The integer-address helpers of the math core were checked
-the same way (six mutants fail `slhdsa_math`; dropping the `& 0xff` of the layer is equivalent). Zeroization on the
-device can be checked only by reading the code.
+the same way (six mutants fail `slhdsa_math`; dropping the `& 0xff` of the layer is equivalent). The review of October
+2026 found that these 20 come from three runs with three versions of the test, and that 7 of 8 further hardening
+mutants passed it (no wipe, a fail-closed path that returns 0, the lock taken out of verification or KeyGen); the wipe
+and the fail-closed paths are now checked by `slhdsa_sycl_faults`, which reads the workspace and the status back, and
+the coin draw by the coin checks above (the review's coin mutant fails them), but the other hardening mutants have not
+been run against the new tests.
 
 **Review findings fixed.** A review of the CPU library (four lenses: FIPS 205 conformance, interfaces and style, secrets
 and constant time, tests; with the mutation run, its findings went to two adversarial verifiers, which confirmed 16 and
@@ -651,11 +747,12 @@ rejected 5) led to these changes, besides the test additions above: the `Paramet
 multiple of lg_w (a non-FIPS set with n = 16 and lg_w = 3 read past M); `slh_sign_internal` computes R locally and
 hashes the message before it writes SIG[0 : n], so that the signature may overlap the message (before, R was written
 first and could overwrite a message in the signature buffer before H_msg read it); PH(M) of the SHA-3 and SHAKE pre-hash
-functions was left on the stack, because Core's one-shot hashes did not wipe their state (`Core/prehash.hpp` now uses
-wiped incremental states, which fixes HashML-DSA as well, with unchanged outputs); `burn_stack` wrote past the end of
-20–32 KiB thread stacks before it touched the stack first; the stack needs are documented in the headers; and Core's
-SHA-2 absorb no longer copies one byte at a time, which made SHA2 signing 6–23 % faster. A review of the GPU backend
-reported ten findings, nine distinct issues (two of its lenses found the pre-hash bug), all fixed:
+functions was left on the stack, because Core's one-shot hashes did not wipe their state (`Core/prehash.hpp` then moved
+to wiped incremental states, and now hashes with Core's one-shot functions, which destroy their state and clear the
+stack and registers their computation used; this covers HashML-DSA as well, with unchanged outputs); `burn_stack` wrote
+past the end of 20–32 KiB thread stacks before it touched the stack first; the stack needs are documented in the
+headers; and Core's SHA-2 absorb no longer copies one byte at a time, which made SHA2 signing 6–23 % faster. A review of
+the GPU backend reported ten findings, nine distinct issues (two of its lenses found the pre-hash bug), all fixed:
 
 | Finding | Fix |
 |---|---|
@@ -677,7 +774,15 @@ reported ten findings, nine distinct issues (two of its lenses found the pre-has
   series); E5 addresses it.
 - **Constant time on the GPU** is a property of the source (branches and indices on public values only), not tested:
   there is no trace-based check of the kernels, and a GPU compiler could still turn a select into a branch. The
-  device-side zeroization is likewise checked only by reading the code.
+  device-side zeroization is checked by `slhdsa_sycl_faults` (whole workspace after a failure, verification's
+  sections after a call); what the CUDA driver keeps of the coin transfers is beyond the library's reach.
+- **No self-test when a context is created**, unlike the ML-KEM and ML-DSA backends: a device or JIT compiler that
+  miscomputes is found only by the tests.
+- **What the buffer check cannot see.** It asks the SYCL runtime, so a freed buffer under DPC++'s Level Zero and on
+  the OpenMP host device, any pointer on the OpenMP host device (another GPU's device memory then ends the process
+  with a segmentation fault), and under DPC++ and AdaptiveCpp the device memory of the other platform of the same
+  Intel GPU pass it (`openpqc_slhdsa_sycl.h`, Buffers). After a sticky CUDA fault the device can only be
+  used again by a new process, and nothing the kernels wrote can be wiped.
 - **The s-set workspace** (up to 11 MiB per operation) limits the batch per launch; the Iris Xe's comes out of host
   memory.
 - **Build and first-launch costs:** about 10 minutes and 1.2 GiB per DPC++ executable that links the backend, and about
@@ -688,11 +793,12 @@ reported ten findings, nine distinct issues (two of its lenses found the pre-has
 - **The GPU KeyGen** has no pair-wise consistency test; `OPENPQC_SLHDSA_KEYGEN_PCT` applies to the CPU library only.
 - **No fault countermeasures** (verify-after-sign, redundant computation) in the CPU library or on the GPU; E6 would
   measure their price.
-- **Clang 23** ran the fast SLH-DSA tests (53 of 53); the slow and network tests ran with GCC 16 only. The stack
-  test's informational run without the burn found SK.seed only with GCC and the old `W[64]` schedule; since the ring
-  schedule it finds nothing with either compiler, so it no longer shows that the burn is needed. (Before the ring, a
-  library built without the burn failed the test for all twelve sets with GCC 16 and for nine with Clang 23; this was
-  not repeated with the ring.)
-- **Shared Core code.** The page-locked coin buffer also changed ML-DSA's backend, whose randomized calls can now return
-  −2 when that memory cannot be allocated; ML-KEM's backend has its own copy of the coin code and still copies its coins
-  from pageable memory.
+- **Clang 23** ran the fast SLH-DSA tests (53 of 53) and the stack tests; the slow and network tests ran with GCC 16
+  only. Since `slhdsa_stack` searches the words that the SHA-2 compressions leave, a library built without the burn
+  fails it for every SHA2 set with both compilers, so the test shows again that the burn is needed (with the first ring
+  schedule and the byte-string search alone it had found nothing).
+- **Shared Core code.** The three GPU backends derive their contexts from Core's: the page-locked coin buffer, the
+  failed state and the waited status fills are the same code for ML-KEM, ML-DSA and SLH-DSA, and a change there is
+  checked by all three backends' tests and by `core_sycl`.
+- **Unchecked inputs.** The message offsets are device data and are not checked (an offset outside `msg` makes the
+  device read outside it).

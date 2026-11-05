@@ -14,9 +14,13 @@
 // C++ API:
 //
 //   - every out-of-range code, at the first coefficient of s1[0] and at the last coefficient of s2[k-1];
+//     each also as a consistent key pair: t0, tr and pk recomputed from the out-of-range s1 and s2
+//     (Algorithm 6, lines 3 and 5-10; BitPack and BitUnpack are inverse even on these codes), so that the
+//     regenerated key matches it and only the range of s1 and s2 tells it apart from a key of KeyGen; its
+//     signatures would verify under its pk with ||c s1|| above beta;
 //   - the code 2 eta (the coefficient -eta) at the same places: in range, so signing succeeds, but the
 //     key no longer matches its t0 and tr, so the checks fail;
-//   - every coefficient of s1 out of range, every one of s2, and both;
+//   - every coefficient of s1 out of range, every one of s2, and both, each also as a consistent key pair;
 //   - an in-range change of s1 with tr and t0 kept (signing succeeds, and the signature verifies under no
 //     key), and the same change with pk, tr and t0 recomputed (a valid key of another public key: check_sk
 //     passes, and its signatures verify under that key; check_keypair passes with that key's pk and fails
@@ -102,11 +106,13 @@ struct Keys {
     static std::size_t s1_poly(unsigned j) { return Lay::sk_s1 + Lay::eta_poly * j; }
     static std::size_t s2_poly(unsigned j) { return Lay::sk_s2 + Lay::eta_poly * j; }
 
-    // pk and sk for the s1, s2 that sk holds (in range), with rho and K of sk: Algorithm 6, lines 3 and 5-10
-    static void regenerate(Bytes& pk, Bytes& sk) {
+    // pk and sk for the s1, s2 that sk holds, with rho and K of sk: Algorithm 6, lines 3 and 5-10. in_range:
+    // whether s1 and s2 lie in [-eta, eta]; out-of-range coefficients stay as they are (skEncode's BitPack
+    // gives back the codes that skDecode's BitUnpack read), so the result is a consistent malformed key pair
+    static void regenerate(Bytes& pk, Bytes& sk, bool in_range = true) {
         dsa::PolyVec<P::l> s1;
         dsa::PolyVec<P::k> s2, t0, t1;
-        CHECK(dsa::sk_decode<P>(s1, s2, t0, std::span<const std::uint8_t, S::sk>(sk.data(), S::sk)));
+        CHECK(dsa::sk_decode<P>(s1, s2, t0, std::span<const std::uint8_t, S::sk>(sk.data(), S::sk)) == in_range);
         const std::span<const std::uint8_t, 32> rho(sk.data(), 32);
         const Bytes K(sk.begin() + 32, sk.begin() + 64);
         const auto A_hat = dsa::expand_a<P>(rho);
@@ -192,6 +198,16 @@ struct Keys {
         expect_check(what, sk, expected, pk, expected);
     }
 
+    // A key with s1 or s2 out of range, as a consistent key pair: t0, tr and pk recomputed from its s1 and s2,
+    // so that only the range of s1 and s2 can refuse it, in check_sk and check_keypair as in signing
+    static void expect_consistent_refused(const std::string& what, const Bytes& bad) {
+        Bytes pk2, sk2 = bad;
+        regenerate(pk2, sk2, false);
+        const std::string consistent = what + ", consistent pair (t0, tr, pk recomputed)";
+        sign_all(consistent, sk2, true);
+        expect_check(consistent, sk2, OPENPQC_MLDSA_ERR_INVALID_KEY, pk2);
+    }
+
     static void test() {
         Bytes pk(S::pk), sk(S::sk);
         std::array<std::uint8_t, 32> xi{};
@@ -212,6 +228,7 @@ struct Keys {
                 const std::string what = std::string("code ") + std::to_string(v) + " at " + where;
                 sign_all(what, bad, true);
                 expect_check(what, bad, OPENPQC_MLDSA_ERR_INVALID_KEY, pk);
+                expect_consistent_refused(what, bad);
             }
             Bytes edge = sk;
             if (get_code(edge, poly, i) == 2 * P::eta) set_code(edge, poly, i, 0);
@@ -239,6 +256,7 @@ struct Keys {
                                             std::pair{"all of s1 and s2 out of range", &both}}) {
                 sign_all(what, *key, true);
                 expect_check(what, *key, OPENPQC_MLDSA_ERR_INVALID_KEY, pk);
+                expect_consistent_refused(what, *key);
             }
         }
 

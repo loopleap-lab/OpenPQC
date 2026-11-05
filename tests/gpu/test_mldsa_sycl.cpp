@@ -1,4 +1,8 @@
-// test_mldsa_sycl.cpp  --  ML-DSA on SYCL devices vs the CPU library: byte-identical outputs
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
+// test_mldsa_sycl.cpp  --  ML-DSA on SYCL devices vs the CPU library: byte-identical outputs, fresh randomness,
+// the signing limit, and the status and error contract of the C API
 //
 // For every SYCL device (or the one given), each parameter set and batches of random inputs
 // (messages of 0 to 300 bytes; context strings of 0, 1 and 255 bytes):
@@ -15,27 +19,62 @@
 //                    hints, z too large but consistent (only the norm check rejects it), a
 //                    changed message or a changed t1; and with a changed context string
 //   verify_mu:       likewise, with mu
-//   randomized:      keypair and sign on the device, verified by the CPU
+//   randomized:      FIPS 204, Section 3.6.1: xi and rnd fresh for every operation. Two keypair
+//                    calls: every key pair valid (the CPU's key check, and the CPU verifies the
+//                    device's signatures with it), and pk, rho, K and tr all different, within a
+//                    call, across its launches, and across the two calls, and none the key of the
+//                    seed 0^32; sign_one_key and sign of one message n times under one key: the
+//                    c~ of all 2n signatures different, none that of the deterministic signature,
+//                    every signature valid (the CPU)
 //   threads:         two host threads signing through the same context at once, with different
 //                    context strings, get the signatures of their own context strings
-//   API:             unaligned key and mu buffers and context strings over 255 bytes are refused
-// Each batch runs once in one launch and once in chunks with a ragged last chunk.
+//   API:             unaligned key and mu buffers, status buffers that are not 4-byte aligned and
+//                    context strings over 255 bytes are refused (-1) and leave status alone, except
+//                    that a refused verification sets every entry to "invalid"; verification
+//                    without a status buffer is refused; every status read was set to another
+//                    value before the call
+// Each batch runs once in one launch and once in chunks with a ragged last chunk. Also:
+//   self-test:       the answers of the self-test of create (ML/DSA/sycl/mldsa_sycl_self_test.hpp)
+//                    are the CPU library's
+// (The end of the signing loop, Appendix C, is tested by test_mldsa_sycl_faults with the loop's
+// bound lowered: no private key that the CPU library signs with -- s1 and s2 in range -- makes
+// every attempt fail, so the real bound of 821 attempts cannot be reached from the C API.)
 //
 // Usage: test_mldsa_sycl [operations per batch, default 200] [device index, default all]
-// Exit code 77 (CTest: skipped) if there is no SYCL device.
+//        test_mldsa_sycl self-test-values    prints the self-test's answers, computed by the CPU library
+//        test_mldsa_sycl sticky [device]     a real device fault in signing, on an NVIDIA device (CUDA then
+//                                            refuses all work of the process on it, hence a mode of its own),
+//                                            through buffers that pass every check of the C API: the signature
+//                                            that finishes in a later round of the signing loop starts 8 bytes
+//                                            before the end of a device allocation, and the rest of it is
+//                                            written past that end, where nothing is mapped; the call must
+//                                            return -2 in that round (not 0, not hang), every later call, sync
+//                                            and memcpy -2, a call with a NULL or pageable signature buffer -1,
+//                                            a second context's next call or sync -2, a new create fail, and
+//                                            destroy return (a watchdog fails the test after 60 s)
+// Exit code 0 if every check passed, 1 if one failed, 77 (CTest: skipped) if there is no SYCL device
+// (sticky: no NVIDIA device).
+#include <algorithm>
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <random>
+#include <set>
 #include <span>
+#include <string>
 #include <thread>
 #include <vector>
 
+#include "Core/opqc_sha3.h"
 #include "ML/DSA/openpqc_mldsa.h"
 #include "ML/DSA/scheme/encoding.hpp"
 #include "ML/DSA/scheme/mldsa_internal.hpp"
+#include "ML/DSA/sycl/mldsa_sycl_self_test.hpp"
 #include "ML/DSA/sycl/openpqc_mldsa_sycl.h"
 
 namespace {
@@ -98,6 +137,7 @@ struct CpuApi {
     std::size_t pk, sk, sig, k, omega, ctilde, z_bytes, hint_offset;
     std::uint32_t gamma1;
     int (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
+    int (*check_keypair)(const uint8_t*, const uint8_t*);
     int (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
     int (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
     int (*external_mu)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
@@ -111,7 +151,8 @@ struct CpuApi {
         N, MLDSA##N##_PUBLICKEYBYTES, MLDSA##N##_SECRETKEYBYTES, MLDSA##N##_BYTES, dsa::params::ML_DSA_##N::k, \
                 dsa::params::ML_DSA_##N::omega, dsa::Sizes<dsa::params::ML_DSA_##N>::ctilde,                 \
                 dsa::Sizes<dsa::params::ML_DSA_##N>::z, dsa::Layout<dsa::params::ML_DSA_##N>::sig_h,          \
-                dsa::params::ML_DSA_##N::gamma1, openpqc_mldsa##N##_keypair_derand,                           \
+                dsa::params::ML_DSA_##N::gamma1,                                                             \
+                openpqc_mldsa##N##_keypair_derand, openpqc_mldsa##N##_check_keypair,                         \
                 openpqc_mldsa##N##_sign_derand, openpqc_mldsa##N##_verify, openpqc_mldsa##N##_external_mu,    \
                 openpqc_mldsa##N##_sign_mu_derand, openpqc_mldsa##N##_verify_mu,                             \
                 sign_with_large_z<dsa::params::ML_DSA_##N>                                                   \
@@ -151,6 +192,15 @@ std::size_t mismatches(const Bytes& a, const Bytes& b, std::size_t stride) {
     for (std::size_t i = 0; i < a.size(); i += stride) bad += std::memcmp(&a[i], &b[i], stride) != 0;
     return bad;
 }
+
+// bytes [from, from + len) of b
+Bytes slice(const Bytes& b, std::size_t from, std::size_t len) {
+    return Bytes(b.begin() + static_cast<std::ptrdiff_t>(from), b.begin() + static_cast<std::ptrdiff_t>(from + len));
+}
+
+// A status value that no call writes: set before a call whose status is read, so that an entry the
+// call does not write cannot pass for one it wrote
+constexpr std::int32_t SENTINEL = -99;
 
 // n messages back to back, and their offsets
 struct Batch {
@@ -206,6 +256,10 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
                 d_offsets(c, 8 * (n + 1));
         std::vector<std::int32_t> status(n);
         auto* st = d_status.as<std::int32_t>();
+        const auto sentinel = [&] {
+            std::fill(status.begin(), status.end(), SENTINEL);
+            d_status.put(status);
+        };
         d_seeds.put(seeds);
         d_rnd.put(rnd);
         d_msg.put(msgs.bytes);
@@ -230,8 +284,7 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
         const std::pair<unsigned, std::size_t> schedules[] = {{16, 512}, {1, 0}, {8, 1u << 30}, {3, 7}};
         for (const auto& [max_attempts, fill] : schedules) {
             CHECK(opqc_sycl_mldsa_set_speculation(c, max_attempts, fill) == 0);
-            std::fill(status.begin(), status.end(), -99);
-            d_status.put(status);
+            sentinel();
             CHECK(opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_rnd.p, d_sk.p, st,
                                               n) == 0);
             CHECK(opqc_sycl_mldsa_sync(c) == 0);
@@ -248,6 +301,7 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
         d_mu.put(mu);
         std::fill(g_sig.begin(), g_sig.end(), 0);
         d_sig.put(g_sig);
+        sentinel();
         CHECK(opqc_sycl_mldsa_sign_mu_derand(c, d_sig.p, d_mu.p, d_rnd.p, d_sk.p, st, n) == 0);
         CHECK(opqc_sycl_mldsa_sync(c) == 0);
         d_sig.get(g_sig);
@@ -265,6 +319,7 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
             for (std::size_t i = 0; i < n; i++)
                 CHECK(api.sign_derand(&sig1[i * api.sig], msgs.at(i), msgs.length(i), ctx.data(), ctxlen,
                                       &rnd[32 * i], &sk[0]) == 0);
+            sentinel();
             CHECK(opqc_sycl_mldsa_sign_one_key_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_rnd.p,
                                                       d_sk.p, st, n) == 0);
             CHECK(opqc_sycl_mldsa_sync(c) == 0);
@@ -277,6 +332,7 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
                 expected1[i] = api.verify(&sig1[i * api.sig], api.sig, msgs.at(i), msgs.length(i), ctx.data(), ctxlen,
                                           &pk[0]);
             d_sig.put(sig1);
+            sentinel();
             CHECK(opqc_sycl_mldsa_verify_one_key(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_pk.p, st, n) == 0);
             CHECK(opqc_sycl_mldsa_sync(c) == 0);
             d_status.get(status);
@@ -341,15 +397,18 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
         d_pk.put(v_pk);
         d_mu.put(v_mu);
         std::size_t bad_verify = 0, bad_verify_mu = 0, bad_verify_ctx = 0;
+        sentinel();
         CHECK(opqc_sycl_mldsa_verify(c, d_sig.p, d_vmsg.p, d_voffsets.as<const std::uint64_t>(), ctx.data(), ctxlen,
                                      d_pk.p, st, n) == 0);
         CHECK(opqc_sycl_mldsa_sync(c) == 0);
         d_status.get(status);
         for (std::size_t i = 0; i < n; i++) bad_verify += status[i] != expected[i];
+        sentinel();
         CHECK(opqc_sycl_mldsa_verify_mu(c, d_sig.p, d_mu.p, d_pk.p, st, n) == 0);
         CHECK(opqc_sycl_mldsa_sync(c) == 0);
         d_status.get(status);
         for (std::size_t i = 0; i < n; i++) bad_verify_mu += status[i] != expected_mu[i];
+        sentinel();
         CHECK(opqc_sycl_mldsa_verify(c, d_sig.p, d_vmsg.p, d_voffsets.as<const std::uint64_t>(), other_ctx.data(),
                                      other_ctx.size(), d_pk.p, st, n) == 0);
         CHECK(opqc_sycl_mldsa_sync(c) == 0);
@@ -357,28 +416,124 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
         for (std::size_t i = 0; i < n; i++) bad_verify_ctx += status[i] != expected_ctx[i];
         CHECK(bad_verify == 0 && bad_verify_mu == 0 && bad_verify_ctx == 0);
 
-        // invalid arguments: unaligned buffers, a context string of 256 bytes
-        const Bytes long_ctx(256, 1);
-        CHECK(opqc_sycl_mldsa_keypair_derand(c, d_pk.p + 4, d_sk.p, d_seeds.p, n) == -1);
-        CHECK(opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_rnd.p, d_sk.p + 2, st,
-                                          n) == -1);
-        CHECK(opqc_sycl_mldsa_verify_mu(c, d_sig.p, d_mu.p + 1, d_pk.p, st, n) == -1);
-        CHECK(opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, long_ctx.data(), 256, d_rnd.p, d_sk.p, st,
-                                          n) == -1);
-        CHECK(opqc_sycl_mldsa_verify(c, d_sig.p, d_msg.p, offsets, long_ctx.data(), 256, d_pk.p, st, n) == -1);
-
-        // randomized KeyGen and Sign on the device: the CPU verifies the results
-        CHECK(opqc_sycl_mldsa_keypair(c, d_pk.p, d_sk.p, n) == 0);
-        CHECK(opqc_sycl_mldsa_sign(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_sk.p, st, n) == 0);
-        CHECK(opqc_sycl_mldsa_sync(c) == 0);
-        d_pk.get(g_pk);
-        d_sig.get(g_sig);
-        std::size_t bad_random = 0;
-        for (std::size_t i = 0; i < n; i++) {
-            bad_random += api.verify(&g_sig[i * api.sig], api.sig, msgs.at(i), msgs.length(i), ctx.data(), ctxlen,
-                                     &g_pk[i * api.pk]) != 0;
+        // invalid arguments: unaligned buffers, a context string of 256 bytes, verification without
+        // a status buffer, a status buffer that is not 4-byte aligned. Every refusal returns -1 and
+        // leaves status alone, except a refused verification with a usable status buffer: that sets
+        // every entry to "invalid" (fail closed), and has done so when it returns.
+        std::size_t bad_api = 0;
+        {
+            const Bytes long_ctx(256, 1);
+            auto* st_odd = reinterpret_cast<std::int32_t*>(d_status.p + 2);   // not 4-byte aligned
+            const auto refused = [&](int rc, std::int32_t want) {   // want: every entry, SENTINEL if untouched
+                d_status.get(status);
+                bad_api += rc != -1;
+                for (const std::int32_t s : status) bad_api += s != want;
+                sentinel();
+            };
+            sentinel();
+            refused(opqc_sycl_mldsa_keypair_derand(c, d_pk.p + 4, d_sk.p, d_seeds.p, n), SENTINEL);
+            refused(opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_rnd.p, d_sk.p + 2,
+                                                st, n),
+                    SENTINEL);
+            refused(opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, long_ctx.data(), 256, d_rnd.p, d_sk.p,
+                                                st, n),
+                    SENTINEL);
+            refused(opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_rnd.p, d_sk.p,
+                                                st_odd, n),
+                    SENTINEL);
+            refused(opqc_sycl_mldsa_sign(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_sk.p, st_odd, n), SENTINEL);
+            refused(opqc_sycl_mldsa_keypair(c, d_pk.p, d_sk.p + 4, n), SENTINEL);
+            refused(opqc_sycl_mldsa_verify(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_pk.p, st_odd, n),
+                    SENTINEL);
+            refused(opqc_sycl_mldsa_verify(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_pk.p, nullptr, n),
+                    SENTINEL);
+            refused(opqc_sycl_mldsa_verify_one_key(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_pk.p, nullptr,
+                                                   n),
+                    SENTINEL);
+            refused(opqc_sycl_mldsa_verify_mu(c, d_sig.p, d_mu.p, d_pk.p, nullptr, n), SENTINEL);
+            refused(opqc_sycl_mldsa_verify_mu(c, d_sig.p, d_mu.p + 1, d_pk.p, st, n), OPENPQC_MLDSA_ERR_INVALID_SIGNATURE);
+            refused(opqc_sycl_mldsa_verify(c, d_sig.p, d_msg.p, offsets, long_ctx.data(), 256, d_pk.p, st, n),
+                    OPENPQC_MLDSA_ERR_INVALID_SIGNATURE);
+            refused(opqc_sycl_mldsa_verify(c, d_sig.p, nullptr, offsets, ctx.data(), ctxlen, d_pk.p, st, n),
+                    OPENPQC_MLDSA_ERR_INVALID_SIGNATURE);
+            CHECK(bad_api == 0);
+            CHECK(opqc_sycl_mldsa_sync(c) == 0);   // no refusal fails the context
         }
-        CHECK(bad_random == 0);
+
+        // randomized KeyGen and Sign on the device (FIPS 204, Section 3.6.1: xi and rnd fresh for
+        // every operation, from the operating system's RNG here)
+        std::size_t bad_random = 0, stale = 0;
+        {
+            // two keypair calls: every pair valid, and pk, rho, K and tr all different (also from the
+            // key of the seed 0^32)
+            Bytes pk1(pk.size()), sk1(sk.size()), pk2(pk.size()), sk2(sk.size());
+            CHECK(opqc_sycl_mldsa_keypair(c, d_pk.p, d_sk.p, n) == 0);
+            d_pk.get(pk1);
+            d_sk.get(sk1);
+            CHECK(opqc_sycl_mldsa_keypair(c, d_pk.p, d_sk.p, n) == 0);
+            d_pk.get(pk2);
+            d_sk.get(sk2);
+            Bytes zero_pk(api.pk), zero_sk(api.sk);
+            const Bytes zero_seed(32, 0);
+            CHECK(api.keypair_derand(zero_pk.data(), zero_sk.data(), zero_seed.data()) == 0);
+            std::set<Bytes> pks{zero_pk}, rhos{slice(zero_pk, 0, 32)}, Ks{slice(zero_sk, 32, 32)},
+                    trs{slice(zero_sk, 64, 64)};
+            for (const auto& [P, S] : {std::pair{&pk1, &sk1}, std::pair{&pk2, &sk2}}) {
+                for (std::size_t i = 0; i < n; i++) {
+                    pks.insert(slice(*P, i * api.pk, api.pk));
+                    rhos.insert(slice(*P, i * api.pk, 32));
+                    Ks.insert(slice(*S, i * api.sk + 32, 32));
+                    trs.insert(slice(*S, i * api.sk + 64, 64));
+                    bad_random += api.check_keypair(&(*P)[i * api.pk], &(*S)[i * api.sk]) != 0;
+                }
+            }
+            stale += (2 * n + 1 - pks.size()) + (2 * n + 1 - rhos.size()) + (2 * n + 1 - Ks.size()) +
+                     (2 * n + 1 - trs.size());
+
+            // signatures of each message under the keys of the first call: valid
+            d_pk.put(pk1);
+            d_sk.put(sk1);
+            sentinel();
+            CHECK(opqc_sycl_mldsa_sign(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_sk.p, st, n) == 0);
+            d_sig.get(g_sig);
+            d_status.get(status);
+            for (std::size_t i = 0; i < n; i++) {
+                bad_random += status[i] != 0;
+                bad_random += api.verify(&g_sig[i * api.sig], api.sig, msgs.at(i), msgs.length(i), ctx.data(), ctxlen,
+                                         &pk1[i * api.pk]) != 0;
+            }
+
+            // one message (the empty one) signed n times under one key, by sign_one_key and by sign (n
+            // copies of the key): hedged signatures, so c~ differs in all 2n of them and from that of the
+            // deterministic signature (rnd = 0)
+            Bytes key0;
+            for (std::size_t i = 0; i < n; i++) key0.insert(key0.end(), sk1.begin(), sk1.begin() + static_cast<std::ptrdiff_t>(api.sk));
+            Bytes det(api.sig);
+            const Bytes rnd0(32, 0);
+            CHECK(api.sign_derand(det.data(), nullptr, 0, ctx.data(), ctxlen, rnd0.data(), sk1.data()) == 0);
+            DeviceBuffer d_empty(c, 8 * (n + 1));
+            d_empty.put(std::vector<std::uint64_t>(n + 1, 0));
+            d_sk.put(key0);
+            std::set<Bytes> c_tildes{slice(det, 0, api.ctilde)};
+            for (const bool one_key : {true, false}) {
+                sentinel();
+                const auto* empty = d_empty.as<const std::uint64_t>();
+                CHECK((one_key ? opqc_sycl_mldsa_sign_one_key(c, d_sig.p, d_msg.p, empty, ctx.data(), ctxlen, d_sk.p,
+                                                              st, n)
+                               : opqc_sycl_mldsa_sign(c, d_sig.p, d_msg.p, empty, ctx.data(), ctxlen, d_sk.p, st, n)) ==
+                      0);
+                d_sig.get(g_sig);
+                d_status.get(status);
+                for (std::size_t i = 0; i < n; i++) {
+                    bad_random += status[i] != 0;
+                    bad_random += api.verify(&g_sig[i * api.sig], api.sig, nullptr, 0, ctx.data(), ctxlen, pk1.data()) != 0;
+                    c_tildes.insert(slice(g_sig, i * api.sig, api.ctilde));
+                }
+            }
+            stale += 2 * n + 1 - c_tildes.size();
+            CHECK(bad_random == 0 && stale == 0);
+            CHECK(opqc_sycl_mldsa_sync(c) == 0);
+        }
 
         // Two host threads sign at once through this context, with different context strings
         // and no status buffer: the calls take turns (the context's lock), so each gets the
@@ -416,24 +571,296 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
         }
 
         std::printf("  ML-DSA-%d, %zu ops in chunks of %zu, |ctx| = %zu: mismatches pk %zu sk %zu sig %zu sig_mu %zu "
-                    "one_key %zu verify %zu verify_mu %zu verify_ctx %zu random %zu threads %zu; %zu valid of %zu "
-                    "verified; signing: %zu rounds, %.2f attempts per signature\n",
+                    "one_key %zu verify %zu verify_mu %zu verify_ctx %zu api %zu random %zu fresh %zu threads %zu; "
+                    "%zu valid of %zu verified; signing: %zu rounds, %.2f attempts per signature\n",
                     api.level, n, max_batch, ctxlen, bad_pk, bad_sk, bad_sig, bad_sig_mu, bad_one_key, bad_verify,
-                    bad_verify_mu, bad_verify_ctx, bad_random, bad_threads, valid, n, rounds,
+                    bad_verify_mu, bad_verify_ctx, bad_api, bad_random, stale, bad_threads, valid, n, rounds,
                     static_cast<double>(attempts) / static_cast<double>(n));
     }
     opqc_sycl_mldsa_destroy(c);
 }
 
+// The self-test's answers, computed by the CPU library from the inputs of mldsa_sycl_self_test.hpp
+// (openpqc_mldsa_sycl.h, Self-test): the SHA3-256 hashes of pk, sk and the deterministic signature;
+// also whether the CPU library verifies the signature and rejects the tampered copy
+struct SelfTestAnswers {
+    std::array<std::uint8_t, 32> pk, sk, sig;
+    bool verdicts;
+};
+SelfTestAnswers self_test_answers(const CpuApi& api) {
+    namespace st = openpqc::mldsa::gpu::self_test;
+    Bytes xi(32), msg(st::MESSAGE_BYTES), ctx(st::CONTEXT_BYTES), rnd(32, 0), pk(api.pk), sk(api.sk), sig(api.sig);
+    for (std::size_t i = 0; i < xi.size(); i++) xi[i] = st::xi(i);
+    for (std::size_t i = 0; i < msg.size(); i++) msg[i] = st::message(i);
+    for (std::size_t i = 0; i < ctx.size(); i++) ctx[i] = st::context(i);
+    SelfTestAnswers a{};
+    CHECK(api.keypair_derand(pk.data(), sk.data(), xi.data()) == 0);
+    CHECK(api.sign_derand(sig.data(), msg.data(), msg.size(), ctx.data(), ctx.size(), rnd.data(), sk.data()) == 0);
+    Bytes tampered = sig;
+    tampered[st::TAMPERED_BYTE] ^= 1;
+    a.verdicts = api.verify(sig.data(), sig.size(), msg.data(), msg.size(), ctx.data(), ctx.size(), pk.data()) == 0 &&
+                 api.verify(tampered.data(), tampered.size(), msg.data(), msg.size(), ctx.data(), ctx.size(),
+                            pk.data()) == OPENPQC_MLDSA_ERR_INVALID_SIGNATURE;
+    opqc_sha3_256(a.pk.data(), pk.data(), pk.size());
+    opqc_sha3_256(a.sk.data(), sk.data(), sk.size());
+    opqc_sha3_256(a.sig.data(), sig.data(), sig.size());
+    return a;
+}
+
+void print_hash(const char* name, const std::array<std::uint8_t, 32>& h, bool last) {
+    std::printf("         /* %-13s */ {", name);
+    for (std::size_t i = 0; i < 32; i++)
+        std::printf("0x%02x%s", h[i], i == 31 ? "" : i % 12 == 11 ? ",\n                    " : ", ");
+    std::printf("}%s\n", last ? "" : ",");
+}
+
+// "self-test-values": the answers in the form of mldsa_sycl_self_test.hpp
+int print_self_test_values() {
+    for (const CpuApi& api : apis) {
+        const SelfTestAnswers a = self_test_answers(api);
+        std::printf("        {%d,\n", api.level);
+        print_hash("SHA3-256(pk)", a.pk, false);
+        print_hash("SHA3-256(sk)", a.sk, false);
+        print_hash("SHA3-256(sig)", a.sig, true);
+        std::printf("        }%s\n", api.level == 87 ? "" : ",");
+        CHECK(a.verdicts);
+    }
+    return failures ? 1 : 0;
+}
+
+// The answers that the backend's self-test compares with are the CPU library's
+void check_self_test_values() {
+    namespace st = openpqc::mldsa::gpu::self_test;
+    for (const CpuApi& api : apis) {
+        const SelfTestAnswers a = self_test_answers(api);
+        bool found = false;
+        for (const st::Answers& b : st::answers) {
+            if (b.level != api.level) continue;
+            found = true;
+            CHECK(a.pk == b.pk && a.sk == b.sk && a.sig == b.sig && a.verdicts);
+        }
+        CHECK(found);
+    }
+    std::printf("self-test answers (ML/DSA/sycl/mldsa_sycl_self_test.hpp): %s\n",
+                failures ? "NOT the CPU library's" : "the CPU library's");
+}
+
+bool nvidia(int device) {
+    const std::string name = opqc_sycl_device_name(device), platform = opqc_sycl_device_platform(device);
+    return name.find("NVIDIA") != std::string::npos || platform.find("CUDA") != std::string::npos;
+}
+
+// Ends the process with the result FAIL unless the steps of the fault sequence have all returned within `seconds`:
+// a call that never returns after a device fault (a signing loop that goes on with counters it could not read)
+// fails the test at once, instead of at CTest's timeout with a log of the runtime's errors
+class Watchdog {
+  public:
+    Watchdog(int device, int seconds) : thread_([this, device, seconds] { watch(device, seconds); }) {}
+    ~Watchdog() {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            done_ = true;
+        }
+        wake_.notify_one();
+        thread_.join();
+    }
+    Watchdog(const Watchdog&) = delete;
+    Watchdog& operator=(const Watchdog&) = delete;
+    void step(const char* what) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        step_ = what;
+    }
+
+  private:
+    void watch(int device, int seconds) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (wake_.wait_for(lock, std::chrono::seconds(seconds), [this] { return done_; })) return;
+        std::printf("  %s: not returned after %d s\nresult sticky device %d: FAIL, a call did not return\n", step_,
+                    seconds, device);
+        std::fflush(stdout);
+        std::_Exit(1);
+    }
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    bool done_ = false;
+    const char* step_ = "";
+    std::thread thread_;   // the last member: it starts once the others exist
+};
+
+// "sticky": a real device fault inside the signing loop, on an NVIDIA device, through buffers that pass every
+// check of the C API (memory of the context: sycl::get_pointer_type). With one attempt per round, a signature that
+// finishes in round r >= 3 is written in that round only (sign_select), so the rounds before it run normally and
+// only the round that finishes it can fault. Its signature pointer is 8 bytes before the end of a device allocation
+// of EDGE_BYTES, made after every other allocation of the process: the CUDA driver places large allocations one
+// after the other, upward, in 2 MiB pages, so nothing is mapped past the end of the last one, and the write of the
+// other bytes of the signature faults (CUDA: an illegal address, after which every command of the process on the
+// device fails). The same signature written so that it ends at the end of the allocation is the CPU library's
+// (only the bytes past the end fault); a call that returns 0 there is reported as an inducer that did not fault.
+// After the fault, the counters that the host reads cannot be trusted (under AdaptiveCpp the failed copy leaves
+// them as they were, and a loop that went on with them would never end): the call must return -2, in the round of
+// the fault; then every call, sync and memcpy of the context -2, and a call with a signature buffer the kernels
+// cannot use (NULL, pageable host memory) is still refused before anything is queued (-1), as before the fault. A
+// second context, created before the fault, must report it by its next call or at the latest its sync, a new create
+// on the device must fail, the process must not end (DPC++ on CUDA has been seen to abort in an event's destructor
+// when a second context submitted work after a sticky fault), and destroy must return.
+int sticky(int device) {
+    constexpr std::size_t EDGE_BYTES = std::size_t{64} << 20;   // a multiple of the driver's 2 MiB pages
+    constexpr int WATCHDOG_SECONDS = 60;                        // the whole sequence takes well under a second
+    const CpuApi& api = apis[0];
+    std::printf("sticky: ML-DSA-%d on device %d (%s)\n", api.level, device, opqc_sycl_device_name(device));
+    std::fflush(stdout);
+    opqc_sycl_mldsa *a = nullptr, *b = nullptr;
+    CHECK(opqc_sycl_mldsa_create(&a, api.level, 1, device) == 0);
+    CHECK(opqc_sycl_mldsa_create(&b, api.level, 1, device) == 0);
+    if (!a || !b) return 1;
+    Bytes seed(32, 7), pk(api.pk), sk(api.sk);
+    CHECK(api.keypair_derand(pk.data(), sk.data(), seed.data()) == 0);
+    // every allocation but the edge's first
+    auto* d_sk = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(a, api.sk));
+    auto* d_pk = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(a, api.pk));
+    auto* d_sig = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(a, api.sig));
+    auto* d_msg = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(a, 8));
+    auto* d_off = static_cast<std::uint64_t*>(opqc_sycl_mldsa_malloc(a, 16));
+    auto* d_rnd = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(a, 32));
+    auto* d_seed = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(a, 32));
+    auto* d_status = static_cast<std::int32_t*>(opqc_sycl_mldsa_malloc(a, 4));
+    auto* b_seed = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(b, 32));
+    auto* b_pk = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(b, api.pk));
+    auto* b_sk = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(b, api.sk));
+    CHECK(d_sk && d_pk && d_sig && d_msg && d_off && d_rnd && d_seed && d_status && b_seed && b_pk && b_sk);
+    const std::uint64_t offsets[2] = {0, 8};
+    const Bytes rnd(32, 0);
+    CHECK(opqc_sycl_mldsa_memcpy(a, d_sk, sk.data(), api.sk) == 0);
+    CHECK(opqc_sycl_mldsa_memcpy(a, d_pk, pk.data(), api.pk) == 0);
+    CHECK(opqc_sycl_mldsa_memcpy(a, d_off, offsets, sizeof offsets) == 0);
+    CHECK(opqc_sycl_mldsa_memcpy(a, d_rnd, rnd.data(), 32) == 0);
+    CHECK(opqc_sycl_mldsa_memcpy(a, d_seed, seed.data(), 32) == 0);
+    CHECK(opqc_sycl_mldsa_memcpy(b, b_seed, seed.data(), 32) == 0);
+    CHECK(opqc_sycl_mldsa_set_speculation(a, 1, 0) == 0);   // one attempt per round
+    // a message whose signature needs at least three attempts (rounds), found on the healthy context
+    Bytes m(8);
+    std::size_t rounds = 0;
+    for (std::uint8_t j = 0; j < 64 && rounds < 3; j++) {
+        for (std::size_t i = 0; i < m.size(); i++) m[i] = static_cast<std::uint8_t>(j + 13 * i);
+        CHECK(opqc_sycl_mldsa_memcpy(a, d_msg, m.data(), m.size()) == 0);
+        CHECK(opqc_sycl_mldsa_sign_derand(a, d_sig, d_msg, d_off, nullptr, 0, d_rnd, d_sk, d_status, 1) == 0);
+        CHECK(opqc_sycl_mldsa_sign_stats(a, &rounds, nullptr) == 0);
+    }
+    CHECK(rounds >= 3);
+    Bytes want(api.sig), got(api.sig);
+    CHECK(api.sign_derand(want.data(), m.data(), m.size(), nullptr, 0, rnd.data(), sk.data()) == 0);
+    // signature buffers that the kernels cannot use: refused before anything is queued, the context stays usable
+    Bytes pageable(api.sig);
+    const int null_rc = opqc_sycl_mldsa_sign_derand(a, nullptr, d_msg, d_off, nullptr, 0, d_rnd, d_sk, d_status, 1);
+    const int host_rc =
+            opqc_sycl_mldsa_sign_derand(a, pageable.data(), d_msg, d_off, nullptr, 0, d_rnd, d_sk, d_status, 1);
+    // the allocation whose end the signature crosses, the last one; the control: the signature in its last bytes
+    auto* edge = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(a, EDGE_BYTES));
+    CHECK(edge != nullptr);
+    if (!edge) return 1;
+    std::uint8_t* inside = edge + EDGE_BYTES - api.sig;   // ends at the end of the allocation
+    std::uint8_t* across = edge + EDGE_BYTES - 8;         // 8 bytes in it, the other bytes past its end
+    const int in_rc = opqc_sycl_mldsa_sign_derand(a, inside, d_msg, d_off, nullptr, 0, d_rnd, d_sk, d_status, 1);
+    const int get_rc = opqc_sycl_mldsa_memcpy(a, got.data(), inside, api.sig);
+    std::printf("  a message whose signature takes %zu rounds; signature buffer NULL %d, in pageable host memory %d; "
+                "into the last %zu bytes of a %zu MiB allocation %d (copy %d): %s\n",
+                rounds, null_rc, host_rc, api.sig, EDGE_BYTES >> 20, in_rc, get_rc,
+                got == want ? "the CPU's signature" : "NOT the CPU's signature");
+    std::fflush(stdout);
+    CHECK(null_rc == -1 && host_rc == -1 && in_rc == 0 && get_rc == 0 && got == want);
+    if (failures) return 1;   // no fault on a context that does not work as it should
+
+    std::size_t done = 0;
+    std::int32_t st = SENTINEL;
+    Bytes copied(4);   // the destination of memcpy_async: alive until destroy
+    int rc = 0, mrc = 0, arc = 0, src = 0, null_rc2 = 0, host_rc2 = 0, brc = 0, bsrc = 0, crc = 0;
+    std::array<int, 4> later{};
+    opqc_sycl_mldsa* c = nullptr;
+    {
+        Watchdog watchdog(device, WATCHDOG_SECONDS);
+        // the fault, in the round that finishes the signature
+        watchdog.step("sign_derand with the signature across the end of the allocation");
+        rc = opqc_sycl_mldsa_sign_derand(a, across, d_msg, d_off, nullptr, 0, d_rnd, d_sk, d_status, 1);
+        CHECK(opqc_sycl_mldsa_sign_stats(a, &done, nullptr) == 0);   // the host's counters: also after a fault
+        std::printf("  sign_derand with the signature 8 bytes before the end of the allocation: %d after %zu rounds%s\n",
+                    rc, done, rc == 0 ? " (no fault: the memory past the allocation is mapped here)" : "");
+        std::fflush(stdout);
+        // the failed context
+        watchdog.step("memcpy, memcpy_async and sync after the fault");
+        mrc = opqc_sycl_mldsa_memcpy(a, &st, d_status, 4);
+        arc = opqc_sycl_mldsa_memcpy_async(a, copied.data(), d_status, 4);
+        src = opqc_sycl_mldsa_sync(a);
+        watchdog.step("calls after the fault");
+        later = {opqc_sycl_mldsa_sign_derand(a, d_sig, d_msg, d_off, nullptr, 0, d_rnd, d_sk, d_status, 1),
+                 opqc_sycl_mldsa_sign(a, d_sig, d_msg, d_off, nullptr, 0, d_sk, d_status, 1),
+                 opqc_sycl_mldsa_keypair_derand(a, d_pk, d_sk, d_seed, 1),
+                 opqc_sycl_mldsa_verify(a, d_sig, d_msg, d_off, nullptr, 0, d_pk, d_status, 1)};
+        null_rc2 = opqc_sycl_mldsa_sign_derand(a, nullptr, d_msg, d_off, nullptr, 0, d_rnd, d_sk, d_status, 1);
+        host_rc2 = opqc_sycl_mldsa_sign_derand(a, pageable.data(), d_msg, d_off, nullptr, 0, d_rnd, d_sk, d_status, 1);
+        std::printf("  then memcpy %d (host status %s), memcpy_async %d, sync %d; sign_derand, sign, keypair_derand, "
+                    "verify %d %d %d %d; signature buffer NULL %d, in pageable host memory %d\n",
+                    mrc, st == SENTINEL ? "as it was" : "CHANGED", arc, src, later[0], later[1], later[2], later[3],
+                    null_rc2, host_rc2);
+        std::fflush(stdout);
+        // the other context, and a new one
+        watchdog.step("the other context after the fault");
+        brc = opqc_sycl_mldsa_keypair_derand(b, b_pk, b_sk, b_seed, 1);
+        bsrc = opqc_sycl_mldsa_sync(b);
+        watchdog.step("create after the fault");
+        crc = opqc_sycl_mldsa_create(&c, api.level, 1, device);
+        std::printf("  the other context: keypair_derand %d, sync %d; a new create %d%s\n", brc, bsrc, crc,
+                    c ? " with a context" : ", no context");
+        std::fflush(stdout);
+        watchdog.step("free and destroy after the fault");
+        if (c) opqc_sycl_mldsa_destroy(c);
+        for (void* p : {static_cast<void*>(d_sk), static_cast<void*>(d_pk), static_cast<void*>(d_sig),
+                        static_cast<void*>(d_msg), static_cast<void*>(d_off), static_cast<void*>(d_rnd),
+                        static_cast<void*>(d_seed), static_cast<void*>(d_status), static_cast<void*>(edge)})
+            opqc_sycl_mldsa_free(a, p);
+        for (void* p : {static_cast<void*>(b_seed), static_cast<void*>(b_pk), static_cast<void*>(b_sk)})
+            opqc_sycl_mldsa_free(b, p);
+        opqc_sycl_mldsa_destroy(a);
+        opqc_sycl_mldsa_destroy(b);
+    }
+    CHECK(rc == -2 && done == rounds);   // stopped in the round of the fault
+    CHECK(mrc == -2 && st == SENTINEL && arc == -2 && src == -2);   // a failed copy leaves the host buffer as it was
+    CHECK(std::all_of(later.begin(), later.end(), [](int r) { return r == -2; }));
+    CHECK(null_rc2 == -1 && host_rc2 == -1);
+    // the other context finds the fault when the device refuses its work: in its call, or at the latest in sync
+    CHECK((brc == -2 || brc == 0) && bsrc == -2);
+    CHECK(crc != 0 && c == nullptr);
+    std::printf("  destroy returned\nresult sticky device %d: %s, %d failed check(s)\n", device,
+                failures ? "FAIL" : "PASS", failures);
+    return failures ? 1 : 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    const std::size_t n = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 200;
+    if (argc > 1 && std::strcmp(argv[1], "self-test-values") == 0) return print_self_test_values();
+    const bool sticky_mode = argc > 1 && std::strcmp(argv[1], "sticky") == 0;
     const int count = opqc_sycl_device_count();
     if (count == 0) {
         std::printf("no SYCL device: skipped\n");
         return 77;
     }
+    if (sticky_mode) {
+        int device = -1;
+        if (argc > 2) {
+            device = std::atoi(argv[2]);
+            if (device < 0 || device >= count || !nvidia(device)) device = -1;
+        } else {
+            for (int d = 0; d < count && device < 0; d++)
+                if (nvidia(d)) device = d;
+        }
+        if (device < 0) {
+            std::printf("sticky: no NVIDIA device: skipped\n");
+            return 77;
+        }
+        return sticky(device);
+    }
+    const std::size_t n = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 200;
+    check_self_test_values();
     const int first = argc > 2 ? std::atoi(argv[2]) : 0;
     const int last = argc > 2 ? first : count - 1;
     for (int d = first; d <= last; d++) {

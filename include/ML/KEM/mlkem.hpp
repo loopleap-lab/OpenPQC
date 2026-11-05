@@ -9,13 +9,19 @@
 //
 //   using KEM = openpqc::mlkem::MLKEM768;
 //   KEM::public_key pk;  KEM::secret_key sk;
-//   KEM::keypair(pk, sk);                       // randomness from the operating system
 //   KEM::ciphertext ct;  KEM::shared_secret ss, ss2;
-//   KEM::encaps(ct, ss, pk);
-//   KEM::decaps(ss2, ct, sk);                   // ss2 == ss
+//   if (KEM::keypair(pk, sk) != 0 ||            // randomness from the operating system
+//       KEM::encaps(ct, ss, pk) != 0 ||         // checks pk first (FIPS 203, Section 7.2)
+//       KEM::decaps(ss2, ct, sk) != 0)          // ss2 == ss
+//       return -1;                              // use none of the outputs
 //
 // All functions return 0 on success and otherwise one of the
 // OPENPQC_MLKEM_ERR_* codes of openpqc_mlkem.h.
+// They are [[nodiscard]]: a call that fails produces no output (openpqc_mlkem.h,
+// "Results"), and ss is then not a key to use. keypair_derand and encaps_derand take
+// the seeds d || z and m from the caller: keypair_derand is for testing and for
+// expanding a seed stored in place of dk, encaps_derand for testing only (FIPS 203,
+// Section 3.3; "Testing interfaces" in openpqc_mlkem.h).
 #pragma once
 
 #include <array>

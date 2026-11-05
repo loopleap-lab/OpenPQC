@@ -23,20 +23,40 @@ target_compile_options(test_mldsa_differential PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:$<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>>)
 add_test(NAME mldsa_differential COMMAND test_mldsa_differential)
 
-#   mldsa_pct   the library built with the pair-wise consistency test after KeyGen
-#               (OPENPQC_MLDSA_KEYGEN_PCT, FIPS 140-3), so that this configuration is compiled
-#               and its KeyGen exercised
-add_library(openpqc_mldsa_pct_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp)
-target_include_directories(openpqc_mldsa_pct_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_compile_definitions(openpqc_mldsa_pct_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
-target_compile_features(openpqc_mldsa_pct_objects PRIVATE cxx_std_20)
-target_link_libraries(openpqc_mldsa_pct_objects PRIVATE openpqc_strict_warnings)
-add_executable(test_mldsa_pct test_mldsa_pct.c $<TARGET_OBJECTS:openpqc_mldsa_pct_objects>)
-target_include_directories(test_mldsa_pct PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(test_mldsa_pct PRIVATE openpqc_core openpqc_strict_warnings)
-set_target_properties(test_mldsa_pct PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
-                                                C_EXTENSIONS OFF)
-add_test(NAME mldsa_pct COMMAND test_mldsa_pct)
+#   mldsa_pct        the library built with the pair-wise consistency test after KeyGen
+#                    (OPENPQC_MLDSA_KEYGEN_PCT, FIPS 140-3), so that this configuration is compiled
+#                    and its KeyGen exercised
+#   mldsa_pct_fail   the same with OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST, which breaks the test: KeyGen
+#                    must fail with OPENPQC_MLDSA_ERR_PCT_FAIL and zeroize both keys. This shows that the
+#                    test is compiled in and that its result is used, which mldsa_pct alone cannot show.
+foreach(variant pct pct_fail)
+    add_library(openpqc_mldsa_${variant}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp)
+    target_include_directories(openpqc_mldsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_definitions(openpqc_mldsa_${variant}_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
+    target_compile_features(openpqc_mldsa_${variant}_objects PRIVATE cxx_std_20)
+    target_link_libraries(openpqc_mldsa_${variant}_objects PRIVATE openpqc_strict_warnings)
+    add_executable(test_mldsa_${variant} test_mldsa_pct.c $<TARGET_OBJECTS:openpqc_mldsa_${variant}_objects>)
+    target_include_directories(test_mldsa_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(test_mldsa_${variant} PRIVATE openpqc_core openpqc_strict_warnings)
+    set_target_properties(test_mldsa_${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                           C_EXTENSIONS OFF)
+    add_test(NAME mldsa_${variant} COMMAND test_mldsa_${variant})
+endforeach()
+target_compile_definitions(openpqc_mldsa_pct_fail_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST)
+target_compile_definitions(test_mldsa_pct_fail PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
+
+#   mldsa_pct_odr    mldsa_pct_fail with an application's own copies of the scheme layer's KeyGen
+#                    templates, compiled without the test and linked first (test_mldsa_pct_odr.cpp): the
+#                    linker must not let them take the place of the library's, whose KeyGen must still fail
+add_executable(test_mldsa_pct_odr test_mldsa_pct_odr.cpp test_mldsa_pct.c
+                                  $<TARGET_OBJECTS:openpqc_mldsa_pct_fail_objects>)
+target_include_directories(test_mldsa_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_compile_definitions(test_mldsa_pct_odr PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
+target_compile_features(test_mldsa_pct_odr PRIVATE cxx_std_20)
+target_link_libraries(test_mldsa_pct_odr PRIVATE openpqc_core openpqc_strict_warnings)
+set_target_properties(test_mldsa_pct_odr PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                    C_EXTENSIONS OFF)
+add_test(NAME mldsa_pct_odr COMMAND test_mldsa_pct_odr)
 
 #   mldsa_sk_check   private keys with s1 or s2 outside [-eta, eta] (FIPS 204, Algorithm 25), which
 #                    every signing function refuses, and keys and key pairs tampered with in range,
@@ -222,31 +242,66 @@ endif()
 #   mldsa_ct   test_mldsa_ct.c under valgrind: randombytes() marks its output as secret, the
 #              library (built with OPQC_CT_TESTING) declassifies what FIPS 204 makes public,
 #              and valgrind fails on any branch or memory index that depends on a secret
+#   mldsa_O1_ct, mldsa_O2_ct, mldsa_O3_ct, mldsa_Os_ct
+#              the same with the library compiled at -O1, -O2, -O3 and -Os whatever the build
+#              type: whether an optimizer turns a mask of the constant-time code back into a
+#              branch depends on the level (and on the processor: Clang did so in Sign on
+#              AArch64 and RISC-V at -O2 and -O3), which a Debug build, -O0, never sees
+# Objects and programs are compiled without the x86-64 extensions that valgrind cannot
+# decode (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt).
 find_program(OPENPQC_VALGRIND valgrind)
 find_path(OPENPQC_VALGRIND_INCLUDE_DIR valgrind/memcheck.h)
 if(CMAKE_C_FLAGS MATCHES "-fsanitize" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize")
     # valgrind cannot run a sanitizer's binary (as for Core's core_*_ct, tests/Core/CMakeLists.txt)
     message(STATUS "sanitizer build: constant-time test of ML-DSA (mldsa_ct) disabled (valgrind cannot run it)")
 elseif(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
-    add_library(openpqc_mldsa_ct_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp)
-    target_include_directories(openpqc_mldsa_ct_objects PRIVATE ${PROJECT_SOURCE_DIR}/include
-                               ${OPENPQC_VALGRIND_INCLUDE_DIR})
-    target_compile_definitions(openpqc_mldsa_ct_objects PRIVATE OPQC_CT_TESTING)
-    target_compile_features(openpqc_mldsa_ct_objects PRIVATE cxx_std_20)
-    add_executable(test_mldsa_ct test_mldsa_ct.c $<TARGET_OBJECTS:openpqc_mldsa_ct_objects>)
-    target_include_directories(test_mldsa_ct PRIVATE ${OPENPQC_VALGRIND_INCLUDE_DIR})
-    target_link_libraries(test_mldsa_ct PRIVATE openpqc_core_testrng openpqc_strict_warnings)
-    set_target_properties(test_mldsa_ct PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
-                                                   C_EXTENSIONS OFF)
     # valgrind needs the symbol table of the dynamic loader, which some distributions
     # strip; static executables do not use it (as for mlkemNNN_ct)
     include(CheckLinkerFlag)
     check_linker_flag(CXX -static OPENPQC_HAVE_STATIC_LINK)
-    if(OPENPQC_HAVE_STATIC_LINK)
-        target_link_options(test_mldsa_ct PRIVATE -static)
-    endif()
-    add_test(NAME mldsa_ct COMMAND ${OPENPQC_VALGRIND} --error-exitcode=1 --track-origins=yes
-                                   $<TARGET_FILE:test_mldsa_ct>)
+    foreach(opt "" O1 O2 O3 Os)
+        if(opt STREQUAL "")
+            set(_name mldsa_ct)
+            set(_objects openpqc_mldsa_ct_objects)
+        else()
+            set(_name mldsa_${opt}_ct)
+            set(_objects openpqc_mldsa_ct_${opt}_objects)
+        endif()
+        add_library(${_objects} OBJECT ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp)
+        target_include_directories(${_objects} PRIVATE ${PROJECT_SOURCE_DIR}/include ${OPENPQC_VALGRIND_INCLUDE_DIR})
+        target_compile_definitions(${_objects} PRIVATE OPQC_CT_TESTING)
+        target_compile_features(${_objects} PRIVATE cxx_std_20)
+        # a target's options come after those of the build type, so -${opt} wins
+        target_compile_options(${_objects} PRIVATE ${OPENPQC_CT_ISA_FLAGS} $<$<BOOL:${opt}>:-${opt}>)
+        add_executable(test_${_name} test_mldsa_ct.c $<TARGET_OBJECTS:${_objects}>)
+        target_include_directories(test_${_name} PRIVATE ${OPENPQC_VALGRIND_INCLUDE_DIR})
+        target_compile_options(test_${_name} PRIVATE ${OPENPQC_CT_ISA_FLAGS})
+        target_link_libraries(test_${_name} PRIVATE openpqc_core_testrng openpqc_strict_warnings)
+        set_target_properties(test_${_name} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                       C_EXTENSIONS OFF)
+        if(OPENPQC_HAVE_STATIC_LINK)
+            target_link_options(test_${_name} PRIVATE -static)
+        endif()
+        add_test(NAME ${_name} COMMAND ${OPENPQC_VALGRIND} --error-exitcode=1 --track-origins=yes
+                                       $<TARGET_FILE:test_${_name}>)
+    endforeach()
 else()
-    message(STATUS "valgrind not found: constant-time test (mldsa_ct) disabled")
+    message(STATUS "valgrind or valgrind/memcheck.h not found: constant-time test (mldsa_ct) disabled")
+endif()
+
+# In a build with the CMake option OPENPQC_MLDSA_KEYGEN_PCT (CMakeLists.txt) the library's own KeyGen runs the
+# pair-wise consistency test:
+#   mldsa_pct_library   the test of mldsa_pct against the library as built (openpqc_mldsa): keypair and
+#                       keypair_derand of every parameter set through the test, and keys that sign and verify
+#   mldsa_thread_stack  compares KeyGen's stack with the documented size of KeyGen with the test
+# Neither fails when the option does not reach the library: both pass against the library built without it.
+if(OPENPQC_MLDSA_KEYGEN_PCT)
+    add_executable(test_mldsa_pct_library test_mldsa_pct.c)
+    target_link_libraries(test_mldsa_pct_library PRIVATE openpqc_mldsa openpqc_strict_warnings)
+    set_target_properties(test_mldsa_pct_library PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                            C_EXTENSIONS OFF)
+    add_test(NAME mldsa_pct_library COMMAND test_mldsa_pct_library)
+    if(TARGET test_mldsa_thread_stack)
+        target_compile_definitions(test_mldsa_thread_stack PRIVATE OPENPQC_TEST_PCT)
+    endif()
 endif()

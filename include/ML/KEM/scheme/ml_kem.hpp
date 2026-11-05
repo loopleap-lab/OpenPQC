@@ -137,10 +137,19 @@ OPENPQC_MLKEM_NOINLINE void clear_stack() {
 // the frames of touch_stack leave between their arrays (return addresses, stack-protector canaries,
 // padding). Every operation therefore needs a little more than stack_burn_bytes of stack below its caller
 // (openpqc_mlkem.h).
+//
+// OPENPQC_MLKEM_TEST_NO_STACK_BURN (tests only) leaves the burn out. The burn overwrites every frame in
+// which the named wipes (ZeroizeOnExit) and the destructor of Poly run, so as long as it is there, no
+// test can tell whether they still destroy what they guard; tests/ML-KEM builds copies of mlkem.cpp with
+// this definition, each linked into a test program of its own (mlkem_stack_noburn, _noburn_pct), to check
+// them alone. The library's targets never define it, and nothing else may: a library built so does not
+// meet Section 3.3.
 template <ParameterSet P>
 void burn_stack() {
+#if !defined(OPENPQC_MLKEM_TEST_NO_STACK_BURN)
     touch_stack<stack_burn_bytes<P> + 1024>();
     clear_stack<stack_burn_bytes<P>>();
+#endif
 }
 
 // The first bytes of the frames of touch_stack and clear_stack, right below their caller, are their own, and

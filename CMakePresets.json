@@ -1,0 +1,237 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "description": "CPU only; build trees under build-presets/",
+      "binaryDir": "${sourceDir}/build-presets/${presetName}",
+      "cacheVariables": {
+        "OPENPQC_SYCL": "OFF",
+        "OPENPQC_BUILD_EXAMPLES": "OFF",
+        "OPENPQC_BUILD_BENCHMARKS": "OFF",
+        "OPENPQC_WERROR": "ON",
+        "OPENPQC_REQUIRE_FULL_TESTS": "ON"
+      }
+    },
+    {"name": "gcc", "hidden": true, "cacheVariables": {"CMAKE_C_COMPILER": "gcc", "CMAKE_CXX_COMPILER": "g++"}},
+    {"name": "clang", "hidden": true, "cacheVariables": {"CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++"}},
+    {
+      "name": "release",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "OPENPQC_BUILD_EXAMPLES": "ON", "OPENPQC_BUILD_BENCHMARKS": "ON"}
+    },
+    {"name": "gcc-release", "displayName": "GCC, Release (-O3), tests, examples and benchmarks", "inherits": ["release", "gcc"]},
+    {"name": "clang-release", "displayName": "Clang, Release (-O3), tests, examples and benchmarks", "inherits": ["release", "clang"]},
+    {
+      "name": "asan-ubsan",
+      "hidden": true,
+      "description": "AddressSanitizer and UndefinedBehaviorSanitizer (OPENPQC_SANITIZE), assertions on, -O1: an unoptimized sanitized build runs the SLH-DSA tests 10 to 50 times slower than Release",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS_DEBUG": "-g -O1",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+        "OPENPQC_SANITIZE": "address,undefined"
+      }
+    },
+    {"name": "gcc-asan-ubsan", "displayName": "GCC, AddressSanitizer and UndefinedBehaviorSanitizer (-O1)", "inherits": ["asan-ubsan", "gcc"]},
+    {"name": "clang-asan-ubsan", "displayName": "Clang, AddressSanitizer and UndefinedBehaviorSanitizer (-O1)", "inherits": ["asan-ubsan", "clang"]},
+    {
+      "name": "pct",
+      "hidden": true,
+      "description": "the CPU libraries of ML-KEM and ML-DSA built with their pair-wise consistency tests after KeyGen (FIPS 140-3), as a validated module needs them: OPENPQC_MLKEM_KEYGEN_PCT and OPENPQC_MLDSA_KEYGEN_PCT, Release (-O3)",
+      "inherits": "base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "OPENPQC_MLKEM_KEYGEN_PCT": "ON", "OPENPQC_MLDSA_KEYGEN_PCT": "ON"}
+    },
+    {"name": "gcc-release-pct", "displayName": "GCC, Release (-O3), ML-KEM and ML-DSA with the pair-wise consistency tests after KeyGen", "inherits": ["pct", "gcc"]},
+    {"name": "clang-release-pct", "displayName": "Clang, Release (-O3), ML-KEM and ML-DSA with the pair-wise consistency tests after KeyGen", "inherits": ["pct", "clang"]},
+    {
+      "name": "ct-O0",
+      "hidden": true,
+      "description": "the constant-time tests (valgrind) at -O0: Debug",
+      "inherits": "base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "OPENPQC_TEST_TIMEOUT_FACTOR": "4"}
+    },
+    {
+      "name": "ct-O2",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "CMAKE_C_FLAGS_RELEASE": "-O2 -DNDEBUG", "CMAKE_CXX_FLAGS_RELEASE": "-O2 -DNDEBUG",
+                         "OPENPQC_TEST_TIMEOUT_FACTOR": "2"}
+    },
+    {
+      "name": "ct-O3",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG", "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+                         "OPENPQC_TEST_TIMEOUT_FACTOR": "2"}
+    },
+    {
+      "name": "ct-Os",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "CMAKE_C_FLAGS_RELEASE": "-Os -DNDEBUG", "CMAKE_CXX_FLAGS_RELEASE": "-Os -DNDEBUG",
+                         "OPENPQC_TEST_TIMEOUT_FACTOR": "2"}
+    },
+    {"name": "ct-gcc-O0", "displayName": "constant-time tests, GCC -O0", "inherits": ["ct-O0", "gcc"]},
+    {"name": "ct-gcc-O2", "displayName": "constant-time tests, GCC -O2", "inherits": ["ct-O2", "gcc"]},
+    {"name": "ct-gcc-O3", "displayName": "constant-time tests, GCC -O3", "inherits": ["ct-O3", "gcc"]},
+    {"name": "ct-gcc-Os", "displayName": "constant-time tests, GCC -Os", "inherits": ["ct-Os", "gcc"]},
+    {"name": "ct-clang-O0", "displayName": "constant-time tests, Clang -O0", "inherits": ["ct-O0", "clang"]},
+    {"name": "ct-clang-O2", "displayName": "constant-time tests, Clang -O2", "inherits": ["ct-O2", "clang"]},
+    {"name": "ct-clang-O3", "displayName": "constant-time tests, Clang -O3", "inherits": ["ct-O3", "clang"]},
+    {"name": "ct-clang-Os", "displayName": "constant-time tests, Clang -Os", "inherits": ["ct-Os", "clang"]},
+    {
+      "name": "sycl-dpcpp",
+      "displayName": "SYCL with DPC++ (environment DPCPP_ROOT: the DPC++ installation), NVIDIA sm_86 and Intel GPUs",
+      "description": "Only when DPCPP_ROOT is set. OPENPQC_SYCL_FLAGS names the NVIDIA architecture (sm_86, the RTX 3050 of the development machine): override it with -D. SLH-DSA's device code for sets 1 and 12 only (a full build takes about 10 minutes to link).",
+      "condition": {"type": "notEquals", "lhs": "$penv{DPCPP_ROOT}", "rhs": ""},
+      "binaryDir": "${sourceDir}/build-presets/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "$penv{DPCPP_ROOT}/bin/clang",
+        "CMAKE_CXX_COMPILER": "$penv{DPCPP_ROOT}/bin/clang++",
+        "OPENPQC_SYCL": "ON",
+        "OPENPQC_SYCL_TARGETS": "nvptx64-nvidia-cuda,spir64",
+        "OPENPQC_SYCL_FLAGS": "-Xsycl-target-backend=nvptx64-nvidia-cuda --offload-arch=sm_86",
+        "OPENPQC_BUILD_EXAMPLES": "OFF",
+        "OPENPQC_BUILD_BENCHMARKS": "OFF",
+        "OPENPQC_SLHDSA_SYCL_SETS": "1,12"
+      }
+    },
+    {
+      "name": "sycl-acpp",
+      "displayName": "SYCL with AdaptiveCpp (environment ACPP_ROOT: the AdaptiveCpp installation), generic target",
+      "description": "Only when ACPP_ROOT is set. The host compiler is Clang. SLH-DSA's device code for sets 1 and 12 only.",
+      "condition": {"type": "notEquals", "lhs": "$penv{ACPP_ROOT}", "rhs": ""},
+      "binaryDir": "${sourceDir}/build-presets/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "OPENPQC_SYCL": "ON",
+        "AdaptiveCpp_DIR": "$penv{ACPP_ROOT}/lib/cmake/AdaptiveCpp",
+        "ACPP_TARGETS": "generic",
+        "OPENPQC_BUILD_EXAMPLES": "OFF",
+        "OPENPQC_BUILD_BENCHMARKS": "OFF",
+        "OPENPQC_SLHDSA_SYCL_SETS": "1,12"
+      }
+    }
+  ],
+  "buildPresets": [
+    {"name": "gcc-release", "configurePreset": "gcc-release"},
+    {"name": "clang-release", "configurePreset": "clang-release"},
+    {"name": "gcc-asan-ubsan", "configurePreset": "gcc-asan-ubsan"},
+    {"name": "clang-asan-ubsan", "configurePreset": "clang-asan-ubsan"},
+    {"name": "gcc-release-pct", "configurePreset": "gcc-release-pct"},
+    {"name": "clang-release-pct", "configurePreset": "clang-release-pct"},
+    {
+      "name": "ct",
+      "hidden": true,
+      "targets": ["test_mlkem512_ct", "test_mlkem768_ct", "test_mlkem1024_ct", "test_mldsa_ct", "test_slhdsa_ct"]
+    },
+    {
+      "name": "ct-O0",
+      "hidden": true,
+      "description": "at -O0 without SLH-DSA: valgrind runs ML-KEM's CT test about 20 times slower than at -O3, which would make slhdsa_ct (8-13 minutes at -O2, -O3 and -Os) take hours",
+      "targets": ["test_mlkem512_ct", "test_mlkem768_ct", "test_mlkem1024_ct", "test_mldsa_ct"]
+    },
+    {"name": "ct-gcc-O0", "inherits": "ct-O0", "configurePreset": "ct-gcc-O0"},
+    {"name": "ct-gcc-O2", "inherits": "ct", "configurePreset": "ct-gcc-O2"},
+    {"name": "ct-gcc-O3", "inherits": "ct", "configurePreset": "ct-gcc-O3"},
+    {"name": "ct-gcc-Os", "inherits": "ct", "configurePreset": "ct-gcc-Os"},
+    {"name": "ct-clang-O0", "inherits": "ct-O0", "configurePreset": "ct-clang-O0"},
+    {"name": "ct-clang-O2", "inherits": "ct", "configurePreset": "ct-clang-O2"},
+    {"name": "ct-clang-O3", "inherits": "ct", "configurePreset": "ct-clang-O3"},
+    {"name": "ct-clang-Os", "inherits": "ct", "configurePreset": "ct-clang-Os"},
+    {"name": "sycl-dpcpp", "configurePreset": "sycl-dpcpp", "condition": {"type": "notEquals", "lhs": "$penv{DPCPP_ROOT}", "rhs": ""}},
+    {"name": "sycl-acpp", "configurePreset": "sycl-acpp", "condition": {"type": "notEquals", "lhs": "$penv{ACPP_ROOT}", "rhs": ""}}
+  ],
+  "testPresets": [
+    {
+      "name": "common",
+      "hidden": true,
+      "output": {"outputOnFailure": true},
+      "execution": {"noTestsAction": "error", "timeout": 3600}
+    },
+    {
+      "name": "offline",
+      "hidden": true,
+      "description": "every offline test, the slow ones included",
+      "inherits": "common",
+      "filter": {"exclude": {"label": "network"}}
+    },
+    {
+      "name": "quick",
+      "hidden": true,
+      "description": "the offline tests that take less than about a minute",
+      "inherits": "common",
+      "filter": {"exclude": {"label": "network|slow"}}
+    },
+    {
+      "name": "network",
+      "hidden": true,
+      "description": "the tests that download NIST ACVP and Wycheproof vectors (pinned by SHA-256)",
+      "inherits": "common",
+      "filter": {"include": {"label": "network"}}
+    },
+    {"name": "gcc-release", "inherits": "offline", "configurePreset": "gcc-release"},
+    {"name": "gcc-release-quick", "inherits": "quick", "configurePreset": "gcc-release"},
+    {"name": "gcc-release-network", "inherits": "network", "configurePreset": "gcc-release"},
+    {"name": "clang-release", "inherits": "offline", "configurePreset": "clang-release"},
+    {"name": "clang-release-quick", "inherits": "quick", "configurePreset": "clang-release"},
+    {
+      "name": "sanitizers",
+      "hidden": true,
+      "description": "the quick offline tests; the valgrind tests are left out or disabled in a sanitizer build, the stack tests run without AddressSanitizer's fake stacks and the TIMEOUTs are multiplied by 10 (tests/CMakeLists.txt)",
+      "inherits": "quick",
+      "environment": {"UBSAN_OPTIONS": "print_stacktrace=1"},
+      "execution": {"timeout": 7200}
+    },
+    {"name": "gcc-asan-ubsan", "inherits": "sanitizers", "configurePreset": "gcc-asan-ubsan"},
+    {"name": "clang-asan-ubsan", "inherits": "sanitizers", "configurePreset": "clang-asan-ubsan"},
+    {
+      "name": "pct",
+      "hidden": true,
+      "description": "the quick offline tests of ML-KEM and ML-DSA against their libraries built with the pair-wise consistency tests (mlkem_pct_library and mldsa_pct_library run against them); the reference's own tests and the constant-time tests, which compile the code themselves, are left out",
+      "inherits": "common",
+      "filter": {"include": {"name": "^(test_)?(mlkem|mldsa)"}, "exclude": {"label": "network|slow", "name": "_ct$"}}
+    },
+    {"name": "gcc-release-pct", "inherits": "pct", "configurePreset": "gcc-release-pct"},
+    {"name": "clang-release-pct", "inherits": "pct", "configurePreset": "clang-release-pct"},
+    {
+      "name": "ct",
+      "hidden": true,
+      "description": "the constant-time tests of the schemes under valgrind, at the preset's level (Core's core_*_ct run at every level in every build)",
+      "inherits": "common",
+      "filter": {"include": {"name": "^(mlkem(512|768|1024)|mldsa|slhdsa)_ct$"}},
+      "execution": {"timeout": 14400}
+    },
+    {
+      "name": "ct-O0",
+      "hidden": true,
+      "description": "at -O0 without slhdsa_ct (see the build preset ct-O0); SLH-DSA's CT test runs at -O2, -O3 and -Os",
+      "inherits": "ct",
+      "filter": {"include": {"name": "^(mlkem(512|768|1024)|mldsa)_ct$"}}
+    },
+    {"name": "ct-gcc-O0", "inherits": "ct-O0", "configurePreset": "ct-gcc-O0"},
+    {"name": "ct-gcc-O2", "inherits": "ct", "configurePreset": "ct-gcc-O2"},
+    {"name": "ct-gcc-O3", "inherits": "ct", "configurePreset": "ct-gcc-O3"},
+    {"name": "ct-gcc-Os", "inherits": "ct", "configurePreset": "ct-gcc-Os"},
+    {"name": "ct-clang-O0", "inherits": "ct-O0", "configurePreset": "ct-clang-O0"},
+    {"name": "ct-clang-O2", "inherits": "ct", "configurePreset": "ct-clang-O2"},
+    {"name": "ct-clang-O3", "inherits": "ct", "configurePreset": "ct-clang-O3"},
+    {"name": "ct-clang-Os", "inherits": "ct", "configurePreset": "ct-clang-Os"}
+  ],
+  "workflowPresets": [
+    {"name": "gcc-release", "steps": [{"type": "configure", "name": "gcc-release"}, {"type": "build", "name": "gcc-release"}, {"type": "test", "name": "gcc-release"}]},
+    {"name": "clang-release", "steps": [{"type": "configure", "name": "clang-release"}, {"type": "build", "name": "clang-release"}, {"type": "test", "name": "clang-release"}]},
+    {"name": "gcc-asan-ubsan", "steps": [{"type": "configure", "name": "gcc-asan-ubsan"}, {"type": "build", "name": "gcc-asan-ubsan"}, {"type": "test", "name": "gcc-asan-ubsan"}]},
+    {"name": "clang-asan-ubsan", "steps": [{"type": "configure", "name": "clang-asan-ubsan"}, {"type": "build", "name": "clang-asan-ubsan"}, {"type": "test", "name": "clang-asan-ubsan"}]},
+    {"name": "gcc-release-pct", "steps": [{"type": "configure", "name": "gcc-release-pct"}, {"type": "build", "name": "gcc-release-pct"}, {"type": "test", "name": "gcc-release-pct"}]},
+    {"name": "clang-release-pct", "steps": [{"type": "configure", "name": "clang-release-pct"}, {"type": "build", "name": "clang-release-pct"}, {"type": "test", "name": "clang-release-pct"}]}
+  ]
+}

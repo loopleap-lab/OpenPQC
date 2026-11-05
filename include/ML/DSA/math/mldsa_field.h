@@ -39,8 +39,11 @@
  *  - On some CPUs the division instruction takes a data-dependent number of
  *    cycles, which leaks secret values (KyberSlash, 2024), and a compiler is
  *    free to use that instruction for `%`.
- *  - The result needs no final conditional subtraction, so there is nothing
- *    a compiler could turn into a secret-dependent branch.
+ *  - The result needs no final conditional subtraction: no mask is derived
+ *    from a secret here, so there is no selection that a compiler could turn
+ *    into a secret-dependent branch (selections on secrets, as in
+ *    mldsa_centered and mldsa_infnorm below, use the helpers of
+ *    Core/opqc_ct.h, whose masks pass a value barrier).
  *
  * The modulus. q = 2^23 - 2^13 + 1 is prime and q - 1 = 2^13 * 1023, so Z_q
  * contains the 512-th roots of unity that the NTT uses (zeta = 1753,

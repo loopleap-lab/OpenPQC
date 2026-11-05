@@ -22,9 +22,16 @@ extern "C" {
  * or "SYCL". */
 const char *opqc_sycl_implementation(void);
 
-/* Number of SYCL devices, and the name and platform of device i (empty string if
- * i is out of range). The default device of a context (index -1) can be set with
- * the environment variable OPENPQC_SYCL_DEVICE=<index>. */
+/* Number of SYCL devices, and the name and platform of device i (an empty string
+ * if i is out of range or the SYCL runtime reports an error). The string belongs to
+ * the library: it stays valid until the next call of the same function on the same
+ * thread, and while that thread lives; copy it to keep it.
+ *
+ * The default device of a context (device index -1 at create) is the one the
+ * environment variable OPENPQC_SYCL_DEVICE=<index> names, or SYCL's default device
+ * if the variable is unset or empty. A value other than a decimal index (such as
+ * "gpu", "1abc" or "-1") or an index out of range makes create fail (-1) instead of
+ * selecting a device the caller did not mean; so does a device index below -1. */
 int opqc_sycl_device_count(void);
 const char *opqc_sycl_device_name(int i);
 const char *opqc_sycl_device_platform(int i);

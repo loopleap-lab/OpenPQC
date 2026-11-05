@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // demo_gpu.cpp  --  OpenPQC's three schemes in batches on a GPU, compared with the CPU
 //
 // A GPU is fast when it has many independent operations to run at once, so the
@@ -20,6 +23,15 @@
 // ML/DSA/sycl/openpqc_mldsa_sycl.h and SLH/DSA/sycl/openpqc_slhdsa_sycl.h. The
 // benchmarks in bench/gpu measure the same with more care (cooling, percentiles,
 // all batch sizes and parameter sets).
+//
+// The _derand functions are what makes the comparison with the CPU possible: a
+// test, which is what FIPS 203 (Section 3.3), FIPS 204 (Section 6) and FIPS 205
+// (Section 9) reserve the interfaces that take the random values for. An
+// application calls the randomized functions (keypair, enc, sign), which draw
+// the randomness themselves; on the GPU they also draw it on the host and copy
+// it over, so the GPU columns, which time the _derand functions, are an upper
+// bound for them. Every call's result is checked, on the CPU as on the GPU: a
+// call that fails produces no output (the headers say what its buffers hold).
 
 #include <algorithm>
 #include <atomic>
@@ -119,20 +131,33 @@ template <class Ctx> struct DeviceMemory {
 
 // Operations per second of op(i, out) on `threads` CPU threads that run for about half
 // a second. Thread t computes operations t, t + threads, ... of the batch (round robin)
-// into a scratch buffer of its own.
-template <class Op> double cpu_rate(unsigned threads, std::size_t n, const Op& op) {
-    std::atomic<std::size_t> total{0};
+// into a scratch buffer of its own. op returns the C API's result; calls that fail are
+// counted and reported.
+//
+// std::thread gives each thread the platform's default stack: with glibc the stack
+// limit (ulimit -s, usually 8 MiB), with musl 128 KiB, too little for ML-DSA-65 signing
+// (openpqc_mldsa.h, Stack). On musl, create the threads with pthread_attr_setstacksize
+// and OPENPQC_MLDSA65_STACK_BYTES, or link with -Wl,-z,stack-size=N.
+template <class Op> double cpu_rate(const char* name, unsigned threads, std::size_t n, const Op& op) {
+    std::atomic<std::size_t> total{0}, failed{0};
     std::vector<std::thread> pool;
     const auto t0 = Clock::now();
     for (unsigned t = 0; t < threads; t++)
         pool.emplace_back([&, t] {
             Bytes out(64 * 1024);
-            std::size_t done = 0;
-            for (std::size_t i = t; seconds_since(t0) < 0.5; i += threads, done++) op(i % n, out.data());
+            std::size_t done = 0, bad = 0;
+            for (std::size_t i = t; seconds_since(t0) < 0.5; i += threads, done++)
+                if (op(i % n, out.data()) != 0) bad++;
             total += done;
+            failed += bad;
         });
     for (auto& th : pool) th.join();
-    return static_cast<double>(total) / seconds_since(t0);
+    const double rate = static_cast<double>(total) / seconds_since(t0);
+    if (failed != 0) {
+        std::printf("  %s: %zu of %zu calls on the CPU FAILED  <-- unexpected\n", name, failed.load(), total.load());
+        failures++;
+    }
+    return rate;
 }
 
 // Seconds per call of run(): the median of three calls, after one untimed call that
@@ -157,13 +182,14 @@ struct Row {
 };
 std::vector<Row> rows;
 
-// Measures one operation: cpu_op(i, out) computes operation i on the CPU, gpu_run(m)
-// runs the first m operations of the batch on the GPU, copies included
+// Measures one operation: cpu_op(i, out) computes operation i on the CPU and returns the
+// C API's result, gpu_run(m) runs the first m operations of the batch on the GPU, copies
+// included
 template <class CpuOp, class GpuRun>
 void compare(const std::string& name, std::size_t n, const CpuOp& cpu_op, const GpuRun& gpu_run) {
     Row r{name, n, 0, 0, 0, 0};
-    r.cpu1 = cpu_rate(1, n, cpu_op);
-    r.cpu_all = cpu_rate(cpu_threads, n, cpu_op);
+    r.cpu1 = cpu_rate(name.c_str(), 1, n, cpu_op);
+    r.cpu_all = cpu_rate(name.c_str(), cpu_threads, n, cpu_op);
     r.gpu1 = 1.0 / gpu_seconds([&] { gpu_run(1); });
     r.gpu_n = static_cast<double>(n) / gpu_seconds([&] { gpu_run(n); });
     rows.push_back(r);
@@ -219,17 +245,20 @@ void demo_mlkem(int device) {
         check(opqc_sycl_mlkem_memcpy(gpu, status.data(), d_status, 4 * m), "copy");
     };
 
-    // Run each once, then check the results
+    // Run each once, then check the results: status[i] is operation i's result (0: done),
+    // and an operation that failed has no outputs
+    const auto all_ok = [&] { return std::all_of(status.begin(), status.end(), [](auto s) { return s == 0; }); };
     keygen(n);
     encaps(n);
+    check(opqc_sycl_mlkem_memcpy(gpu, status.data(), d_status, 4 * n), "copy");
+    expect(all_ok(), "all " + std::to_string(n) + " encapsulations succeed (status 0)");
     decaps(n);
-    expect(ss_enc == ss_dec && std::all_of(status.begin(), status.end(), [](auto s) { return s == 0; }),
-           "all " + std::to_string(n) + " decapsulations give the encapsulated secret");
+    expect(ss_enc == ss_dec && all_ok(), "all " + std::to_string(n) + " decapsulations give the encapsulated secret");
     bool identical = true;
     for (const std::size_t i : sample(n)) {
         std::uint8_t cpk[PK], csk[SK], cct[CT], css[SS];
-        openpqc_mlkem768_keypair_derand(cpk, csk, &coins_kg[2 * MLKEM_SYMBYTES * i]);
-        openpqc_mlkem768_enc_derand(cct, css, cpk, &coins_enc[MLKEM_SYMBYTES * i]);
+        check(openpqc_mlkem768_keypair_derand(cpk, csk, &coins_kg[2 * MLKEM_SYMBYTES * i]), "keypair_derand");
+        check(openpqc_mlkem768_enc_derand(cct, css, cpk, &coins_enc[MLKEM_SYMBYTES * i]), "enc_derand");
         identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
                     same(cct, &ct[CT * i], CT) && same(css, &ss_enc[SS * i], SS);
     }
@@ -238,13 +267,13 @@ void demo_mlkem(int device) {
     // The same operations on the CPU, for the comparison
     std::printf("  measuring the speed on the CPU and the GPU...\n");
     compare("ML-KEM-768 keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        openpqc_mlkem768_keypair_derand(out, out + PK, &coins_kg[2 * MLKEM_SYMBYTES * i]);
+        return openpqc_mlkem768_keypair_derand(out, out + PK, &coins_kg[2 * MLKEM_SYMBYTES * i]);
     }, keygen);
     compare("ML-KEM-768 encaps", n, [&](std::size_t i, std::uint8_t* out) {
-        openpqc_mlkem768_enc_derand(out, out + CT, &pk[PK * i], &coins_enc[MLKEM_SYMBYTES * i]);
+        return openpqc_mlkem768_enc_derand(out, out + CT, &pk[PK * i], &coins_enc[MLKEM_SYMBYTES * i]);
     }, encaps);
     compare("ML-KEM-768 decaps", n, [&](std::size_t i, std::uint8_t* out) {
-        openpqc_mlkem768_dec(out, &ct[CT * i], &sk[SK * i]);
+        return openpqc_mlkem768_dec(out, &ct[CT * i], &sk[SK * i]);
     }, decaps);
 }
 
@@ -306,8 +335,10 @@ void demo_mldsa(int device) {
     bool identical = true, valid = true;
     for (const std::size_t i : sample(n)) {
         std::uint8_t cpk[PK], csk[SK], csig[SIG];
-        openpqc_mldsa65_keypair_derand(cpk, csk, &seeds[MLDSA_SEEDBYTES * i]);
-        openpqc_mldsa65_sign_derand(csig, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, &rnd[MLDSA_RNDBYTES * i], csk);
+        check(openpqc_mldsa65_keypair_derand(cpk, csk, &seeds[MLDSA_SEEDBYTES * i]), "keypair_derand");
+        check(openpqc_mldsa65_sign_derand(csig, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+                                          &rnd[MLDSA_RNDBYTES * i], csk),
+              "sign_derand");
         identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
                     same(csig, &sig[SIG * i], SIG);
         valid = valid && openpqc_mldsa65_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
@@ -318,14 +349,15 @@ void demo_mldsa(int device) {
 
     std::printf("  measuring the speed on the CPU and the GPU...\n");
     compare("ML-DSA-65 keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        openpqc_mldsa65_keypair_derand(out, out + PK, &seeds[MLDSA_SEEDBYTES * i]);
+        return openpqc_mldsa65_keypair_derand(out, out + PK, &seeds[MLDSA_SEEDBYTES * i]);
     }, keygen);
     compare("ML-DSA-65 sign", n, [&](std::size_t i, std::uint8_t* out) {
-        openpqc_mldsa65_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, &rnd[MLDSA_RNDBYTES * i],
-                                    &sk[SK * i]);
+        return openpqc_mldsa65_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+                                           &rnd[MLDSA_RNDBYTES * i], &sk[SK * i]);
     }, sign);
     compare("ML-DSA-65 verify", n, [&](std::size_t i, std::uint8_t*) {
-        openpqc_mldsa65_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, &pk[PK * i]);
+        return openpqc_mldsa65_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+                                      &pk[PK * i]);
     }, verify);
 }
 
@@ -393,9 +425,10 @@ void demo_slhdsa(int device) {
     Bytes csig(SIG);
     for (const std::size_t i : sample(n)) {
         std::uint8_t cpk[PK], csk[SK];
-        openpqc_slhdsa_sha2_128f_keypair_derand(cpk, csk, &seeds[SEED * i]);
-        openpqc_slhdsa_sha2_128f_sign_derand(csig.data(), &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                             &addrnd[RND * i], csk);
+        check(openpqc_slhdsa_sha2_128f_keypair_derand(cpk, csk, &seeds[SEED * i]), "keypair_derand");
+        check(openpqc_slhdsa_sha2_128f_sign_derand(csig.data(), &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+                                                   &addrnd[RND * i], csk),
+              "sign_derand");
         identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
                     same(csig.data(), &sig[SIG * i], SIG);
         valid = valid && openpqc_slhdsa_sha2_128f_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr,
@@ -406,15 +439,15 @@ void demo_slhdsa(int device) {
 
     std::printf("  measuring the speed on the CPU and the GPU...\n");
     compare("SLH-DSA-SHA2-128f keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        openpqc_slhdsa_sha2_128f_keypair_derand(out, out + PK, &seeds[SEED * i]);
+        return openpqc_slhdsa_sha2_128f_keypair_derand(out, out + PK, &seeds[SEED * i]);
     }, keygen);
     compare("SLH-DSA-SHA2-128f sign", n, [&](std::size_t i, std::uint8_t* out) {
-        openpqc_slhdsa_sha2_128f_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, &addrnd[RND * i],
-                                             &sk[SK * i]);
+        return openpqc_slhdsa_sha2_128f_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+                                                    &addrnd[RND * i], &sk[SK * i]);
     }, sign);
     compare("SLH-DSA-SHA2-128f verify", n, [&](std::size_t i, std::uint8_t*) {
-        openpqc_slhdsa_sha2_128f_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                        &pk[PK * i]);
+        return openpqc_slhdsa_sha2_128f_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+                                               &pk[PK * i]);
     }, verify);
 }
 

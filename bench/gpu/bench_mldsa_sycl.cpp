@@ -1,3 +1,6 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // bench_mldsa_sycl.cpp  --  throughput and latency of OpenPQC ML-DSA on a SYCL device
 //
 // usage: bench_mldsa_sycl [levels=44,65,87] [batches=1,32,128,512,2048,8192] [trials=15]
@@ -136,7 +139,7 @@ void bench_level(int level, const std::vector<std::size_t>& batches, int trials,
                   "verify under one key");
         };
         const auto cp = [&](void* dst, const void* src, std::size_t bytes) {
-            opqc_sycl_mldsa_memcpy_async(ctx, dst, src, bytes);
+            check(opqc_sycl_mldsa_memcpy_async(ctx, dst, src, bytes), "copy");
         };
         const auto keygen_e2e = [&] {
             cp(d_seed.p, h_seed.p, 32 * n);
@@ -181,7 +184,7 @@ void bench_level(int level, const std::vector<std::size_t>& batches, int trials,
             std::fflush(stdout);
             if (std::strncmp(it.op, "sign", 4) == 0 && std::strcmp(it.mode, "kernel") == 0) {
                 std::size_t rounds = 0, attempts = 0;
-                opqc_sycl_mldsa_sign_stats(ctx, &rounds, &attempts);
+                check(opqc_sycl_mldsa_sign_stats(ctx, &rounds, &attempts), "signing statistics");
                 std::fprintf(stderr, "# ML-DSA-%d %s, batch %zu: %zu rounds, %.3f attempts per signature\n", level,
                              it.op, n, rounds, static_cast<double>(attempts) / static_cast<double>(n));
             }

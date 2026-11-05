@@ -19,10 +19,12 @@
  *   opqc_sycl_mlkem_enc_derand       = openpqc_mlkemNNN_enc_derand,     coins m      (32 B/op)
  *   opqc_sycl_mlkem_dec              = openpqc_mlkemNNN_dec
  *
- * The _derand functions are meant for testing and for expanding a stored seed (FIPS
- * 203, Section 3.3). opqc_sycl_mlkem_keypair and opqc_sycl_mlkem_enc draw the coins
- * from the operating system's RNG on the host (FIPS 203, Section 3.3: the module, not
- * the caller, generates the randomness).
+ * opqc_sycl_mlkem_keypair_derand is meant for testing and for expanding stored seeds
+ * d || z (FIPS 203, Section 3.3); opqc_sycl_mlkem_enc_derand for testing only: anybody
+ * who knows m knows K (openpqc_mlkem.h, "Testing interfaces").
+ * opqc_sycl_mlkem_keypair and opqc_sycl_mlkem_enc draw the coins from the operating
+ * system's RNG on the host (FIPS 203, Section 3.3: the module, not the caller,
+ * generates the randomness).
  *
  * Status. Encaps and Decaps (enc, enc_derand, dec) require `status`, a device buffer
  * of n int32_t (NULL: the call returns -1), and write the result of each operation
@@ -66,6 +68,27 @@
  *   OPQC_SYCL_MLKEM_SELF_TEST_FAIL  create: the device computed a wrong result in the
  *                                   self-test, and no context was created
  * -4 and -5 occur only in status. The GPU's -1 and -2 are not the CPU library's codes.
+ * Every function that returns a status is declared OPQC_MUST_CHECK (Core/opqc_common.h),
+ * as those of the CPU library are: the compiler warns about a call whose result is not
+ * used, because the outputs of a call that did not return 0 are not results (Fail closed,
+ * Device failures).
+ *
+ * What the buffer check cannot see. It asks the SYCL runtime (sycl::get_pointer_type),
+ * and some memory passes it that should not. A buffer that has been freed cannot always
+ * be told from a live one: under DPC++'s Level Zero backend and on AdaptiveCpp's OpenMP
+ * host device the runtime still reports freed memory as the context's, so a call with a
+ * freed buffer is not refused there, and it reads or writes memory that may belong to
+ * another allocation by then (a Decaps of a freed ciphertext returned 0 with status 0 on
+ * both; AdaptiveCpp's Level Zero backend refused freed SLH-DSA buffers). The OpenMP host
+ * device takes every pointer for memory of its own, also another GPU's device memory,
+ * which the host cannot read (a Decaps with its ciphertext there returned 0, and its
+ * kernel then ended the process with SIGSEGV: Device failures). DPC++ and AdaptiveCpp
+ * report the device memory that the other platform of the same Intel GPU allocated
+ * (Level Zero for an OpenCL context, OpenCL for a Level Zero one) as memory of this
+ * context's device (DPC++ in both directions; AdaptiveCpp seen for OpenCL memory and a
+ * Level Zero context); SLH-DSA's backend, which asks the same question, then computed
+ * wrong results and returned 0 under both. Pass only buffers of this context that are
+ * still allocated.
  *
  * Calls are asynchronous: they return once the work is queued, and
  * opqc_sycl_mlkem_sync waits for it. keypair and enc wait for the copy of each launch's
@@ -85,15 +108,26 @@
  * after the call that caused them has returned 0: by a later call, by sync, or by a
  * memcpy that waits (it waits for all the work queued before it). From then on the
  * context has failed, for good: the call, sync or memcpy that finds the error returns
- * -2, and so does every later call, sync and memcpy; the calls run no more kernels
+ * -2, and so does every later call, sync and memcpy (one whose arguments are refused
+ * still returns -1: the arguments are checked first); the calls run no more kernels
  * (they still set status and zero their outputs, as far as the device accepts it, and
  * memcpy still copies). Nothing the context computed since the last sync that returned
  * 0 can then be trusted, outputs and status entries of calls that returned 0 included;
- * destroy the context and create a new one. A device error never ends the process.
- * Under AdaptiveCpp, which keeps one list of asynchronous errors for the whole process,
- * an asynchronous error fails every context of the process (ML-DSA's and SLH-DSA's
- * too), and the contexts take, and fail on, the asynchronous errors of the
- * application's own SYCL queues.
+ * destroy the context and create a new one. On CUDA a fault that is sticky (an invalid
+ * address) leaves the device unusable for the rest of the process: every context on it
+ * fails, a new create on it returns -1, and only a new process can use the device
+ * again. A device error found through the context's queue does not end the process:
+ * the queue's handler records it (Core/sycl/opqc_sycl_context.hpp). Three cases are
+ * outside the library's reach: an error that the SYCL runtime gives to the handler of
+ * the SYCL context instead of the queue's (the default handler ends the process), a
+ * failure inside the runtime itself (DPC++ on CUDA has been seen to abort in an event's
+ * destructor when a second context submitted work after a sticky fault of a first), and,
+ * on AdaptiveCpp's OpenMP host device, a call with another GPU's device memory, which
+ * the buffer check cannot refuse there (What the buffer check cannot see): its kernel
+ * faulted on it and the process ended with SIGSEGV. Under AdaptiveCpp, which keeps one
+ * list of asynchronous errors for the whole process, an asynchronous error fails every
+ * context of the process (ML-DSA's and SLH-DSA's too), and the contexts take, and fail
+ * on, the asynchronous errors of the application's own SYCL queues.
  *
  * Zeroization (FIPS 203, Section 3.3). The secret values that the kernels keep in the
  * context's device memory between the stages of a call (seeds, PRF outputs, m', K',
@@ -127,6 +161,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "Core/opqc_common.h" /* OPQC_MUST_CHECK */
 #include "Core/sycl/openpqc_sycl.h"
 
 #ifdef __cplusplus
@@ -164,30 +199,33 @@ typedef struct opqc_sycl_mlkem opqc_sycl_mlkem;
  * self-test (above) before it returns. Returns 0 and the context in *ctx, or an error
  * with *ctx = NULL.
  */
-int opqc_sycl_mlkem_create(opqc_sycl_mlkem **ctx, int level, size_t max_batch, int device);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_create(opqc_sycl_mlkem **ctx, int level, size_t max_batch,
+                                           int device);
 /* Waits for the context's work, zeroizes its device memory, and frees it (also on a
- * context that has failed; it never ends the process). Buffers of
- * opqc_sycl_mlkem_malloc that were not freed stay allocated, with what they hold. */
+ * context that has failed; a device error it finds does not end the process, Device
+ * failures). Buffers of opqc_sycl_mlkem_malloc that were not freed stay allocated,
+ * with what they hold. */
 void opqc_sycl_mlkem_destroy(opqc_sycl_mlkem *ctx);
 /* The name of the context's device; the string belongs to the context and stays valid
  * until opqc_sycl_mlkem_destroy */
 const char *opqc_sycl_mlkem_device_name(const opqc_sycl_mlkem *ctx);
 
-int opqc_sycl_mlkem_keypair_derand(opqc_sycl_mlkem *ctx, uint8_t *pk, uint8_t *sk,
-                                   const uint8_t *coins, size_t n);
-int opqc_sycl_mlkem_keypair(opqc_sycl_mlkem *ctx, uint8_t *pk, uint8_t *sk, size_t n);
-int opqc_sycl_mlkem_enc_derand(opqc_sycl_mlkem *ctx, uint8_t *ct, uint8_t *ss,
-                               const uint8_t *pk, const uint8_t *coins, int32_t *status,
-                               size_t n);
-int opqc_sycl_mlkem_enc(opqc_sycl_mlkem *ctx, uint8_t *ct, uint8_t *ss, const uint8_t *pk,
-                        int32_t *status, size_t n);
-int opqc_sycl_mlkem_dec(opqc_sycl_mlkem *ctx, uint8_t *ss, const uint8_t *ct,
-                        const uint8_t *sk, int32_t *status, size_t n);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_keypair_derand(opqc_sycl_mlkem *ctx, uint8_t *pk, uint8_t *sk,
+                                                   const uint8_t *coins, size_t n);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_keypair(opqc_sycl_mlkem *ctx, uint8_t *pk, uint8_t *sk,
+                                            size_t n);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_enc_derand(opqc_sycl_mlkem *ctx, uint8_t *ct, uint8_t *ss,
+                                               const uint8_t *pk, const uint8_t *coins,
+                                               int32_t *status, size_t n);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_enc(opqc_sycl_mlkem *ctx, uint8_t *ct, uint8_t *ss,
+                                        const uint8_t *pk, int32_t *status, size_t n);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_dec(opqc_sycl_mlkem *ctx, uint8_t *ss, const uint8_t *ct,
+                                        const uint8_t *sk, int32_t *status, size_t n);
 
 /* Waits until all queued work of the context is done: 0, or -2 if the context has
  * failed, before or during the wait (the first time, its device memory is zeroized);
  * -1 for NULL. */
-int opqc_sycl_mlkem_sync(opqc_sycl_mlkem *ctx);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_sync(opqc_sycl_mlkem *ctx);
 
 /* Memory: device memory on the context's device, and page-locked host memory (faster
  * transfers), 256-byte aligned, or NULL if none is available. opqc_sycl_mlkem_free
@@ -205,8 +243,10 @@ void opqc_sycl_mlkem_free(opqc_sycl_mlkem *ctx, void *p);
  * called). -1 for a NULL context, or a NULL dst or src with bytes > 0 (nothing is
  * queued); -2 once the context has failed (the copy is still made as far as the device
  * allows). */
-int opqc_sycl_mlkem_memcpy(opqc_sycl_mlkem *ctx, void *dst, const void *src, size_t bytes);
-int opqc_sycl_mlkem_memcpy_async(opqc_sycl_mlkem *ctx, void *dst, const void *src, size_t bytes);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_memcpy(opqc_sycl_mlkem *ctx, void *dst, const void *src,
+                                           size_t bytes);
+OPQC_MUST_CHECK int opqc_sycl_mlkem_memcpy_async(opqc_sycl_mlkem *ctx, void *dst, const void *src,
+                                                 size_t bytes);
 
 #ifdef __cplusplus
 }

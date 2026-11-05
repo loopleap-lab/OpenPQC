@@ -14,9 +14,17 @@
  * and measures how many operations per second one CPU core does. demo_gpu runs
  * the same operations in batches on a GPU and compares the two.
  *
- * Every function returns 0 on success; the verification functions return 0 for
- * a valid signature. The functions without _derand take their randomness from
- * the operating system.
+ * Every function returns 0 on success and a negative error code otherwise; the
+ * verification functions return 0 for a valid signature and nothing else. A
+ * call that fails produces no output: its buffers keep what they held, or are
+ * zero (each header says which, under Results), and must not be used as a key,
+ * a shared secret or a signature. So every result is checked, and a section
+ * stops at the first call that fails; the headers declare the functions
+ * OPQC_MUST_CHECK, and the compiler warns about a call whose result is not
+ * used. The functions without _derand take their randomness from the
+ * operating system; the only _derand call here is SLH-DSA's deterministic
+ * variant (addrnd = NULL), which FIPS 205 permits. The other _derand and
+ * _internal functions are for testing (see the headers, Testing interfaces).
  */
 
 #define _POSIX_C_SOURCE 199309L /* clock_gettime */
@@ -37,6 +45,18 @@ static void expect(int ok, const char *what) {
     if (!ok) failures++;
 }
 
+/* Prints a call and its result, counts it if it failed, and returns whether it
+ * succeeded: the caller goes on with the outputs only then */
+static int call_ok(int rc, const char *what) {
+    if (rc == 0) {
+        printf("  %-58s ok\n", what);
+        return 1;
+    }
+    printf("  %-58s FAILED (error %d)  <-- unexpected\n", what, rc);
+    failures++;
+    return 0;
+}
+
 static void print_hex(const char *label, const uint8_t *p, size_t len) {
     printf("  %-14s", label);
     for (size_t i = 0; i < len && i < 16; i++) printf("%02x", p[i]);
@@ -49,16 +69,21 @@ static double now(void) {
     return (double)t.tv_sec + 1e-9 * (double)t.tv_nsec;
 }
 
-/* Runs STMT over and over for half a second and prints the operations per second */
-#define SPEED(name, STMT)                                                                  \
+/* Runs CALL over and over for half a second and prints the operations per second;
+ * every call's result is checked, and calls that fail are counted */
+#define SPEED(name, CALL)                                                                  \
     do {                                                                                   \
-        size_t ops_ = 0;                                                                   \
+        size_t ops_ = 0, failed_ = 0;                                                      \
         double t0_ = now(), t_;                                                            \
         do {                                                                               \
-            STMT;                                                                          \
+            if ((CALL) != 0) failed_++;                                                    \
             ops_++;                                                                        \
         } while ((t_ = now() - t0_) < 0.5);                                                \
         printf("  %-8s %10.0f ops/s   %9.1f us each\n", name, (double)ops_ / t_, 1e6 * t_ / (double)ops_); \
+        if (failed_ != 0) {                                                                \
+            printf("  %zu of %zu calls FAILED  <-- unexpected\n", failed_, ops_);          \
+            failures++;                                                                    \
+        }                                                                                  \
     } while (0)
 
 static void demo_mlkem(void) {
@@ -70,20 +95,23 @@ static void demo_mlkem(void) {
            MLKEM768_PUBLICKEYBYTES, MLKEM768_SECRETKEYBYTES, MLKEM768_CIPHERTEXTBYTES, MLKEM_BYTES);
 
     /* Alice makes a key pair and sends pk to Bob */
-    expect(openpqc_mlkem768_keypair(pk, sk) == 0, "Alice: keypair(pk, sk)");
-    /* Bob encapsulates: a ciphertext for Alice and his copy of a fresh shared secret */
-    expect(openpqc_mlkem768_enc(ct, ss_bob, pk) == 0, "Bob:   enc(ct, ss, pk), sends ct to Alice");
+    if (!call_ok(openpqc_mlkem768_keypair(pk, sk), "Alice: keypair(pk, sk)")) return;
+    /* Bob encapsulates: a ciphertext for Alice and his copy of a fresh shared secret.
+     * enc checks pk first (FIPS 203, Section 7.2): a pk that fails the check gives
+     * OPENPQC_MLKEM_ERR_INVALID_PK, and then ct and ss are not written */
+    if (!call_ok(openpqc_mlkem768_enc(ct, ss_bob, pk), "Bob:   enc(ct, ss, pk), sends ct to Alice")) return;
     /* Alice decapsulates the ciphertext with her secret key: her copy of the secret */
-    expect(openpqc_mlkem768_dec(ss_alice, ct, sk) == 0, "Alice: dec(ss, ct, sk)");
+    if (!call_ok(openpqc_mlkem768_dec(ss_alice, ct, sk), "Alice: dec(ss, ct, sk)")) return;
     print_hex("Bob's ss", ss_bob, sizeof ss_bob);
     print_hex("Alice's ss", ss_alice, sizeof ss_alice);
     expect(memcmp(ss_bob, ss_alice, MLKEM_BYTES) == 0, "both have the same shared secret");
 
-    /* A changed ciphertext does not fail: it gives an unrelated secret (implicit
-     * rejection, FIPS 203, Algorithm 18), so Alice and Bob simply disagree */
+    /* A changed ciphertext is not an error: dec returns 0 and an unrelated secret
+     * (implicit rejection, FIPS 203, Algorithm 18, lines 7 and 10), so Alice and Bob
+     * simply disagree */
     ct[0] ^= 1;
-    openpqc_mlkem768_dec(ss_alice, ct, sk);
-    expect(memcmp(ss_bob, ss_alice, MLKEM_BYTES) != 0, "a changed ciphertext gives a different secret");
+    if (call_ok(openpqc_mlkem768_dec(ss_alice, ct, sk), "Alice: dec of a changed ciphertext returns 0"))
+        expect(memcmp(ss_bob, ss_alice, MLKEM_BYTES) != 0, "a changed ciphertext gives a different secret");
     ct[0] ^= 1;
 
     printf("\n  speed on one core:\n");
@@ -106,24 +134,26 @@ static void demo_mldsa(void) {
     printf("  public key %d B, secret key %d B, signature %d B\n\n", MLDSA65_PUBLICKEYBYTES,
            MLDSA65_SECRETKEYBYTES, MLDSA65_BYTES);
 
-    expect(openpqc_mldsa65_keypair(pk, sk) == 0, "keypair(pk, sk)");
-    expect(openpqc_mldsa65_sign(sig, msg, mlen, ctx, ctxlen, sk) == 0, "sign(sig, msg, ctx, sk)");
+    if (!call_ok(openpqc_mldsa65_keypair(pk, sk), "keypair(pk, sk)")) return;
+    if (!call_ok(openpqc_mldsa65_sign(sig, msg, mlen, ctx, ctxlen, sk), "sign(sig, msg, ctx, sk)")) return;
     print_hex("signature", sig, sizeof sig);
+    /* 0 is the only result that means "valid" */
     expect(openpqc_mldsa65_verify(sig, sizeof sig, msg, mlen, ctx, ctxlen, pk) == 0, "verify(sig, msg, ctx, pk): valid");
 
     memcpy(forged, msg, sizeof msg);
     forged[4] = '9'; /* "Pay 900 coins to Bob" */
-    expect(openpqc_mldsa65_verify(sig, sizeof sig, forged, mlen, ctx, ctxlen, pk) != 0,
+    expect(openpqc_mldsa65_verify(sig, sizeof sig, forged, mlen, ctx, ctxlen, pk) == OPENPQC_MLDSA_ERR_INVALID_SIGNATURE,
            "rejected for a changed message");
-    expect(openpqc_mldsa65_verify(sig, sizeof sig, msg, mlen, (const uint8_t *)"other", 5, pk) != 0,
+    expect(openpqc_mldsa65_verify(sig, sizeof sig, msg, mlen, (const uint8_t *)"other", 5, pk) ==
+               OPENPQC_MLDSA_ERR_INVALID_SIGNATURE,
            "rejected under another context string");
 
     /* sign is hedged: it mixes fresh randomness into each signature, so signing the
      * same message twice gives two different signatures, both valid */
-    openpqc_mldsa65_sign(sig2, msg, mlen, ctx, ctxlen, sk);
-    expect(memcmp(sig, sig2, sizeof sig) != 0 &&
-               openpqc_mldsa65_verify(sig2, sizeof sig2, msg, mlen, ctx, ctxlen, pk) == 0,
-           "a second signature differs and is valid too");
+    if (call_ok(openpqc_mldsa65_sign(sig2, msg, mlen, ctx, ctxlen, sk), "sign the same message again"))
+        expect(memcmp(sig, sig2, sizeof sig) != 0 &&
+                   openpqc_mldsa65_verify(sig2, sizeof sig2, msg, mlen, ctx, ctxlen, pk) == 0,
+               "a second signature differs and is valid too");
 
     printf("\n  speed on one core:\n");
     SPEED("keygen", openpqc_mldsa65_keypair(pk, sk));
@@ -145,25 +175,30 @@ static void demo_slhdsa(void) {
     printf("  public key %d B, secret key %d B, signature %d B\n\n", SLHDSA_SHA2_128F_PUBLICKEYBYTES,
            SLHDSA_SHA2_128F_SECRETKEYBYTES, SLHDSA_SHA2_128F_BYTES);
 
-    expect(openpqc_slhdsa_sha2_128f_keypair(pk, sk) == 0, "keypair(pk, sk)");
-    expect(openpqc_slhdsa_sha2_128f_sign(sig, msg, mlen, ctx, ctxlen, sk) == 0, "sign(sig, msg, ctx, sk)");
+    if (!call_ok(openpqc_slhdsa_sha2_128f_keypair(pk, sk), "keypair(pk, sk)")) return;
+    if (!call_ok(openpqc_slhdsa_sha2_128f_sign(sig, msg, mlen, ctx, ctxlen, sk), "sign(sig, msg, ctx, sk)")) return;
     print_hex("signature", sig, sizeof sig);
     expect(openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, mlen, ctx, ctxlen, pk) == 0,
            "verify(sig, msg, ctx, pk): valid");
 
     memcpy(forged, msg, sizeof msg);
     forged[4] = '9';
-    expect(openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, forged, mlen, ctx, ctxlen, pk) != 0,
+    expect(openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, forged, mlen, ctx, ctxlen, pk) ==
+               OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
            "rejected for a changed message");
     sig[100] ^= 1;
-    expect(openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, mlen, ctx, ctxlen, pk) != 0,
+    expect(openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, mlen, ctx, ctxlen, pk) ==
+               OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
            "rejected for a changed signature");
     sig[100] ^= 1;
 
-    /* The deterministic variant (addrnd = NULL): the same message gives the same signature */
-    openpqc_slhdsa_sha2_128f_sign_derand(sig, msg, mlen, ctx, ctxlen, NULL, sk);
-    openpqc_slhdsa_sha2_128f_sign_derand(sig2, msg, mlen, ctx, ctxlen, NULL, sk);
-    expect(memcmp(sig, sig2, sizeof sig) == 0, "deterministic signing (sign_derand, NULL) repeats itself");
+    /* The deterministic variant (addrnd = NULL, for platforms without a random bit
+     * generator, FIPS 205, Section 9.2): the same message gives the same signature */
+    if (call_ok(openpqc_slhdsa_sha2_128f_sign_derand(sig, msg, mlen, ctx, ctxlen, NULL, sk),
+                "sign_derand(sig, msg, ctx, NULL, sk): deterministic") &&
+        call_ok(openpqc_slhdsa_sha2_128f_sign_derand(sig2, msg, mlen, ctx, ctxlen, NULL, sk),
+                "the same again"))
+        expect(memcmp(sig, sig2, sizeof sig) == 0, "deterministic signing repeats itself");
 
     printf("\n  speed on one core:\n");
     SPEED("keygen", openpqc_slhdsa_sha2_128f_keypair(pk, sk));

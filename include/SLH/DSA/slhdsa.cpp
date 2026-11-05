@@ -1,9 +1,18 @@
+// Copyright (c) The OpenPQC project authors
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+//
 // slhdsa.cpp  --  the C API (openpqc_slhdsa.h), implemented with the algorithms of scheme/
 //
 // The only compiled file of SLH-DSA: it instantiates the templates of
 // scheme/slh_dsa.hpp for the twelve parameter sets and exports them under the
 // C names. Each function turns its pointer arguments into spans; addrnd = NULL
 // selects the deterministic variant.
+//
+// Outputs on failure (openpqc_slhdsa.h, Results): every check that can fail
+// (ctx, ph, the RNG) runs before anything is written to sig, pk or sk, so a
+// failure leaves them unchanged; only a failed pair-wise consistency test
+// after KeyGen zeroizes pk and sk (scheme/slh_dsa.hpp). The check of ph below
+// comes before any write as well.
 #include "SLH/DSA/openpqc_slhdsa.h"
 
 #include <cstddef>

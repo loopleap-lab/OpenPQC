@@ -13,20 +13,22 @@
  *   SLH-DSA (FIPS 205, Section 10)
  *   int openpqc_slhdsa_S_keypair(pk, sk);                      slh_keygen (Alg. 21)
  *   int openpqc_slhdsa_S_keypair_derand(pk, sk, seed[3n]);     slh_keygen_internal (Alg. 18) for
- *                                                              seed = SK.seed || SK.prf || PK.seed
+ *                                                              seed = SK.seed || SK.prf || PK.seed;
+ *                                                              testing, stored seeds (see below)
  *   int openpqc_slhdsa_S_sign(sig, m, mlen, ctx, ctxlen, sk);  slh_sign, hedged (Alg. 22)
  *   int openpqc_slhdsa_S_sign_derand(sig, m, mlen, ctx, ctxlen, addrnd[n], sk)
- *                                                              the same with addrnd given; addrnd =
- *                                                              NULL is the deterministic variant
+ *                                                              the same with addrnd given: addrnd =
+ *                                                              NULL is the deterministic variant,
+ *                                                              any addrnd is for testing (see below)
  *   int openpqc_slhdsa_S_verify(sig, siglen, m, mlen, ctx, ctxlen, pk)   slh_verify (Alg. 24)
  *
  *   HashSLH-DSA (pre-hash, FIPS 205, Section 10.2.2); ph is an OPENPQC_SLHDSA_PREHASH_* value
  *   int openpqc_slhdsa_S_prehash_sign(sig, m, mlen, ctx, ctxlen, ph, sk)              (Alg. 23)
  *   int openpqc_slhdsa_S_prehash_sign_derand(sig, m, mlen, ctx, ctxlen, ph, addrnd[n], sk)
- *                                                              addrnd = NULL: deterministic
+ *                                                              addrnd as for sign_derand
  *   int openpqc_slhdsa_S_prehash_verify(sig, siglen, m, mlen, ctx, ctxlen, ph, pk)    (Alg. 25)
  *
- *   Internal functions, for testing (FIPS 205, Section 9): M' is the formatted message
+ *   Internal functions, for testing only (FIPS 205, Section 9): M' is the formatted message
  *   int openpqc_slhdsa_S_sign_internal(sig, mprime, mprimelen, addrnd[n], sk)  slh_sign_internal
  *                                                              (Alg. 19); addrnd = NULL: deterministic
  *   int openpqc_slhdsa_S_verify_internal(sig, siglen, mprime, mprimelen, pk)    slh_verify_internal
@@ -35,13 +37,37 @@
  * pk is the public key PK.seed || PK.root (2n bytes), sk the private key
  * SK.seed || SK.prf || PK.seed || PK.root (4n bytes), sig the signature SIG, m
  * the message M and ctx the context string (at most 255 bytes; NULL is
- * allowed for an empty one, and for an empty message). The functions return 0
- * on success or one of the OPENPQC_SLHDSA_ERR_* codes; the verification
- * functions return 0 for a valid signature. A signature whose length is not
- * that of the parameter set is invalid (Algorithm 20, lines 1-3), and so is
- * every signature checked with a context string longer than 255 bytes
- * (Algorithms 24 and 25, lines 1-3); signing with such a context string fails
- * with OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT and writes nothing.
+ * allowed for an empty one, and for an empty message). A signature whose
+ * length is not that of the parameter set is invalid (Algorithm 20, lines
+ * 1-3), and so is every signature checked with a context string longer than
+ * 255 bytes (Algorithms 24 and 25, lines 1-3).
+ *
+ * Results. Every function returns 0 on success or one of the
+ * OPENPQC_SLHDSA_ERR_* codes; the verification functions return 0 for a valid
+ * signature and nothing else. Every function is declared OPQC_MUST_CHECK
+ * (Core/opqc_common.h): the compiler warns about a call whose result is not
+ * used, which for a verification would accept every signature. A call that
+ * fails produces no output (FIPS 205's "bottom"), and its output buffers then
+ * hold:
+ *
+ *   keypair, keypair_derand   pk and sk unchanged: no randomness for the seeds
+ *                             (keypair, OPENPQC_SLHDSA_ERR_RNG_FAIL); pk and sk
+ *                             zero: the key pair was generated and failed its
+ *                             pair-wise consistency test (only in a library
+ *                             built with OPENPQC_SLHDSA_KEYGEN_PCT)
+ *   every signing function    sig unchanged: ctx longer than 255 bytes or an
+ *                             unknown ph (OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT), or
+ *                             no randomness for addrnd (sign and prehash_sign,
+ *                             OPENPQC_SLHDSA_ERR_RNG_FAIL); sign_internal does
+ *                             not fail
+ *
+ * The same rule holds in all of OpenPQC's C APIs (openpqc_mlkem.h,
+ * openpqc_mldsa.h, openpqc_slhdsa.h): a failure found before the internal
+ * algorithm runs (a check of an argument or a key, a missing random value)
+ * writes nothing, and a failure inside it or in the pair-wise consistency test
+ * that follows KeyGen sets the outputs to zero, so that they never hold a key
+ * that failed its test or part of a result. Never use an output of a call
+ * that did not return 0.
  *
  * Buffers. The signing functions read m, ctx and addrnd (mprime and addrnd for
  * sign_internal) before they write sig, so sig may overlap them, e.g. sign in
@@ -74,15 +100,58 @@
  * The overwriting assumes one contiguous native stack (not SafeStack, split
  * stacks or the fake stacks of AddressSanitizer's use-after-return detection).
  *
- * The randomized functions (keypair, sign, prehash_sign) take their randomness
- * from the operating system (see Core/opqc_platform.h); if none is available,
- * they return OPENPQC_SLHDSA_ERR_RNG_FAIL and write nothing. keypair draws the
- * three seeds with one call of 3n bytes, in the order SK.seed, SK.prf, PK.seed.
- * The *_derand and *_internal functions are meant for testing, for expanding
- * stored seeds, and (with addrnd = NULL) for the deterministic variant of
- * signing (FIPS 205, Sections 9.2 and 10.2). The set ids OPENPQC_SLHDSA_<SET>
- * number the parameter sets in the order of Table 2. The implementation is
- * SLH/DSA/slhdsa.cpp, with the algorithms in SLH/DSA/scheme.
+ * Testing interfaces (FIPS 205, Section 9). The *_derand functions take the
+ * random values of KeyGen (the three seeds) or of signing (addrnd) from the
+ * caller, and sign_internal and verify_internal are Algorithms 19 and 20 on a
+ * formatted message M' that the caller builds. FIPS 205 says that, "other than
+ * for testing purposes", the interfaces of key generation and signing of
+ * Section 9 "should not be made available to applications, as any random
+ * values required for key generation and signature generation shall be
+ * generated by the cryptographic module". Their uses:
+ *
+ *   keypair_derand            testing (known-answer tests, ACVP), and the
+ *                             regeneration of PK.root from SK.seed and PK.seed
+ *                             that gives assurance of private-key possession
+ *                             (Sections 9 and 3.1). OpenPQC also uses it to
+ *                             expand seeds stored in place of sk, as FIPS 203
+ *                             and 204 allow for their seeds: the seeds are most
+ *                             of sk and need its protection, and keypair does
+ *                             not return them, so seeds to store must come from
+ *                             an approved random bit generator (Section 3.1).
+ *   sign_derand,              addrnd = NULL: the deterministic variant, which
+ *   prehash_sign_derand       FIPS 205 offers "for platforms where a random bit
+ *                             generator is not available" (Section 9.2;
+ *                             Algorithms 22 and 23 without lines 4-7), while the
+ *                             hedged variant "should be used on platforms where
+ *                             side-channel attacks are a concern"; any addrnd
+ *                             given: testing only, as sign and prehash_sign draw
+ *                             it from the operating system.
+ *   sign_internal,            testing only (ACVP): they sign and accept any M',
+ *   verify_internal           without the prefix that separates SLH-DSA from
+ *                             HashSLH-DSA and binds ctx (Algorithm 22, line 8;
+ *                             Algorithm 23, line 24).
+ *
+ * The library always contains them (no build option leaves them out). A
+ * program for production use calls keypair, sign or prehash_sign (or, without
+ * a random bit generator, sign_derand or prehash_sign_derand with addrnd =
+ * NULL), and verify or prehash_verify.
+ *
+ * Randomness. The randomized functions (keypair, sign, prehash_sign) take
+ * their randomness from the operating system (Core/opqc_platform.h); keypair
+ * draws the three seeds with one call of 3n bytes, in the order SK.seed,
+ * SK.prf, PK.seed. The variant openpqc_slhdsa_testrng of the library calls the
+ * application's randombytes() instead and exists for the tests only
+ * (Core/openpqc_core.h). The set ids OPENPQC_SLHDSA_<SET> number the parameter
+ * sets in the order of Table 2. The implementation is SLH/DSA/slhdsa.cpp, with
+ * the algorithms in SLH/DSA/scheme.
+ *
+ * Linking. The library is C++20 inside: a C program links it with the C++
+ * compiler driver (g++, clang++) or adds the C++ runtime (-lstdc++ with GCC's
+ * libstdc++); linked by gcc or clang alone, it lacks __gxx_personality_v0, and
+ * if it was built with Clang also __cxa_begin_catch and std::terminate() (the
+ * C driver's libgcc provides the library's other runtime symbol,
+ * _Unwind_Resume). A CMake target of C sources that links openpqc::slhdsa sets
+ * LINKER_LANGUAGE CXX (examples/CMakeLists.txt, demo_cpu).
  */
 
 #ifndef OPENPQC_SLHDSA_H
@@ -92,6 +161,7 @@
 #include <stdint.h>
 
 #include "../../Core/openpqc_prehash.h"
+#include "../../Core/opqc_common.h" /* OPQC_MUST_CHECK */
 
 /* The parameter sets, numbered in the order of FIPS 205, Table 2 */
 #define OPENPQC_SLHDSA_SHA2_128S 1
@@ -212,37 +282,37 @@ extern "C" {
 #endif
 
 /* The functions of one set: S is the infix, M the prefix of its size macros */
-#define OPENPQC_SLHDSA_DECLARE_API(S, M)                                                                      \
-    int openpqc_slhdsa_##S##_keypair(uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES],                                 \
-                                     uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                                \
-    int openpqc_slhdsa_##S##_keypair_derand(uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES],                          \
-                                            uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES],                          \
-                                            const uint8_t seed[SLHDSA_##M##_SEEDBYTES]);                      \
-    int openpqc_slhdsa_##S##_sign(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *m, size_t mlen,             \
-                                  const uint8_t *ctx, size_t ctxlen,                                          \
-                                  const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                             \
-    int openpqc_slhdsa_##S##_sign_derand(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *m, size_t mlen,      \
-                                         const uint8_t *ctx, size_t ctxlen,                                   \
-                                         const uint8_t addrnd[SLHDSA_##M##_RNDBYTES],                         \
-                                         const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                      \
-    int openpqc_slhdsa_##S##_verify(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen,         \
-                                    const uint8_t *ctx, size_t ctxlen,                                        \
-                                    const uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES]);                           \
-    int openpqc_slhdsa_##S##_prehash_sign(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *m, size_t mlen,     \
-                                          const uint8_t *ctx, size_t ctxlen, int ph,                          \
-                                          const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                     \
-    int openpqc_slhdsa_##S##_prehash_sign_derand(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *m,           \
-                                                 size_t mlen, const uint8_t *ctx, size_t ctxlen, int ph,      \
-                                                 const uint8_t addrnd[SLHDSA_##M##_RNDBYTES],                 \
-                                                 const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);              \
-    int openpqc_slhdsa_##S##_prehash_verify(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen, \
-                                            const uint8_t *ctx, size_t ctxlen, int ph,                        \
-                                            const uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES]);                   \
-    int openpqc_slhdsa_##S##_sign_internal(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *mprime,            \
-                                           size_t mprimelen, const uint8_t addrnd[SLHDSA_##M##_RNDBYTES],     \
-                                           const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                    \
-    int openpqc_slhdsa_##S##_verify_internal(const uint8_t *sig, size_t siglen, const uint8_t *mprime,        \
-                                             size_t mprimelen, const uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES]);
+#define OPENPQC_SLHDSA_DECLARE_API(S, M)                                                                                       \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_keypair(uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES],                                  \
+                                                     uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                                 \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_keypair_derand(uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES],                           \
+                                                            uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES],                           \
+                                                            const uint8_t seed[SLHDSA_##M##_SEEDBYTES]);                       \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_sign(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *m, size_t mlen,              \
+                                                  const uint8_t *ctx, size_t ctxlen,                                           \
+                                                  const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                              \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_sign_derand(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *m, size_t mlen,       \
+                                                         const uint8_t *ctx, size_t ctxlen,                                    \
+                                                         const uint8_t addrnd[SLHDSA_##M##_RNDBYTES],                          \
+                                                         const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                       \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_verify(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen,          \
+                                                    const uint8_t *ctx, size_t ctxlen,                                         \
+                                                    const uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES]);                            \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_prehash_sign(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *m, size_t mlen,      \
+                                                          const uint8_t *ctx, size_t ctxlen, int ph,                           \
+                                                          const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                      \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_prehash_sign_derand(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *m,            \
+                                                                 size_t mlen, const uint8_t *ctx, size_t ctxlen, int ph,       \
+                                                                 const uint8_t addrnd[SLHDSA_##M##_RNDBYTES],                  \
+                                                                 const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);               \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_prehash_verify(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen,  \
+                                                            const uint8_t *ctx, size_t ctxlen, int ph,                         \
+                                                            const uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES]);                    \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_sign_internal(uint8_t sig[SLHDSA_##M##_BYTES], const uint8_t *mprime,             \
+                                                           size_t mprimelen, const uint8_t addrnd[SLHDSA_##M##_RNDBYTES],      \
+                                                           const uint8_t sk[SLHDSA_##M##_SECRETKEYBYTES]);                     \
+    OPQC_MUST_CHECK int openpqc_slhdsa_##S##_verify_internal(const uint8_t *sig, size_t siglen, const uint8_t *mprime,         \
+                                                             size_t mprimelen, const uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES]);
 
 OPENPQC_SLHDSA_DECLARE_API(sha2_128s, SHA2_128S)
 OPENPQC_SLHDSA_DECLARE_API(shake_128s, SHAKE_128S)

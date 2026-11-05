@@ -71,7 +71,9 @@ elseif(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
             if(barrier STREQUAL "volatile")
                 target_compile_definitions(${_t} PRIVATE OPQC_CONFIG_NO_ASM_VALUE_BARRIER)
             endif()
-            target_compile_options(${_t} PRIVATE -${level})   # after the build type's flags, so it wins
+            # after the build type's flags, so they win: the level, and no x86-64 extension that valgrind
+            # cannot decode (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt)
+            target_compile_options(${_t} PRIVATE -${level} ${OPENPQC_CT_ISA_FLAGS})
             set_target_properties(${_t} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
             if(OPENPQC_HAVE_STATIC_LINK_C)
                 target_link_options(${_t} PRIVATE -static)
@@ -93,7 +95,7 @@ elseif(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
                              PASS_REGULAR_EXPRESSION "uninitialised value[^\n]*\n[^\n]*secret_index")
     endforeach()
 else()
-    message(STATUS "valgrind not found: constant-time tests of Core (core_*_ct) disabled")
+    message(STATUS "valgrind or valgrind/memcheck.h not found: constant-time tests of Core (core_*_ct) disabled")
 endif()
 
 # --- the same helpers on other processors, from the assembly: test_core_ct_shapes.c --------------

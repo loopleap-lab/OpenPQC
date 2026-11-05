@@ -16,6 +16,13 @@
 //   mode kernel: inputs and outputs stay in device memory
 //   mode e2e:    each call also copies its inputs from page-locked host memory to the
 //                device and its outputs back, queued in order with the operation
+//   op keygen, encaps: the _derand functions (coins given in device memory), the testing
+//                interfaces of openpqc_mlkem_sycl.h: an upper bound for the randomized API;
+//   op keygen_random, encaps_random (mode kernel): opqc_sycl_mlkem_keypair and _enc, which
+//                draw the coins on the host from the operating system and copy them to the
+//                device for every launch, the API that applications use
+// Every timed call's result is checked: a call that fails ends the program (exit 1)
+// instead of being timed as work that was done.
 // The columns are those of the earlier CUDA benchmark (bench/compare_gpu.py reads both).
 #include <algorithm>
 #include <cctype>
@@ -80,7 +87,8 @@ void bench_level(int level, const std::vector<std::size_t>& batches, int trials,
 
     Buffer d_kc(ctx, 64 * nmax, false), d_ec(ctx, 32 * nmax, false), d_pk(ctx, s.pk * nmax, false),
             d_sk(ctx, s.sk * nmax, false), d_ct(ctx, s.ct * nmax, false), d_ss(ctx, 32 * nmax, false),
-            d_status(ctx, 4 * nmax, false);
+            d_status(ctx, 4 * nmax, false), d_pk2(ctx, s.pk * nmax, false), d_sk2(ctx, s.sk * nmax, false),
+            d_ct2(ctx, s.ct * nmax, false);
     Buffer h_kc(ctx, 64 * nmax, true), h_ec(ctx, 32 * nmax, true), h_pk(ctx, s.pk * nmax, true),
             h_sk(ctx, s.sk * nmax, true), h_ct(ctx, s.ct * nmax, true), h_ss(ctx, 32 * nmax, true);
     const auto kc = bench::random_bytes(64 * nmax, 1), ec = bench::random_bytes(32 * nmax, 2);
@@ -98,11 +106,19 @@ void bench_level(int level, const std::vector<std::size_t>& batches, int trials,
 
     const auto sync = [&] { check(opqc_sycl_mlkem_sync(ctx), "sync"); };
     for (const std::size_t n : batches) {
-        const auto keygen = [&] { opqc_sycl_mlkem_keypair_derand(ctx, d_pk.p, d_sk.p, d_kc.p, n); };
-        const auto encaps = [&] { opqc_sycl_mlkem_enc_derand(ctx, d_ct.p, d_ss.p, d_pk.p, d_ec.p, status, n); };
-        const auto decaps = [&] { opqc_sycl_mlkem_dec(ctx, d_ss.p, d_ct.p, d_sk.p, status, n); };
+        const auto keygen = [&] { check(opqc_sycl_mlkem_keypair_derand(ctx, d_pk.p, d_sk.p, d_kc.p, n), "keygen"); };
+        const auto encaps = [&] {
+            check(opqc_sycl_mlkem_enc_derand(ctx, d_ct.p, d_ss.p, d_pk.p, d_ec.p, status, n), "encaps");
+        };
+        const auto decaps = [&] { check(opqc_sycl_mlkem_dec(ctx, d_ss.p, d_ct.p, d_sk.p, status, n), "decaps"); };
+        // the randomized calls write keys and ciphertexts of their own: the pk of keygen_random is not the
+        // one that encaps_random and decaps use, which stay those of the setup
+        const auto keygen_random = [&] { check(opqc_sycl_mlkem_keypair(ctx, d_pk2.p, d_sk2.p, n), "keygen_random"); };
+        const auto encaps_random = [&] {
+            check(opqc_sycl_mlkem_enc(ctx, d_ct2.p, d_ss.p, d_pk.p, status, n), "encaps_random");
+        };
         const auto cp = [&](void* dst, const void* src, std::size_t bytes) {
-            opqc_sycl_mlkem_memcpy_async(ctx, dst, src, bytes);
+            check(opqc_sycl_mlkem_memcpy_async(ctx, dst, src, bytes), "copy");
         };
         const auto keygen_e2e = [&] {
             cp(d_kc.p, h_kc.p, 64 * n);
@@ -128,9 +144,14 @@ void bench_level(int level, const std::vector<std::size_t>& batches, int trials,
             const char* mode;
             std::function<void()> f;
         };
-        const Item items[] = {{"keygen", "kernel", keygen},   {"encaps", "kernel", encaps},
-                              {"decaps", "kernel", decaps},   {"keygen", "e2e", keygen_e2e},
-                              {"encaps", "e2e", encaps_e2e}, {"decaps", "e2e", decaps_e2e}};
+        const Item items[] = {{"keygen", "kernel", keygen},
+                              {"encaps", "kernel", encaps},
+                              {"decaps", "kernel", decaps},
+                              {"keygen_random", "kernel", keygen_random},
+                              {"encaps_random", "kernel", encaps_random},
+                              {"keygen", "e2e", keygen_e2e},
+                              {"encaps", "e2e", encaps_e2e},
+                              {"decaps", "e2e", decaps_e2e}};
         for (const auto& it : items) {
             mon.cool_down(cool_to_c);
             bench::warm_up(0.3, it.f, sync);

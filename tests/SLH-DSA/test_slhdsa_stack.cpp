@@ -1354,10 +1354,11 @@ struct SchemeLayer {
     }
 };
 
-// Core's prehash, which HashSLH-DSA calls above the burn of internal::sign and internal::verify, destroys its
-// hash state itself (Core/prehash.hpp): called directly, without any burn, for each of the twelve pre-hash
-// functions, it must leave neither PH(M) (which a SHA-3 or SHAKE state holds) nor pieces of the message (which
-// a SHA-2 state holds) on the stack as it is
+// Core's prehash, which HashSLH-DSA calls above the burn of internal::sign and internal::verify, destroys what
+// its computation holds itself (Core/prehash.hpp, with Core's one-shot functions): called directly, without
+// any burn, for each of the twelve pre-hash functions, it must leave neither PH(M) (which a SHA-3 or SHAKE
+// state holds) nor pieces of the message (which a SHA-2 state holds) nor the words of the SHA-2 compressions
+// of the message (the schedule W_t gives the block back) on the stack as it is
 std::array<std::uint8_t, openpqc::max_prehash_bytes> prehash_out{};
 int prehash_function = OPENPQC_SLHDSA_PREHASH_SHA2_256;
 void op_prehash() {
@@ -1371,6 +1372,7 @@ void prehash_destruction(bool verbose) {
         Residue r(s);
         r.string("PH(M)", prehash_out.data(), openpqc::prehash_bytes(static_cast<openpqc::PreHash>(prehash_function)));
         r.string("pieces of the message", message.data(), message.size());
+        prehash_compressions(r, prehash_function);
         CHECK_EQ(r.report("Core prehash, " + prehash_name(prehash_function) + ", without the burn (stack as it is)",
                           verbose),
                  0u);

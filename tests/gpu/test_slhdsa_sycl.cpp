@@ -31,12 +31,20 @@
 //                         be passed to the batched API: its sizes are those of the parameter set.)
 //   prehash_verify        the CPU's prehash_verify on the pre-hash signatures, every other one changed
 //   verify_internal       the CPU's verify_internal on the internal signatures, every third one changed
-//   arguments             unaligned key, seed, addrnd, pre-hash, offset, signature and status buffers, a
-//                         NULL message buffer, a context string of 256 bytes (and one of 1 byte at NULL),
-//                         unknown pre-hash functions and parameter sets, and a max_batch of 0 or above the
-//                         launch limit are refused with -1; a refused verification call sets every status
-//                         entry to OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE (fail closed), and one refused for
-//                         its unusable status buffer writes nothing
+//   arguments             unaligned key, seed, addrnd, pre-hash, offset, signature and status buffers, NULL
+//                         key, seed, signature and message buffers, a context string of 256 bytes (and one of
+//                         1 byte at NULL), unknown pre-hash functions and parameter sets, and a max_batch of 0
+//                         or above the launch limit are refused with -1; a refused verification call sets
+//                         every status entry to OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE (fail closed), and one
+//                         refused for its unusable status buffer writes nothing
+//   memory                memory that is not USM memory of the context's SYCL context: pageable host memory
+//                         (a std::vector) in place of every kind of buffer, in every function, and the
+//                         page-locked host memory and the device memory of a context on another GPU, are
+//                         refused with -1 and nothing is written (a refused verification sets the entries of
+//                         a usable status buffer to "invalid"); AdaptiveCpp's OpenMP host device, which takes
+//                         every host pointer for memory of its own, may use the host memory instead, but then
+//                         with the CPU's results. Controls: the context's own page-locked host memory, and
+//                         buffers that start inside a device allocation, give the CPU's results everywhere
 //   randomized            keypair, sign, prehash_sign, sign_one_key and prehash_sign_one_key on the device,
 //                         verified by the CPU (in chunks too: the second configuration)
 //   fresh randomness      what verification cannot see: two keypair calls give keys that equal keypair_derand
@@ -571,6 +579,13 @@ void test_device(int device, const Oracle& o) {
             refused(opqc_sycl_slhdsa_keypair_derand(c, d_pk.p, d_sk.p + 4, d_seeds.p, n));
             refused(opqc_sycl_slhdsa_keypair_derand(c, d_pk.p, d_sk.p, d_seeds.p + 4, n));
             refused(opqc_sycl_slhdsa_keypair(c, d_pk.p, d_sk.p + 2, n));
+            refused(opqc_sycl_slhdsa_keypair_derand(c, nullptr, d_sk.p, d_seeds.p, n));
+            refused(opqc_sycl_slhdsa_keypair_derand(c, d_pk.p, nullptr, d_seeds.p, n));
+            refused(opqc_sycl_slhdsa_keypair_derand(c, d_pk.p, d_sk.p, nullptr, n));
+            refused(opqc_sycl_slhdsa_keypair(c, nullptr, d_sk.p, n));
+            refused(opqc_sycl_slhdsa_sign_derand(c, nullptr, d_msg.p, offsets, ctx, ctxlen, d_rnd.p, d_sk.p, n));
+            refused(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, d_rnd.p, nullptr, n));
+            refused(opqc_sycl_slhdsa_sign_one_key(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, nullptr, n));
             refused(opqc_sycl_slhdsa_sign_derand(c, d_sig.p + 4, d_msg.p, offsets, ctx, ctxlen, d_rnd.p, d_sk.p, n));
             refused(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, d_rnd.p, d_sk.p + 4, n));
             refused(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, d_rnd.p + 1, d_sk.p, n));
@@ -598,6 +613,8 @@ void test_device(int device, const Oracle& o) {
             closed(opqc_sycl_slhdsa_verify_internal(c, d_sig.p, nullptr, mp_offsets, d_pk.p, st, n));
             closed(opqc_sycl_slhdsa_verify(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, d_pk.p + 4, st, n));
             closed(opqc_sycl_slhdsa_verify(c, d_sig.p + 4, d_msg.p, offsets, ctx, ctxlen, d_pk.p, st, n));
+            closed(opqc_sycl_slhdsa_verify(c, nullptr, d_msg.p, offsets, ctx, ctxlen, d_pk.p, st, n));
+            closed(opqc_sycl_slhdsa_verify(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, nullptr, st, n));
             closed(opqc_sycl_slhdsa_verify(c, d_sig.p, d_msg.p, offsets, long_ctx.data(), 256, d_pk.p, st, n));
             closed(opqc_sycl_slhdsa_verify(c, d_sig.p, d_msg.p, nullptr, ctx, ctxlen, d_pk.p, st, n));
             closed(opqc_sycl_slhdsa_prehash_verify(c, d_sig.p, d_ph.p, ctx, ctxlen, 0, d_pk.p, st, n));
@@ -624,6 +641,306 @@ void test_device(int device, const Oracle& o) {
             refused(opqc_sycl_slhdsa_create(&other, api.id, static_cast<std::size_t>(INT_MAX), device));
             refused(opqc_sycl_slhdsa_create(&other, api.id, SIZE_MAX, device));
             CHECK(other == nullptr);
+        }
+
+        // Memory that is not USM memory of the context's SYCL context, which the device cannot use: pageable host
+        // memory (Level Zero reads it as zeros, so that a call that took it would return 0 with outputs computed
+        // from them; other devices fault or go through the operating system's pages), and the page-locked host
+        // memory and the device memory of a context on another GPU (another SYCL context). Each is refused
+        // with -1 before anything is queued: signing and KeyGen write nothing, a refused verification sets the
+        // entries of a usable status buffer to "invalid", and one refused for its status buffer writes nothing.
+        // AdaptiveCpp's OpenMP host device takes every host pointer for memory of its own: there the host memory
+        // may be used instead, but only with the CPU's results, and another context's device memory is not tried
+        // (the host cannot read it). Controls, accepted with the CPU's results on every device: the context's own
+        // page-locked host memory, and buffers that start inside a device allocation. Each call runs
+        // ops = min(n, 2) operations.
+        std::size_t bad_memory = 0, host_memory_used = 0;
+        int other_device = -1;
+        {
+            const std::size_t ops = std::min<std::size_t>(n, 2);
+            const bool host_device = std::strstr(opqc_sycl_device_platform(device), "OpenMP") != nullptr;
+            constexpr std::int32_t UNSET = 0x5A5A5A5A;   // what results() leaves in the status buffer
+            enum class Want { refusal, refusal_or_cpu, cpu };
+            const Want foreign = host_device ? Want::refusal_or_cpu : Want::refusal;   // host memory
+            const auto zero = [](const std::uint8_t* p, std::size_t len) {
+                return std::all_of(p, p + len, [](std::uint8_t b) { return b == 0; });
+            };
+            // rc against what the case wants: a refusal (-1) that left the outputs as `refused_ok` says, or an
+            // accepted call (0) whose outputs `cpu_ok` says are the CPU's
+            const auto judge = [&](int rc, Want want, bool refused_ok, bool cpu_ok, const char* what) {
+                const char* why = nullptr;
+                if (want == Want::cpu) {
+                    if (rc != 0 || !cpu_ok) why = "not accepted with the CPU's results";
+                } else if (rc == -1) {
+                    if (!refused_ok) why = "refused, but the outputs were written";
+                } else if (want == Want::refusal) {
+                    why = rc != 0  ? "not refused"
+                          : cpu_ok ? "accepted (with the CPU's results)"
+                                   : "accepted (outputs not the CPU's)";
+                } else if (rc != 0 || !cpu_ok) {
+                    why = "accepted without the CPU's results";
+                } else {
+                    host_memory_used++;
+                }
+                if (why) {
+                    bad_memory++;
+                    std::fprintf(stderr, "  device %d %s: %s: rc %d, %s\n", device, api.name, what, rc, why);
+                }
+            };
+
+            // Signing, into d_sig or into host memory host_sig: refused, d_sig and host_sig still zero; or
+            // accepted, and is_cpu(the signatures)
+            using SigCheck = std::function<bool(const std::uint8_t*)>;
+            Bytes dev_sig(S * n);
+            const auto signing = [&](int rc, Want want, std::uint8_t* host_sig, const SigCheck& is_cpu,
+                                     const char* what) {
+                CHECK(opqc_sycl_slhdsa_sync(c) == 0);
+                d_sig.get(dev_sig);
+                const bool untouched = zero(dev_sig.data(), dev_sig.size()) && (!host_sig || zero(host_sig, S * ops));
+                judge(rc, want, untouched, rc == 0 && is_cpu(host_sig ? host_sig : dev_sig.data()), what);
+                d_sig.put(Bytes(S * n, 0));
+                if (host_sig) std::memset(host_sig, 0, S * ops);
+            };
+            const auto cpu_sigs = [&](const Bytes& want_sigs) {   // the first ops signatures are want_sigs'
+                return SigCheck([&want_sigs, S, ops](const std::uint8_t* s) {
+                    return std::memcmp(s, want_sigs.data(), S * ops) == 0;
+                });
+            };
+            const auto cpu_verifies = [&](bool prehash, bool one_key) {   // randomized: the CPU verifies them
+                return SigCheck([&, prehash, one_key](const std::uint8_t* s) {
+                    bool all = true;
+                    for (std::size_t i = 0; i < ops; i++) {
+                        const std::uint8_t* key = &o.pk[(one_key ? 0 : i) * api.pk];
+                        all &= (prehash ? api.prehash_verify(s + i * S, S, o.msgs.at(i), o.msgs.length(i), ctx, ctxlen,
+                                                             phv, key)
+                                        : api.verify(s + i * S, S, o.msgs.at(i), o.msgs.length(i), ctx, ctxlen, key)) ==
+                               0;
+                    }
+                    return all;
+                });
+            };
+            // Verification, into d_status (st) or into host memory host_st: refused, with the first ops entries
+            // of d_status "invalid" and the rest unset, or (host_st: the refused buffer) both untouched; or
+            // accepted with want_status's first ops decisions
+            const auto verifying = [&](int rc, Want want, std::int32_t* host_st,
+                                       const std::vector<std::int32_t>& want_status, const char* what) {
+                CHECK(opqc_sycl_slhdsa_sync(c) == 0);
+                d_status.get(status);
+                bool closed_ok = true, cpu_ok = rc == 0;
+                for (std::size_t i = 0; i < n; i++) {
+                    closed_ok &= status[i] == (!host_st && i < ops ? OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE : UNSET);
+                    if (host_st) closed_ok &= host_st[i] == UNSET;
+                }
+                for (std::size_t i = 0; i < ops; i++) cpu_ok &= (host_st ? host_st[i] : status[i]) == want_status[i];
+                judge(rc, want, closed_ok, cpu_ok, what);
+                std::fill(status.begin(), status.end(), UNSET);
+                d_status.put(status);
+                if (host_st) std::fill(host_st, host_st + n, UNSET);
+            };
+            // KeyGen, into d_pk and d_sk or into host memory: refused, all of them still zero; or accepted with
+            // the key pairs that keypair_derand gives (the CPU's) for o.seeds (derand) or for the seeds at the
+            // start of each sk (SK.seed || SK.prf || PK.seed)
+            Bytes dev_pk(o.pk.size()), dev_sk(o.sk.size());
+            const auto keygen = [&](int rc, Want want, std::uint8_t* host_pk, std::uint8_t* host_sk, bool derand,
+                                    const char* what) {
+                CHECK(opqc_sycl_slhdsa_sync(c) == 0);
+                d_pk.get(dev_pk);
+                d_sk.get(dev_sk);
+                const std::uint8_t* pk_out = host_pk ? host_pk : dev_pk.data();
+                const std::uint8_t* sk_out = host_sk ? host_sk : dev_sk.data();
+                const bool untouched = zero(dev_pk.data(), dev_pk.size()) && zero(dev_sk.data(), dev_sk.size()) &&
+                                       (!host_pk || zero(host_pk, api.pk * ops)) &&
+                                       (!host_sk || zero(host_sk, api.sk * ops));
+                bool cpu_ok = rc == 0;
+                for (std::size_t i = 0; cpu_ok && i < ops; i++) {
+                    Bytes cpu_pk(api.pk), cpu_sk(api.sk);
+                    const std::uint8_t* seeds = derand ? &o.seeds[i * api.seed] : sk_out + i * api.sk;
+                    cpu_ok = api.keypair_derand(cpu_pk.data(), cpu_sk.data(), seeds) == 0 &&
+                             std::memcmp(cpu_pk.data(), pk_out + i * api.pk, api.pk) == 0 &&
+                             std::memcmp(cpu_sk.data(), sk_out + i * api.sk, api.sk) == 0;
+                }
+                judge(rc, want, untouched, cpu_ok, what);
+                d_pk.put(Bytes(o.pk.size(), 0));
+                d_sk.put(Bytes(o.sk.size(), 0));
+                if (host_pk) std::memset(host_pk, 0, api.pk * ops);
+                if (host_sk) std::memset(host_sk, 0, api.sk * ops);
+            };
+
+            // pageable host memory: copies of the inputs, and output buffers (std::vector)
+            Bytes h_msg = o.msgs.bytes, h_ph = o.ph_m, h_mp = o.mprimes.bytes, h_rnd = o.addrnd, h_sk = o.sk,
+                  h_seeds = o.seeds, h_vsig = o.v_sig, h_vmsg = o.v_msgs.bytes, h_vpk = o.v_pk, h_v1int = o.v1int_sig,
+                  h_pk1(o.pk.begin(), o.pk.begin() + static_cast<std::ptrdiff_t>(api.pk)), h_sig(S * n, 0),
+                  h_pk(o.pk.size(), 0), h_skout(o.sk.size(), 0);
+            for (Bytes* b : {&h_msg, &h_mp, &h_vmsg}) b->push_back(0);   // never empty (data() could be NULL)
+            std::vector<std::uint64_t> h_off = o.msgs.offsets, h_mpoff = o.mprimes.offsets,
+                                       h_voff = o.v_msgs.offsets;
+            std::vector<std::int32_t> h_status(n, UNSET);
+            const auto* voff = d_voff.as<const std::uint64_t>();
+
+            // Signing, every function, with each kind of buffer in pageable memory once
+            d_sig.put(Bytes(S * n, 0));
+            d_sk.put(o.sk);
+            signing(opqc_sycl_slhdsa_sign_derand(c, h_sig.data(), d_msg.p, offsets, ctx, ctxlen, d_rnd.p, d_sk.p, ops),
+                    foreign, h_sig.data(), cpu_sigs(o.sig_hedged), "sign_derand, sig pageable");
+            signing(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, h_msg.data(), offsets, ctx, ctxlen, d_rnd.p, d_sk.p, ops),
+                    foreign, nullptr, cpu_sigs(o.sig_hedged), "sign_derand, msg pageable");
+            signing(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, d_msg.p, h_off.data(), ctx, ctxlen, d_rnd.p, d_sk.p, ops),
+                    foreign, nullptr, cpu_sigs(o.sig_hedged), "sign_derand, offsets pageable");
+            signing(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, h_rnd.data(), d_sk.p, ops),
+                    foreign, nullptr, cpu_sigs(o.sig_hedged), "sign_derand, addrnd pageable");
+            signing(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, d_rnd.p, h_sk.data(), ops),
+                    foreign, nullptr, cpu_sigs(o.sig_hedged), "sign_derand, sk pageable");
+            signing(opqc_sycl_slhdsa_prehash_sign_derand(c, d_sig.p, h_ph.data(), ctx, ctxlen, phv, d_rnd.p, d_sk.p,
+                                                         ops),
+                    foreign, nullptr, cpu_sigs(o.sig_ph), "prehash_sign_derand, ph_m pageable");
+            signing(opqc_sycl_slhdsa_sign_internal_derand(c, d_sig.p, h_mp.data(), mp_offsets, d_rnd.p, d_sk.p, ops),
+                    foreign, nullptr, cpu_sigs(o.sig_int), "sign_internal_derand, mprime pageable");
+            signing(opqc_sycl_slhdsa_sign_internal_derand(c, d_sig.p, d_mp.p, h_mpoff.data(), d_rnd.p, d_sk.p, ops),
+                    foreign, nullptr, cpu_sigs(o.sig_int), "sign_internal_derand, offsets pageable");
+            signing(opqc_sycl_slhdsa_sign_one_key_derand(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, d_rnd.p,
+                                                         h_sk.data(), ops),
+                    foreign, nullptr, cpu_sigs(o.sig1), "sign_one_key_derand, sk pageable");
+            signing(opqc_sycl_slhdsa_prehash_sign_one_key_derand(c, h_sig.data(), d_ph.p, ctx, ctxlen, phv, d_rnd.p,
+                                                                 d_sk.p, ops),
+                    foreign, h_sig.data(), cpu_sigs(o.sig1_ph), "prehash_sign_one_key_derand, sig pageable");
+            signing(opqc_sycl_slhdsa_sign_internal_one_key_derand(c, d_sig.p, d_mp.p, mp_offsets, h_rnd.data(), d_sk.p,
+                                                                  ops),
+                    foreign, nullptr, cpu_sigs(o.sig1_int), "sign_internal_one_key_derand, addrnd pageable");
+            signing(opqc_sycl_slhdsa_sign(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, h_sk.data(), ops), foreign,
+                    nullptr, cpu_verifies(false, false), "sign, sk pageable");
+            signing(opqc_sycl_slhdsa_prehash_sign(c, h_sig.data(), d_ph.p, ctx, ctxlen, phv, d_sk.p, ops), foreign,
+                    h_sig.data(), cpu_verifies(true, false), "prehash_sign, sig pageable");
+            signing(opqc_sycl_slhdsa_sign_one_key(c, d_sig.p, h_msg.data(), offsets, ctx, ctxlen, d_sk.p, ops), foreign,
+                    nullptr, cpu_verifies(false, true), "sign_one_key, msg pageable");
+            signing(opqc_sycl_slhdsa_prehash_sign_one_key(c, d_sig.p, h_ph.data(), ctx, ctxlen, phv, d_sk.p, ops),
+                    foreign, nullptr, cpu_verifies(true, true), "prehash_sign_one_key, ph_m pageable");
+
+            // Verification, every function, with each kind of buffer in pageable memory once
+            d_sig.put(o.v_sig);
+            d_pk.put(o.v_pk);
+            verifying(opqc_sycl_slhdsa_verify(c, h_vsig.data(), d_vmsg.p, voff, ctx, ctxlen, d_pk.p, st, ops), foreign,
+                      nullptr, o.expected, "verify, sig pageable");
+            verifying(opqc_sycl_slhdsa_verify(c, d_sig.p, h_vmsg.data(), voff, ctx, ctxlen, d_pk.p, st, ops), foreign,
+                      nullptr, o.expected, "verify, msg pageable");
+            verifying(opqc_sycl_slhdsa_verify(c, d_sig.p, d_vmsg.p, h_voff.data(), ctx, ctxlen, d_pk.p, st, ops),
+                      foreign, nullptr, o.expected, "verify, offsets pageable");
+            verifying(opqc_sycl_slhdsa_verify(c, d_sig.p, d_vmsg.p, voff, ctx, ctxlen, h_vpk.data(), st, ops), foreign,
+                      nullptr, o.expected, "verify, pk pageable");
+            verifying(opqc_sycl_slhdsa_verify(c, d_sig.p, d_vmsg.p, voff, ctx, ctxlen, d_pk.p, h_status.data(), ops),
+                      foreign, h_status.data(), o.expected, "verify, status pageable");
+            d_pk.put(o.pk);
+            d_sig.put(o.vph_sig);
+            verifying(opqc_sycl_slhdsa_prehash_verify(c, d_sig.p, h_ph.data(), ctx, ctxlen, phv, d_pk.p, st, ops),
+                      foreign, nullptr, o.expected_ph, "prehash_verify, ph_m pageable");
+            d_sig.put(o.vint_sig);
+            verifying(opqc_sycl_slhdsa_verify_internal(c, d_sig.p, h_mp.data(), mp_offsets, d_pk.p, st, ops), foreign,
+                      nullptr, o.expected_int, "verify_internal, mprime pageable");
+            verifying(opqc_sycl_slhdsa_verify_internal(c, d_sig.p, d_mp.p, h_mpoff.data(), d_pk.p, st, ops), foreign,
+                      nullptr, o.expected_int, "verify_internal, offsets pageable");
+            d_sig.put(o.v1_sig);
+            verifying(opqc_sycl_slhdsa_verify_one_key(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, h_pk1.data(), st, ops),
+                      foreign, nullptr, o.expected1, "verify_one_key, pk pageable");
+            d_sig.put(o.v1ph_sig);
+            verifying(opqc_sycl_slhdsa_prehash_verify_one_key(c, d_sig.p, d_ph.p, ctx, ctxlen, phv, d_pk.p,
+                                                              h_status.data(), ops),
+                      foreign, h_status.data(), o.expected1_ph, "prehash_verify_one_key, status pageable");
+            verifying(opqc_sycl_slhdsa_verify_internal_one_key(c, h_v1int.data(), d_mp.p, mp_offsets, d_pk.p, st, ops),
+                      foreign, nullptr, o.expected1_int, "verify_internal_one_key, sig pageable");
+
+            // KeyGen, with each kind of buffer in pageable memory once
+            d_pk.put(Bytes(o.pk.size(), 0));
+            d_sk.put(Bytes(o.sk.size(), 0));
+            keygen(opqc_sycl_slhdsa_keypair_derand(c, h_pk.data(), d_sk.p, d_seeds.p, ops), foreign, h_pk.data(),
+                   nullptr, true, "keypair_derand, pk pageable");
+            keygen(opqc_sycl_slhdsa_keypair_derand(c, d_pk.p, h_skout.data(), d_seeds.p, ops), foreign, nullptr,
+                   h_skout.data(), true, "keypair_derand, sk pageable");
+            keygen(opqc_sycl_slhdsa_keypair_derand(c, d_pk.p, d_sk.p, h_seeds.data(), ops), foreign, nullptr, nullptr,
+                   true, "keypair_derand, seeds pageable");
+            keygen(opqc_sycl_slhdsa_keypair(c, h_pk.data(), d_sk.p, ops), foreign, h_pk.data(), nullptr, false,
+                   "keypair, pk pageable");
+            keygen(opqc_sycl_slhdsa_keypair(c, d_pk.p, h_skout.data(), ops), foreign, nullptr, h_skout.data(), false,
+                   "keypair, sk pageable");
+
+            // Controls: the context's own page-locked host memory, and buffers from operation 1 on (inside the
+            // allocations; one operation)
+            auto* own_seeds = static_cast<std::uint8_t*>(opqc_sycl_slhdsa_malloc_host(c, o.seeds.size()));
+            auto* own_status = static_cast<std::int32_t*>(opqc_sycl_slhdsa_malloc_host(c, 4 * n));
+            CHECK(own_seeds != nullptr && own_status != nullptr);
+            if (own_seeds && own_status) {
+                std::memcpy(own_seeds, o.seeds.data(), o.seeds.size());
+                std::fill(own_status, own_status + n, UNSET);
+                keygen(opqc_sycl_slhdsa_keypair_derand(c, d_pk.p, d_sk.p, own_seeds, ops), Want::cpu, nullptr, nullptr,
+                       true, "keypair_derand, seeds in the context's page-locked host memory");
+                d_sig.put(o.v_sig);
+                d_pk.put(o.v_pk);
+                verifying(opqc_sycl_slhdsa_verify(c, d_sig.p, d_vmsg.p, voff, ctx, ctxlen, d_pk.p, own_status, ops),
+                          Want::cpu, own_status, o.expected, "verify, status in the context's page-locked host memory");
+            }
+            opqc_sycl_slhdsa_free(c, own_seeds);
+            opqc_sycl_slhdsa_free(c, own_status);
+            d_sig.put(Bytes(S * n, 0));
+            d_sk.put(o.sk);
+            signing(opqc_sycl_slhdsa_sign_derand(c, d_sig.p + S, d_msg.p, offsets + 1, ctx, ctxlen, d_rnd.p + N,
+                                                 d_sk.p + api.sk, 1),
+                    Want::cpu, nullptr,
+                    [&](const std::uint8_t* s) { return std::memcmp(s + S, &o.sig_hedged[S], S) == 0; },
+                    "sign_derand of operation 1, every buffer from its place on");
+
+            // Another SYCL context: a context on another GPU (a device of another name: under DPC++, Level Zero
+            // takes device memory that the OpenCL platform allocated on the same Iris Xe for its own context's),
+            // its page-locked host memory and its device memory
+            const int devices_seen = opqc_sycl_device_count();
+            const std::string own_name = opqc_sycl_device_name(device);   // valid until the next call: copied
+            int candidate = -1;
+            for (int d = 0; d < devices_seen && candidate < 0; d++)
+                if (d != device && own_name != opqc_sycl_device_name(d)) candidate = d;
+            opqc_sycl_slhdsa* oc = nullptr;
+            if (candidate >= 0 && opqc_sycl_slhdsa_create(&oc, api.id, 1, candidate) == 0 && oc) {
+                other_device = candidate;
+                auto* o_msg = static_cast<std::uint8_t*>(opqc_sycl_slhdsa_malloc_host(oc, h_msg.size()));
+                auto* o_status = static_cast<std::int32_t*>(opqc_sycl_slhdsa_malloc_host(oc, 4 * n));
+                auto* o_sk = static_cast<std::uint8_t*>(opqc_sycl_slhdsa_malloc(oc, o.sk.size()));
+                auto* o_sig = static_cast<std::uint8_t*>(opqc_sycl_slhdsa_malloc(oc, o.v_sig.size()));
+                auto* o_seeds = static_cast<std::uint8_t*>(opqc_sycl_slhdsa_malloc(oc, o.seeds.size()));
+                CHECK(o_msg && o_status && o_sk && o_sig && o_seeds);
+                if (o_msg && o_status && o_sk && o_sig && o_seeds) {
+                    std::memcpy(o_msg, h_msg.data(), h_msg.size());
+                    std::fill(o_status, o_status + n, UNSET);
+                    CHECK(opqc_sycl_slhdsa_memcpy(oc, o_sk, o.sk.data(), o.sk.size()) == 0);
+                    CHECK(opqc_sycl_slhdsa_memcpy(oc, o_sig, o.v_sig.data(), o.v_sig.size()) == 0);
+                    CHECK(opqc_sycl_slhdsa_memcpy(oc, o_seeds, o.seeds.data(), o.seeds.size()) == 0);
+                    d_sig.put(Bytes(S * n, 0));
+                    signing(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, o_msg, offsets, ctx, ctxlen, d_rnd.p, d_sk.p, ops),
+                            foreign, nullptr, cpu_sigs(o.sig_hedged),
+                            "sign_derand, msg in another context's page-locked host memory");
+                    d_sig.put(o.v_sig);
+                    d_pk.put(o.v_pk);
+                    verifying(opqc_sycl_slhdsa_verify(c, d_sig.p, d_vmsg.p, voff, ctx, ctxlen, d_pk.p, o_status, ops),
+                              foreign, o_status, o.expected,
+                              "verify, status in another context's page-locked host memory");
+                    if (!host_device) {
+                        verifying(opqc_sycl_slhdsa_verify(c, o_sig, d_vmsg.p, voff, ctx, ctxlen, d_pk.p, st, ops),
+                                  Want::refusal, nullptr, o.expected, "verify, sig in another context's device memory");
+                        d_sig.put(Bytes(S * n, 0));
+                        signing(opqc_sycl_slhdsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx, ctxlen, d_rnd.p, o_sk,
+                                                             ops),
+                                Want::refusal, nullptr, cpu_sigs(o.sig_hedged),
+                                "sign_derand, sk in another context's device memory");
+                        d_pk.put(Bytes(o.pk.size(), 0));
+                        d_sk.put(Bytes(o.sk.size(), 0));
+                        keygen(opqc_sycl_slhdsa_keypair_derand(c, d_pk.p, d_sk.p, o_seeds, ops), Want::refusal, nullptr,
+                               nullptr, true, "keypair_derand, seeds in another context's device memory");
+                    }
+                }
+                CHECK(opqc_sycl_slhdsa_sync(oc) == 0);
+                for (void* p : {static_cast<void*>(o_msg), static_cast<void*>(o_status), static_cast<void*>(o_sk),
+                                static_cast<void*>(o_sig), static_cast<void*>(o_seeds)})
+                    opqc_sycl_slhdsa_free(oc, p);
+            }
+            opqc_sycl_slhdsa_destroy(oc);
+            d_pk.put(o.pk);
+            d_sk.put(o.sk);
+            CHECK(bad_memory == 0);
         }
 
         // Randomized KeyGen and Sign on the device: the CPU verifies the results
@@ -799,11 +1116,15 @@ void test_device(int device, const Oracle& o) {
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         std::printf("  %-10s %3zu ops in chunks of %3zu, |ctx| = %3zu, PH %2d (%zu B): mismatches pk %zu sk %zu "
                     "sig %zu det %zu ph %zu internal %zu e2e %zu one_key %zu verify %zu verify_ctx %zu verify_ph %zu "
-                    "verify_internal %zu args %zu random %zu coins %zu threads %zu; %zu valid of %zu verified; %.1f s "
-                    "(CPU oracle %.1f s)\n",
+                    "verify_internal %zu args %zu memory %zu random %zu coins %zu threads %zu; %zu valid of %zu "
+                    "verified; host memory that is not the context's %s (%zu calls), another context's memory %s%s; "
+                    "%.1f s (CPU oracle %.1f s)\n",
                     api.name, n, o.max_batch, o.ctxlen, phv, o.phlen, bad_pk, bad_sk, bad_sig, bad_det, bad_ph,
                     bad_int, bad_e2e, bad_one, bad_verify, bad_verify_ctx, bad_verify_ph, bad_verify_int, bad_args,
-                    bad_random, bad_coins, bad_threads, o.valid, n, seconds, o.seconds);
+                    bad_memory, bad_random, bad_coins, bad_threads, o.valid, n,
+                    host_memory_used == 0 ? "refused" : "used by the device", host_memory_used,
+                    other_device < 0 ? "not tried (no other GPU)" : "from device ",
+                    other_device < 0 ? "" : std::to_string(other_device).c_str(), seconds, o.seconds);
         std::fflush(stdout);
     }
     opqc_sycl_slhdsa_destroy(c);

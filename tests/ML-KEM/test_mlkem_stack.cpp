@@ -57,6 +57,20 @@
 // Linux only: the extent of the stack comes from /proc/self/maps. tests/ML-KEM/CMakeLists.txt builds this
 // test also against the library compiled at -O0, -O1, -O2 and -Os (mlkem_stack_O0, ...), whatever the
 // build type.
+//
+// Without the stack burn (mlkem_stack_noburn, mlkem_stack_noburn_pct; OPENPQC_TEST_NO_STACK_BURN). The burn
+// overwrites every frame in which the named wipes (ZeroizeOnExit) and the destructor of Poly run, so
+// against the library as built, check 1 cannot tell whether they still destroy what they guard. These
+// variants run check 1 against a copy of the library compiled without the burn
+// (OPENPQC_MLKEM_TEST_NO_STACK_BURN, scheme/ml_kem.hpp), where only the named wipes and Poly's destructor
+// stand between the secrets and the search. With GCC 16 and Clang 23 at -O3, deleting the zeroization in
+// ~Poly, the 8 ZeroizeOnExit of the scheme layer, or any one of them makes them fail (the one of the
+// pair-wise consistency test only in the variant with the test, the one of sigma in K-PKE.KeyGen only in
+// the variant without it); the one-byte implicit-rejection flag is too short for the search (above). With
+// Core's hashes as they are, check 1 finds nothing else there, with the library at -O0 to -O3 and -Os.
+// Check 2 is left out: the compiler's own spill slots, which it sees, only the burn clears. As a control,
+// every call must have left nothing that is not zero as deep as the burn would reach: with the burn, its
+// own frames leave bytes there.
 #include "check.hpp"
 #include "Core/opqc_sha3.h"
 #include "Core/xof.hpp"
@@ -184,8 +198,19 @@ __asm__(".pushsection .text\n"
         "    retq\n"
         ".size mlkem_stack_test_call_with_cleared_registers, .-mlkem_stack_test_call_with_cleared_registers\n"
         ".popsection\n");
+#endif
+
+#if defined(OPENPQC_TEST_NO_STACK_BURN)
+// mlkem_stack_noburn: the library without the stack burn (see the top of the file). Check 2 is left out:
+// what it sees, the compiler's own spill slots, only the burn removes (GCC 16 at -O2 left bits of m and m'
+// there), so without the burn it fails by design.
+constexpr bool no_burn = true;
+constexpr bool compare_calls = false;
+#elif defined(__x86_64__)
+constexpr bool no_burn = false;
 constexpr bool compare_calls = true;   // check 2 (see the top of the file)
 #else
+constexpr bool no_burn = false;
 constexpr bool compare_calls = false;
 #endif
 
@@ -323,6 +348,15 @@ std::size_t differing_bytes(const std::string& what, const std::vector<std::uint
         n++;
     }
     return n;
+}
+
+// How far below the call (below the padding, at offset `below` of the region) the deepest byte lies that
+// is not zero after it (clear() zeroed the region before the call); 0 if there is none
+std::size_t deepest_left(const std::vector<std::uint8_t>& stack, std::size_t below) {
+    for (std::size_t i = 0; i < below; i++) {
+        if (stack[i] != 0) return below - i;
+    }
+    return 0;
 }
 
 // --- the positive controls -----------------------------------------------------------------------------
@@ -473,6 +507,7 @@ struct Run {
     static inline Bytes32 K{}, K_derand{}, K_decaps{}, K_rejected{};
     static inline int result_keypair, result_keypair_derand, result_enc, result_enc_derand, result_dec,
             result_dec_tampered;
+    static inline std::size_t deepest_written = 0;   // without the burn: the deepest byte any call left
 
     static void keypair() { result_keypair = S::keypair(ek.data(), dk.data()); }
     static void keypair_derand() {
@@ -676,6 +711,11 @@ struct Run {
         add(out, tag + " Decaps K_bar = J(z || c)", J({z, c_}));
     }
 
+    // Without the stack burn: the bytes that the burn would overwrite below the call (stack_burn_bytes of
+    // scheme/ml_kem.hpp), at least 8 KiB more than any call reaches, so the burn leaves bytes that are not
+    // zero there (the frames of its own callees) and the operation alone does not
+    static constexpr std::size_t burn_bytes = (24 + 10 * std::size_t{k}) * 1024;
+
     // Runs the calls of three trials, each with other keys and messages, and checks the copies of the stack
     // after them; returns the number of secrets found (check 1) and adds the number of bytes that depend on
     // the calls' data (check 2) to `differing`
@@ -751,6 +791,19 @@ struct Run {
             CHECK(pad_low > reinterpret_cast<std::uintptr_t>(region.low) &&
                   pad_low < reinterpret_cast<std::uintptr_t>(region.low + region.size));
             const std::size_t below = pad_low - reinterpret_cast<std::uintptr_t>(region.low);
+            if (no_burn) {
+                // the library really has no burn: else check 1 would pass whatever the wipes do
+                for (unsigned j = 0; j < 6; j++) {
+                    const std::size_t deepest = deepest_left(after[j], below);
+                    if (deepest >= burn_bytes) {
+                        std::fprintf(stderr, "  %s%s%s: a byte %zu below the call is not zero, as deep as the"
+                                             " stack burn reaches (%zu): is the library built with it?\n",
+                                     level.c_str(), names[j], of_trial.c_str(), deepest, burn_bytes);
+                        ++check::failures;
+                    }
+                    deepest_written = std::max(deepest_written, deepest);
+                }
+            }
             if (compare_calls) {
                 // control: the same calls again with the same data leave the same bytes
                 clear(region);
@@ -774,6 +827,11 @@ struct Run {
             const auto all = secrets();
             for (unsigned j = 0; j < 6; j++) residues += report_residue(level + names[j] + of_trial, after[j], all);
             previous = std::move(after);
+        }
+        if (no_burn) {
+            std::printf("%sthe deepest byte that a call left not zero lies %zu bytes below it (the stack burn"
+                        " would reach %zu)\n",
+                        level.c_str(), deepest_written, burn_bytes);
         }
         return residues;
     }
@@ -838,6 +896,9 @@ int main() {
                                               pad_low - low);
         std::printf("positive control: copies of other values differ in %zu byte(s) below the call\n", n);
         CHECK(n >= 2 * MLKEM_N);
+    } else if (no_burn) {
+        std::printf("the library is built without the stack burn: check 2 (the copies after calls with different"
+                    " data agree) is left out, check 1 sees what the named wipes and Poly's destructor leave\n");
     } else {
         std::printf("check 2 (the copies after calls with different data agree) runs on x86-64 only\n");
     }
