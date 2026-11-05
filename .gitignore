@@ -33,6 +33,7 @@ docs/*
 !docs/SOURCE_MAP.md
 !docs/PRIMITIVES.md
 !docs/catalog/
+!docs/FIPS-140-3.md
 
 # Images with locally measured NVIDIA cuPQC results: the cuPQC evaluation licence keeps such results private, so
 # they stay local

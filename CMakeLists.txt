@@ -27,6 +27,8 @@ option(OPENPQC_WITH_MLKEM  "The library contains ML-KEM (FIPS 203)" ON)
 option(OPENPQC_WITH_MLDSA  "The library contains ML-DSA (FIPS 204)" ON)
 option(OPENPQC_WITH_SLHDSA "The library contains SLH-DSA (FIPS 205)" ON)
 option(BUILD_SHARED_LIBS "Build the library openpqc as a shared library (default: static)" OFF)
+option(OPENPQC_FIPS140_3
+       "FIPS 140-3 mode (work in progress: no effect yet, not a validated module; see docs/FIPS-140-3.md)" OFF)
 set(OPENPQC_SANITIZE "" CACHE STRING
     "Sanitizers for every target (GCC, Clang): the list of -fsanitize=, e.g. address,undefined; empty: none")
 
@@ -282,6 +284,16 @@ if(OPENPQC_MLDSA_KEYGEN_PCT)
     target_compile_definitions(openpqc_mldsa_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
 endif()
 message(STATUS "OpenPQC ML-DSA pair-wise consistency test after KeyGen (CPU and SYCL): ${OPENPQC_MLDSA_KEYGEN_PCT}")
+
+# FIPS 140-3 mode: the switch that the module's features will hang on (docs/FIPS-140-3.md lists them in order).
+# It changes nothing yet: the libraries built with it ON are the ordinary ones, and none of them is a FIPS 140-3
+# module. When the first feature lands, the definition it adds must be part of the library's ABI tag, so that code
+# compiled with and without it cannot be mixed (the module-boundary decision).
+if(OPENPQC_FIPS140_3)
+    message(WARNING "OPENPQC_FIPS140_3 is a work in progress and has no effect yet: this build is the ordinary "
+                    "library, not a FIPS 140-3 module (docs/FIPS-140-3.md)")
+endif()
+message(STATUS "OpenPQC FIPS 140-3 mode (work in progress, no effect yet): ${OPENPQC_FIPS140_3}")
 
 message(STATUS "OpenPQC randomness from the application's opqc_external_randombytes(): ${OPENPQC_EXTERNAL_RANDOMBYTES}")
 
