@@ -38,7 +38,8 @@ constant-time tests at fixed optimization levels); the workflow has not yet run 
 - Not FIPS 140-3 validated and not in validation: no approved random bit generator (the randomness comes from the
   operating system), no self-tests when the library is loaded, no integrity test, no error state, no service
   indicator, no module boundary; the testing interfaces (`_derand`, `_internal`) are always in the libraries.
-- Version 0.3.0, no releases, no stable API or ABI, no install rules or package configuration, static libraries only.
+- Version 0.3.0, no releases, no stable API or ABI. Install rules, a CMake package and pkg-config files; the library is
+  static by default and shared on request, and a shared build exports the C APIs only.
 - Checked: every NIST ACVP case in the suite, the known-answer tests, Wycheproof ML-KEM, byte identity with the
   reference implementations and agreement with OpenSSL (an independent review, October 2026); the GPU backends are
   byte-identical to the CPU library on the devices above.
@@ -56,8 +57,7 @@ test that fails without it. By 2026-11-03 the review had re-verified the fixes i
 rates the three high findings fixed and, of its 53 medium findings, 24 fixed, 15 partly fixed, 7 kept as documented
 limits and 1 fixed before its last snapshot; 6 have no verdict (3 are not fixed, 3 have a fix that was not among
 those re-verified). The documentation changes made after 2026-11-03 have not been re-verified. The table below is a
-summary, not the full list: it gives what remains open of the high and medium findings (apart from the missing
-install rules and package configuration, listed above) and of the low ones that matter most for how the libraries are
+summary, not the full list: it gives what remains open of the high and medium findings and of the low ones that matter most for how the libraries are
 used and tested, by the build it affects (severity as the review rated the underlying finding). The review's records,
 which are not part of this repository, list every finding, the other low and informational remainders included.
 
@@ -91,15 +91,23 @@ Decided by the maintainers (2026-11-05), not yet in this tree:
 - FIPS 140-3: an opt-in build flag, developed on a feature branch, that will bring the module's self-tests, a
   pair-wise consistency test after GPU ML-KEM's batched KeyGen, a shared library as the module boundary and an
   approved DRBG; until then the library is not a FIPS 140-3 module and these gaps stay documented;
-- the module boundary for the static libraries: an ABI tag around the scheme layer (an inline namespace) and hidden
-  visibility, so that scheme templates an application compiles with other configuration macros cannot replace the
-  library's; install rules and a CMake package configuration follow it;
 - a prefixed, registrable randomness hook in place of `randombytes()`, with the OS RNG staying the default;
 - the length of the message buffer in the unified GPU API, so that the offsets of the GPU signature calls are checked;
 - ML-KEM's stack burn as a CMake option, on by default. It makes each call need 48, 58 or 68 KiB of stack and costs
   1.3 % to 4.0 % of its cycles (the ML-KEM README's figure, which the review did not re-time); the tests built
   without it (`mlkem_stack_noburn`) check the named wipes alone;
 - in GPU ML-DSA, a range check of s1 and s2 in the signer and a wipe of the verification sections after each call.
+
+Done since then: the module boundary. In the library's own translation units the scheme layers and Core's C++
+headers carry names of the library's (an inline namespace, `Core/abi.hpp`), so that templates an application compiles
+with other configuration macros or flags cannot replace the library's (test `abi_symbols`), and the libraries are
+compiled with hidden visibility, so that a shared build exports the C APIs only. The names carry the version: one
+program may contain OpenPQC libraries of different versions, but of one version only one configuration (key
+generation with and without the pair-wise consistency test excepted). These guarantees hold for the C APIs and the
+library's own code; an application that compiles the header-only C++ layers itself gets copies in its own build
+configuration, with its own macros and flags. Install rules, a CMake package and
+pkg-config files followed (test `install_consumer`), and a C program links the library without the C++ runtime (test
+`c_link`).
 
 The scheme READMEs ([ML-KEM](include/ML/KEM/README.md), [ML-DSA](include/ML/DSA/README.md),
 [SLH-DSA](include/SLH/DSA/README.md)) and the C headers document each contract in full: return codes, the state of the

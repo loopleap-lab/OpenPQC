@@ -48,10 +48,12 @@
 #include <cstdint>
 #include <span>
 
+#include "abi.hpp"
 #include "opqc_sha2.h"
 #include "opqc_sha3.h"
 
 namespace openpqc {
+OPENPQC_ABI_BEGIN
 
 enum class PreHash : unsigned {
     SHA2_256 = 1,
@@ -128,4 +130,5 @@ constexpr bool to_prehash(int ph, PreHash& out) {
     return true;
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc

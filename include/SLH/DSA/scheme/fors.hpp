@@ -29,12 +29,14 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../math/slhdsa_encode.h"
 #include "address.hpp"
 #include "crypto_functions.hpp"
 #include "parameter_sets.hpp"
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 // Algorithm 14: sk <- fors_skGen(SK.seed, PK.seed, ADRS, idx), the secret value with the index idx
 template <ParameterSet P>
@@ -138,4 +140,5 @@ Value<P::n> fors_pk_from_sig(std::span<const std::uint8_t, Sizes<P>::fors_sig> S
     return pk;                                                           // 25
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

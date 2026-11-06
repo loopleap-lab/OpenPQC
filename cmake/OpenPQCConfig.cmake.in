@@ -1,0 +1,37 @@
+# Copyright (c) The OpenPQC project authors
+# SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+#
+# OpenPQCConfig.cmake  --  find_package(OpenPQC [<version>] [REQUIRED] [COMPONENTS sycl])
+#
+#   OpenPQC::openpqc   the library: the C APIs of Core, ML-KEM, ML-DSA and SLH-DSA (those of the build:
+#                      OPENPQC_HAVE_* in Core/openpqc_version.h) and their C++ APIs (C++20)
+#   OpenPQC::sycl      the GPU library (component sycl): the C APIs of the GPU backends; it uses OpenPQC::openpqc
+#
+# The headers are included as "ML/KEM/openpqc_mlkem.h", "ML/KEM/mlkem.hpp", "Core/openpqc_version.h", ...
+# A C program links OpenPQC::openpqc as C: the library needs nothing of the C++ runtime.
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+set(_openpqc_sycl_impl "@OPENPQC_SYCL_IMPL@")
+set(_openpqc_sycl_shared "@OPENPQC_SYCL_SHARED@")
+if(_openpqc_sycl_impl STREQUAL "AdaptiveCpp" AND NOT _openpqc_sycl_shared)
+    find_dependency(AdaptiveCpp CONFIG)   # a static OpenPQC::sycl links its runtime
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/OpenPQCTargets.cmake")
+
+# CMake marks a static library with C++ objects as needing the C++ linker; OpenPQC's objects need nothing of the
+# C++ runtime (compiled without exceptions and RTTI), so a project in C alone can link it
+get_target_property(_openpqc_type OpenPQC::openpqc TYPE)
+if(_openpqc_type STREQUAL "STATIC_LIBRARY")
+    get_target_property(_openpqc_configs OpenPQC::openpqc IMPORTED_CONFIGURATIONS)
+    foreach(_openpqc_config IN LISTS _openpqc_configs)
+        set_property(TARGET OpenPQC::openpqc PROPERTY IMPORTED_LINK_INTERFACE_LANGUAGES_${_openpqc_config} C)
+    endforeach()
+endif()
+
+set(OpenPQC_sycl_FOUND FALSE)
+if(TARGET OpenPQC::sycl)
+    set(OpenPQC_sycl_FOUND TRUE)
+endif()
+check_required_components(OpenPQC)

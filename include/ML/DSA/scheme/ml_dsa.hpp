@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_ct.h"
 #include "../../../Core/opqc_platform.h"
 #include "../../../Core/prehash.hpp"
@@ -40,6 +41,7 @@
 #include "parameter_sets.hpp"
 
 namespace openpqc::mldsa {
+OPENPQC_ABI_BEGIN
 
 // The pre-hash functions PH of HashML-DSA, their OIDs and the limit on context strings are Core's
 // (Core/prehash.hpp), shared with HashSLH-DSA; their names in this namespace stay valid
@@ -322,4 +324,5 @@ Status verify_mu(std::span<const std::uint8_t, Sizes<P>::pk> pk, std::span<const
                                                                                  : Status::invalid_signature;
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mldsa

@@ -132,13 +132,10 @@
  * function must have its result checked. The implementation is
  * ML/KEM/mlkem.cpp, with the algorithms in ML/KEM/scheme.
  *
- * Linking. The library is C++20 inside: a C program links it with the C++
- * compiler driver (g++, clang++) or adds the C++ runtime (-lstdc++ with GCC's
- * libstdc++); linked by gcc or clang alone, it lacks __gxx_personality_v0, and
- * if it was built with Clang also __cxa_begin_catch and std::terminate() (the
- * C driver's libgcc provides the library's other runtime symbol,
- * _Unwind_Resume). A CMake target of C sources that links openpqc::mlkem sets
- * LINKER_LANGUAGE CXX (examples/CMakeLists.txt, demo_cpu).
+ * Linking. The functions are in the library openpqc: OpenPQC::openpqc in CMake
+ * (find_package(OpenPQC), or add_subdirectory), openpqc for pkg-config. Its
+ * C++ code is compiled without exceptions and RTTI and needs nothing of the
+ * C++ runtime: a C program links it with the C compiler alone (test c_link).
  */
 
 #ifndef OPENPQC_MLKEM_H
@@ -172,24 +169,24 @@
 extern "C" {
 #endif
 
-#define OPENPQC_MLKEM_DECLARE_API(N)                                                                \
-    OPQC_MUST_CHECK int openpqc_mlkem##N##_keypair_derand(uint8_t pk[MLKEM##N##_PUBLICKEYBYTES],    \
-                                                          uint8_t sk[MLKEM##N##_SECRETKEYBYTES],    \
-                                                          const uint8_t coins[2 * MLKEM_SYMBYTES]); \
-    OPQC_MUST_CHECK int openpqc_mlkem##N##_keypair(uint8_t pk[MLKEM##N##_PUBLICKEYBYTES],           \
-                                                   uint8_t sk[MLKEM##N##_SECRETKEYBYTES]);          \
-    OPQC_MUST_CHECK int openpqc_mlkem##N##_enc_derand(uint8_t ct[MLKEM##N##_CIPHERTEXTBYTES],       \
-                                                      uint8_t ss[MLKEM_BYTES],                      \
-                                                      const uint8_t pk[MLKEM##N##_PUBLICKEYBYTES],  \
-                                                      const uint8_t coins[MLKEM_SYMBYTES]);         \
-    OPQC_MUST_CHECK int openpqc_mlkem##N##_enc(uint8_t ct[MLKEM##N##_CIPHERTEXTBYTES],              \
-                                               uint8_t ss[MLKEM_BYTES],                             \
-                                               const uint8_t pk[MLKEM##N##_PUBLICKEYBYTES]);        \
-    OPQC_MUST_CHECK int openpqc_mlkem##N##_dec(uint8_t ss[MLKEM_BYTES],                             \
-                                               const uint8_t ct[MLKEM##N##_CIPHERTEXTBYTES],        \
-                                               const uint8_t sk[MLKEM##N##_SECRETKEYBYTES]);        \
-    OPQC_MUST_CHECK int openpqc_mlkem##N##_check_pk(const uint8_t pk[MLKEM##N##_PUBLICKEYBYTES]);   \
-    OPQC_MUST_CHECK int openpqc_mlkem##N##_check_sk(const uint8_t sk[MLKEM##N##_SECRETKEYBYTES]);
+#define OPENPQC_MLKEM_DECLARE_API(N)                                                                            \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mlkem##N##_keypair_derand(uint8_t pk[MLKEM##N##_PUBLICKEYBYTES],    \
+                                                                      uint8_t sk[MLKEM##N##_SECRETKEYBYTES],    \
+                                                                      const uint8_t coins[2 * MLKEM_SYMBYTES]); \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mlkem##N##_keypair(uint8_t pk[MLKEM##N##_PUBLICKEYBYTES],           \
+                                                               uint8_t sk[MLKEM##N##_SECRETKEYBYTES]);          \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mlkem##N##_enc_derand(uint8_t ct[MLKEM##N##_CIPHERTEXTBYTES],       \
+                                                                  uint8_t ss[MLKEM_BYTES],                      \
+                                                                  const uint8_t pk[MLKEM##N##_PUBLICKEYBYTES],  \
+                                                                  const uint8_t coins[MLKEM_SYMBYTES]);         \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mlkem##N##_enc(uint8_t ct[MLKEM##N##_CIPHERTEXTBYTES],              \
+                                                           uint8_t ss[MLKEM_BYTES],                             \
+                                                           const uint8_t pk[MLKEM##N##_PUBLICKEYBYTES]);        \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mlkem##N##_dec(uint8_t ss[MLKEM_BYTES],                             \
+                                                           const uint8_t ct[MLKEM##N##_CIPHERTEXTBYTES],        \
+                                                           const uint8_t sk[MLKEM##N##_SECRETKEYBYTES]);        \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mlkem##N##_check_pk(const uint8_t pk[MLKEM##N##_PUBLICKEYBYTES]);   \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mlkem##N##_check_sk(const uint8_t sk[MLKEM##N##_SECRETKEYBYTES]);
 
 OPENPQC_MLKEM_DECLARE_API(512)
 OPENPQC_MLKEM_DECLARE_API(768)

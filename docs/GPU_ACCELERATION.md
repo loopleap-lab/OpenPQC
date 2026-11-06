@@ -312,8 +312,9 @@ arithmetic, which is the math core's.
 
 ## 4. ML-KEM on SYCL
 
-Code: [`include/ML/KEM/sycl/`](../include/ML/KEM/sycl) and [`include/Core/sycl/`](../include/Core/sycl). The library
-target is `openpqc_mlkem_sycl`, built when CMake finds a SYCL compiler (`OPENPQC_SYCL`, default `AUTO`).
+Code: [`include/ML/KEM/sycl/`](../include/ML/KEM/sycl) and [`include/Core/sycl/`](../include/Core/sycl). The backend is
+part of the GPU library `openpqc_sycl` (`OpenPQC::sycl`), built when CMake finds a SYCL compiler (`OPENPQC_SYCL`,
+default `AUTO`); `openpqc_mlkem_sycl` is its static copy for the tests.
 
 ### 4.1 One source for the CPU and the GPU
 

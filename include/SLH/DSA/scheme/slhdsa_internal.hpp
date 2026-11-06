@@ -50,6 +50,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_ct.h"
 #include "../../../Core/opqc_platform.h"
 #include "../../../Core/zeroize.hpp"
@@ -82,6 +83,7 @@
 #endif
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 // Results. The values are those of the OPENPQC_SLHDSA_* codes of the C API.
 enum class Status : int {
@@ -284,4 +286,5 @@ bool verify(std::span<const std::uint8_t, Sizes<P>::pk> PK, ByteStrings M, std::
 }
 
 } // namespace internal
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

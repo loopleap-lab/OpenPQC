@@ -10,22 +10,26 @@
 #   sycl/              batched ML-DSA on GPUs and other SYCL devices (optional)
 #
 # Targets:
-#   openpqc_mldsa           the library; randomness from the operating system
-#   openpqc_mldsa_testrng   the same code, randomness from the application's
-#                           randombytes(), for the tests
-#   openpqc_mldsa_sycl      the SYCL backend (OPENPQC_SYCL, see the top-level CMakeLists.txt)
+#   openpqc_mldsa_objects   the compiled C API, which goes into the library openpqc (top-level CMakeLists.txt)
+#   openpqc_mldsa           the same objects as a static library, for the tests and benchmarks
+#   openpqc_mldsa_testrng   the same, with randomness from the application's randombytes() (tests only)
+#   (both built only when a test or benchmark needs them)
+#   openpqc_mldsa_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
+#                           library for the tests and benchmarks (top-level CMakeLists.txt)
 
 add_library(openpqc_mldsa_objects OBJECT mldsa.cpp)
 target_include_directories(openpqc_mldsa_objects PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
 target_compile_features(openpqc_mldsa_objects PUBLIC cxx_std_20)
 target_link_libraries(openpqc_mldsa_objects PRIVATE openpqc_strict_warnings)
-set_target_properties(openpqc_mldsa_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
+openpqc_library_objects(openpqc_mldsa_objects NO_CXX_RUNTIME)   # cmake/OpenPQCLibrary.cmake
 
-foreach(variant "" _testrng)
-    add_library(openpqc_mldsa${variant} STATIC $<TARGET_OBJECTS:openpqc_mldsa_objects>)
+foreach(variant "" ${OPENPQC_TESTRNG_VARIANT})   # _testrng only with the tests (top-level CMakeLists.txt)
+    add_library(openpqc_mldsa${variant} STATIC EXCLUDE_FROM_ALL $<TARGET_OBJECTS:openpqc_mldsa_objects>)
     target_include_directories(openpqc_mldsa${variant} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+        $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
     target_link_libraries(openpqc_mldsa${variant} PUBLIC openpqc_core${variant})
     set_target_properties(openpqc_mldsa${variant} PROPERTIES LINKER_LANGUAGE CXX)
 endforeach()
@@ -33,12 +37,7 @@ add_library(openpqc::mldsa ALIAS openpqc_mldsa)
 
 # GPU backend: batched ML-DSA on any SYCL device (see sycl/openpqc_mldsa_sycl.h)
 if(OPENPQC_HAVE_SYCL)
-    add_library(openpqc_mldsa_sycl STATIC sycl/mldsa_sycl.cpp)
+    _openpqc_sycl_backend(openpqc_mldsa_sycl sycl/mldsa_sycl.cpp)   # top-level CMakeLists.txt
     add_library(openpqc::mldsa_sycl ALIAS openpqc_mldsa_sycl)
-    target_include_directories(openpqc_mldsa_sycl PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-    target_compile_features(openpqc_mldsa_sycl PRIVATE cxx_std_20)
     target_link_libraries(openpqc_mldsa_sycl PUBLIC openpqc_core openpqc_core_sycl)
-    set_target_properties(openpqc_mldsa_sycl PROPERTIES LINKER_LANGUAGE CXX POSITION_INDEPENDENT_CODE ON)
-    openpqc_sycl_sources(openpqc_mldsa_sycl sycl/mldsa_sycl.cpp)
 endif()

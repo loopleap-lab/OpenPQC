@@ -168,7 +168,7 @@ the CRYSTALS-Dilithium reference (`reference/dilithium`, both its C and its AVX2
 
 ## Usage
 
-C (link `openpqc::mldsa`):
+C (link `OpenPQC::openpqc`):
 
 ```c
 #include "ML/DSA/openpqc_mldsa.h"
@@ -234,7 +234,7 @@ byte-identical to the CPU library:
 
 ```c
 #include "ML/DSA/openpqc_mldsa.h"             /* the sizes MLDSA65_* */
-#include "ML/DSA/sycl/openpqc_mldsa_sycl.h"   /* link openpqc::mldsa_sycl */
+#include "ML/DSA/sycl/openpqc_mldsa_sycl.h"   /* link OpenPQC::sycl */
 
 opqc_sycl_mldsa *ctx;
 if (opqc_sycl_mldsa_create(&ctx, 65, max_batch, -1) != 0)       /* -1: default device (or OPENPQC_SYCL_DEVICE) */
@@ -532,15 +532,18 @@ arithmetic weighs more: 41–46 % of Sign in the attempts' z, r0, c·t0 and hint
 
 ## Build
 
-`include/ML/DSA/CMakeLists.txt` compiles `mldsa.cpp` once and makes two libraries of it: `openpqc_mldsa` takes its
+`include/ML/DSA/CMakeLists.txt` compiles `mldsa.cpp` once. The objects go into the library `openpqc`
+(`OpenPQC::openpqc`, which applications link; see the top-level README) and into two libraries for the tests and
+benchmarks, built only when they need them and never installed: `openpqc_mldsa` takes its
 randomness from the operating system, `openpqc_mldsa_testrng` calls the application's `randombytes()` (tests only;
 never link it into a program together with a production library: both define `opqc_randombytes`, and the linker
 keeps the first definition it finds, without an error).
-The CMake option `OPENPQC_MLDSA_KEYGEN_PCT` (OFF by default) compiles the pair-wise consistency test into both CPU
-libraries, as `OPENPQC_MLKEM_KEYGEN_PCT` does for ML-KEM; it does not reach `openpqc_mldsa_sycl`, which takes the
+The CMake option `OPENPQC_MLDSA_KEYGEN_PCT` (OFF by default) compiles the pair-wise consistency test into the CPU
+libraries (`openpqc` and the tests' copies), as `OPENPQC_MLKEM_KEYGEN_PCT` does for ML-KEM; it does not reach `openpqc_mldsa_sycl`, which takes the
 compile definition of the same name by hand. The presets `gcc-release-pct` and `clang-release-pct` build with both
 options and run the quick ML-KEM and ML-DSA tests, without the constant-time ones, against those libraries.
-`openpqc_mldsa_sycl` is added when a SYCL compiler is found (see the top-level README). Like the code of Core's and
+The GPU backend is part of the GPU library `openpqc_sycl` when a SYCL compiler is found (see the top-level
+README); `openpqc_mldsa_sycl` is its static copy for the tests. Like the code of Core's and
 the other schemes' CPU libraries, `mldsa.cpp` is compiled with `-fstack-clash-protection` and, in the optimized
 configurations, with a warning (an error with `OPENPQC_WERROR`) for any frame larger than `OPENPQC_MAX_FRAME_BYTES`,
 192 KiB (0 turns it off; `cmake/OpenPQCWarnings.cmake`; see Memory above); the copies that the constant-time tests

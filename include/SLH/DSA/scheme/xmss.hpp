@@ -21,12 +21,14 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "address.hpp"
 #include "crypto_functions.hpp"
 #include "parameter_sets.hpp"
 #include "wots.hpp"
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 // Algorithm 9: node <- xmss_node(SK.seed, i, z, PK.seed, ADRS), the node at height z and index i
 // (z <= h', i < 2^(h' - z)) of the XMSS tree whose layer and tree address ADRS has
@@ -97,4 +99,5 @@ Value<P::n> xmss_pk_from_sig(std::uint32_t idx, std::span<const std::uint8_t, Si
     return node[0];                                                      // 19
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

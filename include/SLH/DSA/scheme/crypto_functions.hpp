@@ -54,6 +54,7 @@
 #include <span>
 #include <type_traits>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_platform.h"
 #include "../../../Core/opqc_sha2.h"
 #include "../../../Core/opqc_sha3.h"
@@ -64,6 +65,7 @@
 #include "parameter_sets.hpp"
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 using openpqc::ByteStrings;
 using openpqc::ZeroizeOnExit;
@@ -315,4 +317,5 @@ void F(std::span<std::uint8_t, P::n> out, const PublicSeed<P>& PK_seed, const Ad
     }
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

@@ -136,16 +136,20 @@ context), `mlkem_sycl_faults`, `mldsa_sycl_faults` and `slhdsa_sycl_faults` (dev
 fault injection: fail-closed status and outputs, zeroization, the failed context), `core_sycl` (the helpers the
 backends share), and `core_sycl_sticky`, `mldsa_sycl_sticky` and `slhdsa_sycl_faults_sticky`, which cause a real
 fault on an NVIDIA GPU in a process of their own (skipped without one). The first run on an Intel GPU compiles the
-kernels for minutes (about 3.5 minutes for SLH-DSA's twelve sets); DPC++ generates the device code at every link of
-a program that uses a backend.
+kernels for minutes (about 3.5 minutes for SLH-DSA's twelve sets). DPC++ generates the device code when it links the
+GPU library `openpqc_sycl`: once, as it is a shared library by default, and again for each white-box test and
+benchmark that compiles a backend's source itself.
 
 | Option                                             | Default        | Meaning                                                                                                                                                                                                                                                                        |
 | -------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `OPENPQC_SYCL`                                     | AUTO           | build the SYCL backends (`openpqc_mlkem_sycl`, `openpqc_mldsa_sycl`, `openpqc_slhdsa_sycl`) when DPC++ (`-fsycl`) or AdaptiveCpp is found; ON makes it required                                                                                                                |
+| `OPENPQC_SYCL`                                     | AUTO           | build the GPU library `openpqc_sycl` (the SYCL backends) when DPC++ (`-fsycl`) or AdaptiveCpp is found; ON makes it required. OFF by default when OpenPQC is a subproject (`add_subdirectory`, FetchContent): the parent project asks for it with ON |
 | `OPENPQC_SYCL_TARGETS`, `OPENPQC_SYCL_FLAGS`       | empty          | DPC++: devices to compile for, and extra flags for the SYCL code (e.g. `-DOPQC_SHA2_UNROLL_PASSES=1`, which keeps the SHA-2 rounds in loops: the same results, a DPC++ link of SLH-DSA's backend in about 2 instead of 10 minutes, SHA-256 on the GPUs measured 6–10 % slower) |
-| `OPENPQC_SLHDSA_SYCL_SETS`                         | empty          | development only: the SLH-DSA parameter-set ids (1–12, separated by commas, e.g. `3,4`; the CMake list form `3;4` does not build) that the SYCL backend contains; empty: all twelve. DPC++ generates the device code of every set at each link of a program that uses the backend, about 10 minutes and 1.2 GiB for all twelve |
+| `OPENPQC_SLHDSA_SYCL_SETS`                         | empty          | development only: the SLH-DSA parameter-set ids (1–12, separated by commas, e.g. `3,4`; the CMake list form `3;4` does not build) that the SYCL backend contains; empty: all twelve. DPC++ generates the device code of every set when it links `openpqc_sycl` and each white-box test that compiles the backend, about 10 minutes and 1.2 GiB for all twelve |
 | `OPENPQC_MLKEM_KEYGEN_PCT`                         | OFF            | ML-KEM's KeyGen runs the pair-wise consistency test of FIPS 203 §7.1 (CPU library; SLH-DSA's test is a compile definition, see its README)                                                                                                                                     |
 | `OPENPQC_MLDSA_KEYGEN_PCT`                         | OFF            | ML-DSA's KeyGen runs the pair-wise consistency test of FIPS 140-3: it signs and verifies with each new key pair (CPU library; the GPU backend takes the compile definition of the same name, which the option does not give it)                                                |
+| `OPENPQC_WITH_MLKEM`, `_MLDSA`, `_SLHDSA`         | ON             | the schemes the libraries contain (`OPENPQC_HAVE_*` in `Core/openpqc_version.h` say which); the tests, benchmarks and examples need all three |
+| `BUILD_SHARED_LIBS`                                | OFF            | build the library `openpqc` as a shared library; it exports the C APIs only |
+| `OPENPQC_SYCL_SHARED`                              | ON             | build the GPU library `openpqc_sycl` as a shared library, which DPC++ links the device code into once; OFF: static, and every program that uses it is linked as SYCL code (`-fsycl` and the device targets) |
 | `OPENPQC_NATIVE`                                   | ON             | build the reference (mlkem-native) with its SIMD/assembly backends where the CPU supports them                                                                                                                                                                                 |
 | `OPENPQC_BUILD_TESTS`, `_BENCHMARKS`, `_EXAMPLES`  | ON (top level) |                                                                                                                                                                                                                                                                                |
 | `OPENPQC_REQUIRE_FULL_TESTS`                       | OFF            | fail the configuration when a tool that tests need is missing (Python 3, OpenSSL, valgrind, threads, Clang, and on x86-64 the 32-bit C and C++ libraries for `hash_m32`) instead of leaving those tests out                                                                       |
@@ -157,13 +161,35 @@ a program that uses a backend.
 | `OPENPQC_VALGRIND`, `OPENPQC_VALGRIND_INCLUDE_DIR` | found on PATH  | valgrind for the constant-time tests: `core_*_ct`, `mlkemNNN_ct`, `mldsa_ct`, `slhdsa_ct` at the build's optimization level, and the same with the libraries compiled at fixed levels (`mlkemNNN_O1_ct` … `_Os_ct`, `mldsa_O1_ct` … `_Os_ct`, `slhdsa_O2_ct`); OFF leaves them out (CTest reports them as skipped) |
 | `OPENPQC_CUPQC_DIR`                                | empty          | path to an NVIDIA cuPQC SDK: builds the optional baseline benchmark (its results are covered by NVIDIA's licence, and this repository does not publish them) |
 
+### Install and use
+
+`cmake --install build --prefix <prefix>` installs the library `openpqc` (static, or shared with
+`-DBUILD_SHARED_LIBS=ON`), the GPU library `openpqc_sycl` if it was built, the headers of their APIs under
+`<prefix>/include/openpqc` (included as `"ML/KEM/openpqc_mlkem.h"`, `"ML/DSA/mldsa.hpp"`, `"Core/openpqc_version.h"`,
+...), a CMake package and pkg-config files. Nothing of the tests is installed.
+
+```cmake
+find_package(OpenPQC 0.3 REQUIRED)                       # COMPONENTS sycl: also the GPU library
+target_link_libraries(app PRIVATE OpenPQC::openpqc)      # OpenPQC::sycl for the GPU backends
+```
+
+```sh
+cc app.c $(pkg-config --cflags --libs openpqc)           # openpqc-sycl for the GPU backends
+```
+
+A project that includes OpenPQC with `add_subdirectory` or FetchContent uses the same target names. The library needs
+nothing of the C++ runtime, so a program in C links it with the C compiler alone, also from a CMake project in C only.
+`openpqc_version()` returns the version of the library a program runs with (`Core/openpqc_version.h`). The shared GPU
+library needs its SYCL implementation's runtime on the library path (DPC++'s or AdaptiveCpp's `lib` directory):
+OpenPQC sets no rpath for it in installed files or in the programs of projects that use it.
+
 ## Usage
 
 Complete programs: [examples/](examples/README.md) (`demo_cpu`: the three schemes on the CPU; `demo_gpu`: the same in
 batches on a GPU, checked against the CPU and timed against it).
 
 ```c
-#include "ML/KEM/openpqc_mlkem.h"        /* link openpqc::mlkem */
+#include "ML/KEM/openpqc_mlkem.h"        /* link OpenPQC::openpqc */
 
 uint8_t pk[MLKEM768_PUBLICKEYBYTES], sk[MLKEM768_SECRETKEYBYTES];
 uint8_t ct[MLKEM768_CIPHERTEXTBYTES], ss[MLKEM_BYTES], ss2[MLKEM_BYTES];
@@ -174,7 +200,7 @@ if (openpqc_mlkem768_keypair(pk, sk) != 0 ||     /* randomness from the operatin
 ```
 
 ```c
-#include "ML/DSA/openpqc_mldsa.h"        /* link openpqc::mldsa */
+#include "ML/DSA/openpqc_mldsa.h"        /* link OpenPQC::openpqc */
 
 uint8_t pk[MLDSA65_PUBLICKEYBYTES], sk[MLDSA65_SECRETKEYBYTES], sig[MLDSA65_BYTES];
 if (openpqc_mldsa65_keypair(pk, sk) != 0 ||
@@ -184,7 +210,7 @@ int valid = openpqc_mldsa65_verify(sig, sizeof sig, msg, msglen, ctx, ctxlen, pk
 ```
 
 ```c
-#include "SLH/DSA/openpqc_slhdsa.h"      /* link openpqc::slhdsa */
+#include "SLH/DSA/openpqc_slhdsa.h"      /* link OpenPQC::openpqc */
 
 uint8_t pk[SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[SLHDSA_SHA2_128F_SECRETKEYBYTES];
 static uint8_t sig[SLHDSA_SHA2_128F_BYTES];
@@ -199,13 +225,17 @@ Every function returns 0 or a negative error code, and its result must be checke
 its buffers keep their old contents, or are zero, as each header says under "Results"; they are never a key, a shared
 secret or a signature to use. The `_derand` and `_internal` functions take the random values or the formatted message
 from the caller and are for testing (FIPS 203 §3.3, FIPS 204 §6, FIPS 205 §9), apart from the deterministic signing
-variants and the expansion of a stored seed (see the headers, "Testing interfaces"). The libraries are C++ inside:
-link a C program with the C++ compiler driver, or add `-lstdc++`.
+variants and the expansion of a stored seed (see the headers, "Testing interfaces"). The library needs nothing of the
+C++ runtime: a C program links it with the C compiler alone.
 
 C++: `openpqc::mlkem::MLKEM768` (`ML/KEM/mlkem.hpp`), `openpqc::mldsa::MLDSA65` (`ML/DSA/mldsa.hpp`),
 `openpqc::slhdsa::SLHDSA_SHA2_128f` (`SLH/DSA/slhdsa.hpp`), `openpqc::fips202` and `openpqc::sha2` (`Core/hash.hpp`),
-or the algorithms of the standards themselves as templates (`ML/KEM/scheme/ml_kem.hpp`, `ML/DSA/scheme/ml_dsa.hpp`,
-`SLH/DSA/scheme/slh_dsa.hpp`). Batched operations on a GPU: `ML/KEM/sycl/openpqc_mlkem_sycl.h`,
+or, in the source tree (they are not installed), the algorithms of the standards themselves as templates
+(`ML/KEM/scheme/ml_kem.hpp`, `ML/DSA/scheme/ml_dsa.hpp`, `SLH/DSA/scheme/slh_dsa.hpp`). A program that
+instantiates these compiles copies of its own, in its own build configuration: what a build of the library
+guarantees (its pair-wise consistency test, stack burn and value barriers) holds for the C APIs and the library's
+code, whose copies have names of their own (`Core/abi.hpp`). Batched operations on a GPU,
+in the library `openpqc_sycl` (`OpenPQC::sycl`): `ML/KEM/sycl/openpqc_mlkem_sycl.h`,
 `ML/DSA/sycl/openpqc_mldsa_sycl.h` and `SLH/DSA/sycl/openpqc_slhdsa_sycl.h`, see
 [include/ML/KEM/README.md](include/ML/KEM/README.md#gpu-backend-sycl),
 [include/ML/DSA/README.md](include/ML/DSA/README.md#gpu-backend-sycl) and

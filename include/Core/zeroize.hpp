@@ -17,9 +17,11 @@
 #include <tuple>
 #include <type_traits>
 
+#include "abi.hpp"
 #include "opqc_platform.h"
 
 namespace openpqc {
+OPENPQC_ABI_BEGIN
 
 template <class... T>
 class ZeroizeOnExit {
@@ -38,4 +40,5 @@ private:
     std::tuple<T&...> objects_;
 };
 
+OPENPQC_ABI_END
 } // namespace openpqc

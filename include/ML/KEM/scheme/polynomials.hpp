@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_platform.h"
 #include "../math/mlkem_encode.h"
 #include "../math/mlkem_field.h"
@@ -39,6 +40,7 @@
 #include "../math/mlkem_sample.h"
 
 namespace openpqc::mlkem {
+OPENPQC_ABI_BEGIN
 
 // An element of R_q (coefficients f_0, ..., f_255 of f = f_0 + f_1 X + ... + f_255 X^255)
 // or of T_q (an NTT representation), Section 2.4.4. The derived type gives the
@@ -173,4 +175,5 @@ PolyVec<K> byte_decode_vector(std::span<const std::uint8_t> in, unsigned d) {
     return v;
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mlkem

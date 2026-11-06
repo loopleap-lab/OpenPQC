@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_ct.h"
 #include "../../../Core/zeroize.hpp"
 #include "crypto_functions.hpp"
@@ -23,6 +24,7 @@
 #include "parameter_sets.hpp"
 
 namespace openpqc::mlkem::internal {
+OPENPQC_ABI_BEGIN
 
 // Algorithm 16: ML-KEM.KeyGen_internal(d, z) -> (ek, dk)
 template <ParameterSet P>
@@ -74,4 +76,5 @@ void decaps(std::span<std::uint8_t, 32> K, std::span<const std::uint8_t, Sizes<P
     std::copy(K_prime.begin(), K_prime.end(), K.begin());                    // 12
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mlkem::internal

@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/zeroize.hpp"
 #include "../math/mldsa_encode.h"
 #include "../math/mldsa_sample.h"
@@ -28,6 +29,7 @@
 #include "polynomials.hpp"
 
 namespace openpqc::mldsa {
+OPENPQC_ABI_BEGIN
 
 // Algorithm 32: A^ <- ExpandA(rho). A^ depends only on the public seed rho.
 template <ParameterSet P>
@@ -87,4 +89,5 @@ PolyVec<P::l> expand_mask(std::span<const std::uint8_t, 64> rho, unsigned mu) {
     return y;
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mldsa

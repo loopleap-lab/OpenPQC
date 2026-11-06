@@ -199,33 +199,31 @@ typedef struct opqc_sycl_mlkem opqc_sycl_mlkem;
  * self-test (above) before it returns. Returns 0 and the context in *ctx, or an error
  * with *ctx = NULL.
  */
-OPQC_MUST_CHECK int opqc_sycl_mlkem_create(opqc_sycl_mlkem **ctx, int level, size_t max_batch,
-                                           int device);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_create(opqc_sycl_mlkem **ctx, int level, size_t max_batch, int device);
 /* Waits for the context's work, zeroizes its device memory, and frees it (also on a
  * context that has failed; a device error it finds does not end the process, Device
  * failures). Buffers of opqc_sycl_mlkem_malloc that were not freed stay allocated,
  * with what they hold. */
-void opqc_sycl_mlkem_destroy(opqc_sycl_mlkem *ctx);
+OPENPQC_API void opqc_sycl_mlkem_destroy(opqc_sycl_mlkem *ctx);
 /* The name of the context's device; the string belongs to the context and stays valid
  * until opqc_sycl_mlkem_destroy */
-const char *opqc_sycl_mlkem_device_name(const opqc_sycl_mlkem *ctx);
+OPENPQC_API const char *opqc_sycl_mlkem_device_name(const opqc_sycl_mlkem *ctx);
 
-OPQC_MUST_CHECK int opqc_sycl_mlkem_keypair_derand(opqc_sycl_mlkem *ctx, uint8_t *pk, uint8_t *sk,
-                                                   const uint8_t *coins, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mlkem_keypair(opqc_sycl_mlkem *ctx, uint8_t *pk, uint8_t *sk,
-                                            size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mlkem_enc_derand(opqc_sycl_mlkem *ctx, uint8_t *ct, uint8_t *ss,
-                                               const uint8_t *pk, const uint8_t *coins,
-                                               int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mlkem_enc(opqc_sycl_mlkem *ctx, uint8_t *ct, uint8_t *ss,
-                                        const uint8_t *pk, int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mlkem_dec(opqc_sycl_mlkem *ctx, uint8_t *ss, const uint8_t *ct,
-                                        const uint8_t *sk, int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_keypair_derand(opqc_sycl_mlkem *ctx, uint8_t *pk, uint8_t *sk,
+                                                               const uint8_t *coins, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_keypair(opqc_sycl_mlkem *ctx, uint8_t *pk, uint8_t *sk, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_enc_derand(opqc_sycl_mlkem *ctx, uint8_t *ct, uint8_t *ss,
+                                                           const uint8_t *pk, const uint8_t *coins, int32_t *status,
+                                                           size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_enc(opqc_sycl_mlkem *ctx, uint8_t *ct, uint8_t *ss, const uint8_t *pk,
+                                                    int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_dec(opqc_sycl_mlkem *ctx, uint8_t *ss, const uint8_t *ct,
+                                                    const uint8_t *sk, int32_t *status, size_t n);
 
 /* Waits until all queued work of the context is done: 0, or -2 if the context has
  * failed, before or during the wait (the first time, its device memory is zeroized);
  * -1 for NULL. */
-OPQC_MUST_CHECK int opqc_sycl_mlkem_sync(opqc_sycl_mlkem *ctx);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_sync(opqc_sycl_mlkem *ctx);
 
 /* Memory: device memory on the context's device, and page-locked host memory (faster
  * transfers), 256-byte aligned, or NULL if none is available. opqc_sycl_mlkem_free
@@ -233,9 +231,9 @@ OPQC_MUST_CHECK int opqc_sycl_mlkem_sync(opqc_sycl_mlkem *ctx);
  * memory with zeros and frees it; p must come from opqc_sycl_mlkem_malloc or
  * opqc_sycl_mlkem_malloc_host of the same context (other memory is freed unwiped).
  * Free every buffer before destroying the context. */
-void *opqc_sycl_mlkem_malloc(opqc_sycl_mlkem *ctx, size_t bytes);
-void *opqc_sycl_mlkem_malloc_host(opqc_sycl_mlkem *ctx, size_t bytes);
-void opqc_sycl_mlkem_free(opqc_sycl_mlkem *ctx, void *p);
+OPENPQC_API void *opqc_sycl_mlkem_malloc(opqc_sycl_mlkem *ctx, size_t bytes);
+OPENPQC_API void *opqc_sycl_mlkem_malloc_host(opqc_sycl_mlkem *ctx, size_t bytes);
+OPENPQC_API void opqc_sycl_mlkem_free(opqc_sycl_mlkem *ctx, void *p);
 
 /* Copies between host and device memory, in any direction: memcpy waits for the copy
  * (and so for all the work queued before it); memcpy_async queues it behind the
@@ -243,10 +241,9 @@ void opqc_sycl_mlkem_free(opqc_sycl_mlkem *ctx, void *p);
  * called). -1 for a NULL context, or a NULL dst or src with bytes > 0 (nothing is
  * queued); -2 once the context has failed (the copy is still made as far as the device
  * allows). */
-OPQC_MUST_CHECK int opqc_sycl_mlkem_memcpy(opqc_sycl_mlkem *ctx, void *dst, const void *src,
-                                           size_t bytes);
-OPQC_MUST_CHECK int opqc_sycl_mlkem_memcpy_async(opqc_sycl_mlkem *ctx, void *dst, const void *src,
-                                                 size_t bytes);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_memcpy(opqc_sycl_mlkem *ctx, void *dst, const void *src, size_t bytes);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_memcpy_async(opqc_sycl_mlkem *ctx, void *dst, const void *src,
+                                                             size_t bytes);
 
 #ifdef __cplusplus
 }

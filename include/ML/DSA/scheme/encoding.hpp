@@ -19,11 +19,13 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../math/mldsa_encode.h"
 #include "parameter_sets.hpp"
 #include "polynomials.hpp"
 
 namespace openpqc::mldsa {
+OPENPQC_ABI_BEGIN
 
 // The byte offsets of the parts of sk (Algorithm 24) and of sigma (Algorithm 26)
 template <ParameterSet P>
@@ -140,4 +142,5 @@ void w1_encode(std::span<std::uint8_t, Sizes<P>::w1> out, const PolyVec<P::k>& w
     }
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mldsa

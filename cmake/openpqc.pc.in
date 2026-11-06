@@ -1,0 +1,12 @@
+prefix=${pcfiledir}/@OPENPQC_PC_PREFIX_FROM_PCDIR@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@OPENPQC_INSTALL_INCLUDEDIR@
+
+Name: OpenPQC
+Description: FIPS 203 ML-KEM, FIPS 204 ML-DSA and FIPS 205 SLH-DSA (C APIs; C++20 APIs in the headers)
+URL: https://github.com/UCF-ML-Research/OpenPQC
+Version: @PROJECT_VERSION@
+Cflags: -I${includedir}
+Libs: -L${libdir} -lopenpqc
+Libs.private: @OPENPQC_PC_LIBS_PRIVATE@

@@ -11,7 +11,10 @@
 #include <concepts>
 #include <cstddef>
 
+#include "../../../Core/abi.hpp"
+
 namespace openpqc::mlkem {
+OPENPQC_ABI_BEGIN
 
 namespace params {
 
@@ -58,4 +61,5 @@ static_assert(Sizes<params::ML_KEM_768>::ek == 1184 && Sizes<params::ML_KEM_768>
 static_assert(Sizes<params::ML_KEM_1024>::ek == 1568 && Sizes<params::ML_KEM_1024>::dk == 3168 &&
               Sizes<params::ML_KEM_1024>::ct == 1568);
 
+OPENPQC_ABI_END
 } // namespace openpqc::mlkem

@@ -34,10 +34,12 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_sha3.h"
 #include "../../../Core/xof.hpp"
 
 namespace openpqc::mldsa {
+OPENPQC_ABI_BEGIN
 
 using openpqc::ByteStrings;
 using openpqc::Xof;
@@ -82,4 +84,5 @@ std::array<std::uint8_t, Alpha> integer_to_bytes(std::uint64_t x) {
     return y;
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mldsa

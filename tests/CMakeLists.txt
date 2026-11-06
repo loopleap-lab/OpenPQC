@@ -60,7 +60,10 @@ set(OPENPQC_TESTS
 
 foreach(name IN LISTS OPENPQC_TESTS)
     add_executable(${name} ${name}.cpp)
-    target_link_libraries(${name} PRIVATE openpqc::openpqc openpqc_warnings)
+    target_link_libraries(${name} PRIVATE OpenPQC::openpqc openpqc_warnings)
+    if(name MATCHES "^test_(reduce|mlkem_ntt)$")
+        target_link_libraries(${name} PRIVATE openpqc_learning)
+    endif()
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     # keep library asserts active even in Release builds
     target_compile_options(${name} PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-UNDEBUG>)
@@ -143,8 +146,62 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME c_api_must_check
              COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_must_check.py
                      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/must_check
-                     $<TARGET_FILE:openpqc_mlkem> $<TARGET_FILE:openpqc_mldsa> $<TARGET_FILE:openpqc_slhdsa>)
+                     $<TARGET_FILE:openpqc>)
     set_tests_properties(c_api_must_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+endif()
+
+# abi_symbols: every C++ symbol of the header-only layers in the archives is in the library's inline
+# namespace (library_<version>, library_sycl_<version>; include/Core/abi.hpp; review finding F039), so that an application's
+# copies of the templates, built with other macros or flags, cannot take the place of the library's
+set(_openpqc_abi_archives $<TARGET_FILE:openpqc>)
+if(OPENPQC_HAVE_SYCL)
+    list(APPEND _openpqc_abi_archives $<TARGET_FILE:openpqc_sycl>)
+endif()
+add_test(NAME abi_symbols
+         COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} "-DARCHIVES=${_openpqc_abi_archives}"
+                 -DABI_VERSION=${OPENPQC_ABI_VERSION}
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/abi_symbols.cmake)
+
+# c_link: a C program links the library with the C compiler alone, without the C++ runtime (review finding
+# S018; cmake/OpenPQCLibrary.cmake), and gets the library's version. The compiler is called directly
+# (c_link.cmake): CMake would add -lstdc++ to the link of any C target that links a library with C++ objects.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _openpqc_config)
+    add_test(NAME c_link
+             COMMAND ${CMAKE_COMMAND} -DCC=${CMAKE_C_COMPILER}
+                     "-DCFLAGS=${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_openpqc_config}}"
+                     -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/test_c_link.c
+                     "-DINCLUDES=${PROJECT_SOURCE_DIR}/include;${PROJECT_BINARY_DIR}/include"
+                     -DLIBRARY=$<TARGET_FILE:openpqc> -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test_c_link
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/c_link.cmake)
+endif()
+
+# install_consumer: install the build into a scratch prefix and use the package from outside: a C project and a
+# C++ project through find_package(OpenPQC <version> EXACT), a C program on the GPU library (with a shared
+# openpqc_sycl, listing the devices only), and a C program through pkg-config and the C compiler alone (review
+# finding M19; tests/consumer.cmake). Linux with GCC or Clang.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    find_program(OPENPQC_PKG_CONFIG NAMES pkg-config pkgconf)
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _openpqc_config)
+    set(_openpqc_consumer_sycl "")
+    if(OPENPQC_HAVE_SYCL AND OPENPQC_SYCL_SHARED)
+        if(OPENPQC_SYCL_IMPL STREQUAL "DPC++")
+            set(_openpqc_consumer_sycl -DSYCL=ON -DSYCL_LIBDIR=${_openpqc_sycl_lib})
+        else()
+            get_filename_component(_openpqc_acpp_lib "${AdaptiveCpp_DIR}/../.." ABSOLUTE)
+            set(_openpqc_consumer_sycl -DSYCL=ON -DSYCL_LIBDIR=${_openpqc_acpp_lib})
+        endif()
+    endif()
+    add_test(NAME install_consumer
+             COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${PROJECT_BINARY_DIR} -DWORK=${CMAKE_CURRENT_BINARY_DIR}/consumer
+                     -DCONSUMER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/consumer
+                     -DC_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/test_c_link.c -DVERSION=${PROJECT_VERSION}
+                     -DBUILD_TYPE=${CMAKE_BUILD_TYPE} -DCC=${CMAKE_C_COMPILER} -DCXX=${CMAKE_CXX_COMPILER}
+                     "-DCFLAGS=${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_openpqc_config}}"
+                     "-DCXXFLAGS=${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_openpqc_config}}"
+                     -DLIBDIR=${CMAKE_INSTALL_LIBDIR} -DPKG_CONFIG=${OPENPQC_PKG_CONFIG} ${_openpqc_consumer_sycl}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/consumer.cmake)
+    set_tests_properties(install_consumer PROPERTIES LABELS install TIMEOUT 900 RUN_SERIAL TRUE)
 endif()
 
 # ML-KEM (OpenPQC and the reference) and Core

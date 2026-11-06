@@ -15,10 +15,12 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../../Core/abi.hpp"
 #include "../math/mldsa_field.h"
 #include "../math/mldsa_rounding.h"
 
 namespace openpqc::mldsa {
+OPENPQC_ABI_BEGIN
 
 namespace params {
 
@@ -80,4 +82,5 @@ static_assert(Sizes<params::ML_DSA_65>::pk == 1952 && Sizes<params::ML_DSA_65>::
 static_assert(Sizes<params::ML_DSA_87>::pk == 2592 && Sizes<params::ML_DSA_87>::sk == 4896 &&
               Sizes<params::ML_DSA_87>::sig == 4627);
 
+OPENPQC_ABI_END
 } // namespace openpqc::mldsa

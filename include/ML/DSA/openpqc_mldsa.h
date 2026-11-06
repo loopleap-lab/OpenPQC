@@ -174,13 +174,10 @@
  * in a fault at the guard page, instead of writing below the guard page into
  * whatever is mapped there.
  *
- * Linking. The library is C++20 inside: a C program links it with the C++
- * compiler driver (g++, clang++) or adds the C++ runtime (-lstdc++ with GCC's
- * libstdc++); linked by gcc or clang alone, it lacks __gxx_personality_v0, and
- * if it was built with Clang also __cxa_begin_catch and std::terminate() (the
- * C driver's libgcc provides the library's other runtime symbol,
- * _Unwind_Resume). A CMake target of C sources that links openpqc::mldsa sets
- * LINKER_LANGUAGE CXX (examples/CMakeLists.txt, demo_cpu).
+ * Linking. The functions are in the library openpqc: OpenPQC::openpqc in CMake
+ * (find_package(OpenPQC), or add_subdirectory), openpqc for pkg-config. Its
+ * C++ code is compiled without exceptions and RTTI and needs nothing of the
+ * C++ runtime: a C program links it with the C compiler alone (test c_link).
  */
 
 #ifndef OPENPQC_MLDSA_H
@@ -242,53 +239,53 @@
 extern "C" {
 #endif
 
-#define OPENPQC_MLDSA_DECLARE_API(N)                                                                                   \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_keypair(uint8_t pk[MLDSA##N##_PUBLICKEYBYTES],                              \
-                                                   uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                             \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_keypair_derand(uint8_t pk[MLDSA##N##_PUBLICKEYBYTES],                       \
-                                                          uint8_t sk[MLDSA##N##_SECRETKEYBYTES],                       \
-                                                          const uint8_t seed[MLDSA_SEEDBYTES]);                        \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_check_sk(const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                      \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_check_keypair(const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES],                  \
-                                                         const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                 \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_sign(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m, size_t mlen,          \
-                                                const uint8_t *ctx, size_t ctxlen,                                     \
-                                                const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                          \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_sign_derand(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m, size_t mlen,   \
-                                                       const uint8_t *ctx, size_t ctxlen,                              \
-                                                       const uint8_t rnd[MLDSA_RNDBYTES],                              \
-                                                       const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                   \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_verify(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen,    \
-                                                  const uint8_t *ctx, size_t ctxlen,                                   \
-                                                  const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);                        \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_prehash_sign(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m, size_t mlen,  \
-                                                        const uint8_t *ctx, size_t ctxlen, int ph,                     \
-                                                        const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                  \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_prehash_sign_derand(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m,        \
-                                                               size_t mlen, const uint8_t *ctx, size_t ctxlen, int ph, \
-                                                               const uint8_t rnd[MLDSA_RNDBYTES],                      \
-                                                               const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);           \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_prehash_verify(const uint8_t *sig, size_t siglen, const uint8_t *m,         \
-                                                          size_t mlen, const uint8_t *ctx, size_t ctxlen, int ph,      \
-                                                          const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);                \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_external_mu(uint8_t mu[MLDSA_CRHBYTES], const uint8_t *m, size_t mlen,      \
-                                                       const uint8_t *ctx, size_t ctxlen,                              \
-                                                       const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);                   \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_sign_mu(uint8_t sig[MLDSA##N##_BYTES], const uint8_t mu[MLDSA_CRHBYTES],    \
-                                                   const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                       \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_sign_mu_derand(uint8_t sig[MLDSA##N##_BYTES],                               \
-                                                          const uint8_t mu[MLDSA_CRHBYTES],                            \
-                                                          const uint8_t rnd[MLDSA_RNDBYTES],                           \
-                                                          const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_verify_mu(const uint8_t *sig, size_t siglen,                                \
-                                                     const uint8_t mu[MLDSA_CRHBYTES],                                 \
-                                                     const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);                     \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_sign_internal(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *mprime,         \
-                                                         size_t mprimelen, const uint8_t rnd[MLDSA_RNDBYTES],          \
-                                                         const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                 \
-    OPQC_MUST_CHECK int openpqc_mldsa##N##_verify_internal(const uint8_t *sig, size_t siglen, const uint8_t *mprime,   \
-                                                           size_t mprimelen,                                           \
-                                                           const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);
+#define OPENPQC_MLDSA_DECLARE_API(N)                                                                                               \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_keypair(uint8_t pk[MLDSA##N##_PUBLICKEYBYTES],                              \
+                                                               uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                             \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_keypair_derand(uint8_t pk[MLDSA##N##_PUBLICKEYBYTES],                       \
+                                                                      uint8_t sk[MLDSA##N##_SECRETKEYBYTES],                       \
+                                                                      const uint8_t seed[MLDSA_SEEDBYTES]);                        \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_check_sk(const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                      \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_check_keypair(const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES],                  \
+                                                                     const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                 \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_sign(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m, size_t mlen,          \
+                                                            const uint8_t *ctx, size_t ctxlen,                                     \
+                                                            const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                          \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_sign_derand(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m, size_t mlen,   \
+                                                                   const uint8_t *ctx, size_t ctxlen,                              \
+                                                                   const uint8_t rnd[MLDSA_RNDBYTES],                              \
+                                                                   const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                   \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_verify(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen,    \
+                                                              const uint8_t *ctx, size_t ctxlen,                                   \
+                                                              const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);                        \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_prehash_sign(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m, size_t mlen,  \
+                                                                    const uint8_t *ctx, size_t ctxlen, int ph,                     \
+                                                                    const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                  \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_prehash_sign_derand(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *m,        \
+                                                                           size_t mlen, const uint8_t *ctx, size_t ctxlen, int ph, \
+                                                                           const uint8_t rnd[MLDSA_RNDBYTES],                      \
+                                                                           const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);           \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_prehash_verify(const uint8_t *sig, size_t siglen, const uint8_t *m,         \
+                                                                      size_t mlen, const uint8_t *ctx, size_t ctxlen, int ph,      \
+                                                                      const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);                \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_external_mu(uint8_t mu[MLDSA_CRHBYTES], const uint8_t *m, size_t mlen,      \
+                                                                   const uint8_t *ctx, size_t ctxlen,                              \
+                                                                   const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);                   \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_sign_mu(uint8_t sig[MLDSA##N##_BYTES], const uint8_t mu[MLDSA_CRHBYTES],    \
+                                                               const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                       \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_sign_mu_derand(uint8_t sig[MLDSA##N##_BYTES],                               \
+                                                                      const uint8_t mu[MLDSA_CRHBYTES],                            \
+                                                                      const uint8_t rnd[MLDSA_RNDBYTES],                           \
+                                                                      const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_verify_mu(const uint8_t *sig, size_t siglen,                                \
+                                                                 const uint8_t mu[MLDSA_CRHBYTES],                                 \
+                                                                 const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);                     \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_sign_internal(uint8_t sig[MLDSA##N##_BYTES], const uint8_t *mprime,         \
+                                                                     size_t mprimelen, const uint8_t rnd[MLDSA_RNDBYTES],          \
+                                                                     const uint8_t sk[MLDSA##N##_SECRETKEYBYTES]);                 \
+    OPQC_MUST_CHECK OPENPQC_API int openpqc_mldsa##N##_verify_internal(const uint8_t *sig, size_t siglen, const uint8_t *mprime,   \
+                                                                       size_t mprimelen,                                           \
+                                                                       const uint8_t pk[MLDSA##N##_PUBLICKEYBYTES]);
 
 OPENPQC_MLDSA_DECLARE_API(44)
 OPENPQC_MLDSA_DECLARE_API(65)

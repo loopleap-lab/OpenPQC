@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_ct.h"
 #include "../../../Core/zeroize.hpp"
 #include "crypto_functions.hpp"
@@ -28,6 +29,7 @@
 #include "polynomials.hpp"
 
 namespace openpqc::mlkem::kpke {
+OPENPQC_ABI_BEGIN
 
 // Lines 3-7 of Algorithm 13 and lines 4-8 of Algorithm 14:
 // A^[i, j] <- SampleNTT(rho || j || i), where j and i are bytes 33 and 34 of the input
@@ -124,4 +126,5 @@ void decrypt(std::span<std::uint8_t, 32> m,
     byte_encode(m, compress(w, 1), 1);                                            // 7
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mlkem::kpke

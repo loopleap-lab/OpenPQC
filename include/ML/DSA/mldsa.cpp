@@ -13,6 +13,9 @@
 // signing limit) and a failed pair-wise consistency test zeroizes pk and sk
 // (scheme/mldsa_internal.hpp, scheme/ml_dsa.hpp). The check of ph below comes
 // before any write as well.
+// Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
+#define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
 #include "ML/DSA/openpqc_mldsa.h"
 
 #include <cstddef>

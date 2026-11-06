@@ -197,76 +197,89 @@ typedef struct opqc_sycl_slhdsa opqc_sycl_slhdsa;
  * OPENPQC_SLHDSA_SYCL_SETS), a device without enough local memory, or device memory
  * that cannot be allocated.
  */
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa **ctx, int param_set, size_t max_batch, int device);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa **ctx, int param_set, size_t max_batch,
+                                                        int device);
 /* Waits for the context's work, zeroizes its workspace and frees it (as far as the device
  * still accepts work), also after a failure; NULL is ignored. */
-void opqc_sycl_slhdsa_destroy(opqc_sycl_slhdsa *ctx);
-const char *opqc_sycl_slhdsa_device_name(const opqc_sycl_slhdsa *ctx);
+OPENPQC_API void opqc_sycl_slhdsa_destroy(opqc_sycl_slhdsa *ctx);
+OPENPQC_API const char *opqc_sycl_slhdsa_device_name(const opqc_sycl_slhdsa *ctx);
 
 /* The device memory that a context for param_set and max_batch allocates, in bytes; 0 if
  * this build does not contain the parameter set */
-size_t opqc_sycl_slhdsa_workspace_bytes(int param_set, size_t max_batch);
+OPENPQC_API size_t opqc_sycl_slhdsa_workspace_bytes(int param_set, size_t max_batch);
 
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_keypair_derand(opqc_sycl_slhdsa *ctx, uint8_t *pk, uint8_t *sk,
-                                                    const uint8_t *seeds, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_keypair(opqc_sycl_slhdsa *ctx, uint8_t *pk, uint8_t *sk, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_keypair_derand(opqc_sycl_slhdsa *ctx, uint8_t *pk, uint8_t *sk,
+                                                                const uint8_t *seeds, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_keypair(opqc_sycl_slhdsa *ctx, uint8_t *pk, uint8_t *sk, size_t n);
 
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_sign_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg,
-                                                 const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                                 const uint8_t *addrnd, const uint8_t *sk, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_sign(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg,
-                                          const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                          const uint8_t *sk, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_prehash_sign_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *ph_m,
-                                                         const uint8_t *ctxstr, size_t ctxlen, int ph,
-                                                         const uint8_t *addrnd, const uint8_t *sk, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_prehash_sign(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *ph_m,
-                                                  const uint8_t *ctxstr, size_t ctxlen, int ph, const uint8_t *sk,
-                                                  size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_sign_internal_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *mprime,
-                                                          const uint64_t *offsets, const uint8_t *addrnd,
-                                                          const uint8_t *sk, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_sign_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg,
+                                                             const uint64_t *offsets, const uint8_t *ctxstr,
+                                                             size_t ctxlen, const uint8_t *addrnd, const uint8_t *sk,
+                                                             size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_sign(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg,
+                                                      const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
+                                                      const uint8_t *sk, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_prehash_sign_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig,
+                                                                     const uint8_t *ph_m, const uint8_t *ctxstr,
+                                                                     size_t ctxlen, int ph, const uint8_t *addrnd,
+                                                                     const uint8_t *sk, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_prehash_sign(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *ph_m,
+                                                              const uint8_t *ctxstr, size_t ctxlen, int ph,
+                                                              const uint8_t *sk, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_sign_internal_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig,
+                                                                      const uint8_t *mprime, const uint64_t *offsets,
+                                                                      const uint8_t *addrnd, const uint8_t *sk,
+                                                                      size_t n);
 
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_verify(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *msg,
-                                            const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                            const uint8_t *pk, int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_prehash_verify(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *ph_m,
-                                                    const uint8_t *ctxstr, size_t ctxlen, int ph, const uint8_t *pk,
-                                                    int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_verify_internal(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *mprime,
-                                                     const uint64_t *offsets, const uint8_t *pk, int32_t *status,
-                                                     size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_verify(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *msg,
+                                                        const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
+                                                        const uint8_t *pk, int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_prehash_verify(opqc_sycl_slhdsa *ctx, const uint8_t *sig,
+                                                                const uint8_t *ph_m, const uint8_t *ctxstr,
+                                                                size_t ctxlen, int ph, const uint8_t *pk,
+                                                                int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_verify_internal(opqc_sycl_slhdsa *ctx, const uint8_t *sig,
+                                                                 const uint8_t *mprime, const uint64_t *offsets,
+                                                                 const uint8_t *pk, int32_t *status, size_t n);
 
 /* One key for the whole batch: sk (or pk) is a single key in device memory */
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_sign_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg,
-                                                         const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                                         const uint8_t *addrnd, const uint8_t *sk, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_sign_one_key(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg,
-                                                  const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                                  const uint8_t *sk, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_prehash_sign_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig,
-                                                                 const uint8_t *ph_m, const uint8_t *ctxstr,
-                                                                 size_t ctxlen, int ph, const uint8_t *addrnd,
-                                                                 const uint8_t *sk, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_prehash_sign_one_key(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *ph_m,
-                                                          const uint8_t *ctxstr, size_t ctxlen, int ph,
-                                                          const uint8_t *sk, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_sign_internal_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig,
-                                                                  const uint8_t *mprime, const uint64_t *offsets,
-                                                                  const uint8_t *addrnd, const uint8_t *sk, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_verify_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig, const uint8_t *msg,
-                                                    const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                                    const uint8_t *pk, int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_prehash_verify_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig,
-                                                            const uint8_t *ph_m, const uint8_t *ctxstr, size_t ctxlen,
-                                                            int ph, const uint8_t *pk, int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_verify_internal_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig,
-                                                             const uint8_t *mprime, const uint64_t *offsets,
-                                                             const uint8_t *pk, int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_sign_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig,
+                                                                     const uint8_t *msg, const uint64_t *offsets,
+                                                                     const uint8_t *ctxstr, size_t ctxlen,
+                                                                     const uint8_t *addrnd, const uint8_t *sk,
+                                                                     size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_sign_one_key(opqc_sycl_slhdsa *ctx, uint8_t *sig, const uint8_t *msg,
+                                                              const uint64_t *offsets, const uint8_t *ctxstr,
+                                                              size_t ctxlen, const uint8_t *sk, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_prehash_sign_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig,
+                                                                             const uint8_t *ph_m, const uint8_t *ctxstr,
+                                                                             size_t ctxlen, int ph,
+                                                                             const uint8_t *addrnd, const uint8_t *sk,
+                                                                             size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_prehash_sign_one_key(opqc_sycl_slhdsa *ctx, uint8_t *sig,
+                                                                      const uint8_t *ph_m, const uint8_t *ctxstr,
+                                                                      size_t ctxlen, int ph, const uint8_t *sk,
+                                                                      size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_sign_internal_one_key_derand(opqc_sycl_slhdsa *ctx, uint8_t *sig,
+                                                                              const uint8_t *mprime,
+                                                                              const uint64_t *offsets,
+                                                                              const uint8_t *addrnd, const uint8_t *sk,
+                                                                              size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_verify_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig,
+                                                                const uint8_t *msg, const uint64_t *offsets,
+                                                                const uint8_t *ctxstr, size_t ctxlen, const uint8_t *pk,
+                                                                int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_prehash_verify_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig,
+                                                                        const uint8_t *ph_m, const uint8_t *ctxstr,
+                                                                        size_t ctxlen, int ph, const uint8_t *pk,
+                                                                        int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_verify_internal_one_key(opqc_sycl_slhdsa *ctx, const uint8_t *sig,
+                                                                         const uint8_t *mprime, const uint64_t *offsets,
+                                                                         const uint8_t *pk, int32_t *status, size_t n);
 
 /* Waits until all queued work of the context is done. Returns 0, -1 for NULL, or -2 if the
  * context has failed, before or during the wait (Device failures, above). */
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa *ctx);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa *ctx);
 
 /* Memory: device memory on the context's device, and page-locked host memory (faster
  * transfers), both 256-byte aligned and freed with opqc_sycl_slhdsa_free. Copies in any
@@ -277,11 +290,13 @@ OPQC_MUST_CHECK int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa *ctx);
  * usable), and -2 once the context has failed: the copy is still made as far as the
  * device allows (the status of a failed verification reaches the host filled with
  * OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE), but what it copies cannot be trusted. */
-void *opqc_sycl_slhdsa_malloc(opqc_sycl_slhdsa *ctx, size_t bytes);
-void *opqc_sycl_slhdsa_malloc_host(opqc_sycl_slhdsa *ctx, size_t bytes);
-void opqc_sycl_slhdsa_free(opqc_sycl_slhdsa *ctx, void *p);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_memcpy(opqc_sycl_slhdsa *ctx, void *dst, const void *src, size_t bytes);
-OPQC_MUST_CHECK int opqc_sycl_slhdsa_memcpy_async(opqc_sycl_slhdsa *ctx, void *dst, const void *src, size_t bytes);
+OPENPQC_API void *opqc_sycl_slhdsa_malloc(opqc_sycl_slhdsa *ctx, size_t bytes);
+OPENPQC_API void *opqc_sycl_slhdsa_malloc_host(opqc_sycl_slhdsa *ctx, size_t bytes);
+OPENPQC_API void opqc_sycl_slhdsa_free(opqc_sycl_slhdsa *ctx, void *p);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_memcpy(opqc_sycl_slhdsa *ctx, void *dst, const void *src,
+                                                        size_t bytes);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_memcpy_async(opqc_sycl_slhdsa *ctx, void *dst, const void *src,
+                                                              size_t bytes);
 
 #ifdef __cplusplus
 }

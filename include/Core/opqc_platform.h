@@ -22,7 +22,7 @@ OPQC_EXTERN_C_BEGIN
  * is not read again. Used to destroy intermediate values (FIPS 203,
  * Section 3.3).
  */
-void opqc_zeroize(void *p, size_t len);
+OPENPQC_API void opqc_zeroize(void *p, size_t len);
 
 /*
  * Fills out[0..len) with random bytes. Returns 0 on success and a nonzero
@@ -43,7 +43,7 @@ void opqc_zeroize(void *p, size_t len);
  * The result must be checked (OPQC_MUST_CHECK): after a failure out holds
  * zeros, not random bytes.
  */
-OPQC_MUST_CHECK int opqc_randombytes(uint8_t *out, size_t len);
+OPQC_MUST_CHECK OPENPQC_API int opqc_randombytes(uint8_t *out, size_t len);
 
 OPQC_EXTERN_C_END
 

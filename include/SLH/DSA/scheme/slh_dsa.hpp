@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_ct.h"
 #include "../../../Core/opqc_platform.h"
 #include "../../../Core/prehash.hpp"
@@ -47,6 +48,7 @@
 #include "slhdsa_internal.hpp"
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 using openpqc::max_context_bytes;
 using openpqc::max_prehash_bytes;
@@ -275,4 +277,5 @@ Status hash_verify(std::span<const std::uint8_t, Sizes<P>::pk> PK, std::span<con
     return internal::verify<P>(PK, {domain, ctx, OID, PH_M}, SIG) ? Status::ok : Status::invalid_signature;   // 21
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

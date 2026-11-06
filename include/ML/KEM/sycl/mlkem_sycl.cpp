@@ -32,6 +32,9 @@
 // sampled coefficients (512 bytes): SamplePolyCBD then runs in the arithmetic
 // stage, spread over the 32 work-items of the team.
 
+// Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
+#define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
 #include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
 
 #include <sycl/sycl.hpp>

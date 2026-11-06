@@ -27,11 +27,13 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_sha3.h"
 #include "../../../Core/xof.hpp"
 #include "../../../Core/zeroize.hpp"
 
 namespace openpqc::mlkem {
+OPENPQC_ABI_BEGIN
 
 using Bytes32 = std::array<std::uint8_t, 32>;
 using openpqc::ByteStrings;   // Core/xof.hpp: hashed as the concatenation
@@ -64,4 +66,5 @@ void PRF(std::span<std::uint8_t, 64 * Eta> out, std::span<const std::uint8_t, 32
     openpqc::sponge(OPQC_SHAKE256_RATE, OPQC_SHAKE_SUFFIX, out, {s, b_bytes});
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mlkem

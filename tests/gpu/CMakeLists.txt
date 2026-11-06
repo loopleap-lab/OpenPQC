@@ -20,7 +20,7 @@ if(OPENPQC_HAVE_SYCL)
     # ML-KEM: the three parameter sets, the status and error contract, fresh coins and two threads on one context,
     # on every device
     add_executable(test_mlkem_sycl test_mlkem_sycl.cpp)
-    target_link_libraries(test_mlkem_sycl PRIVATE openpqc_mlkem_sycl openpqc_mlkem)
+    target_link_libraries(test_mlkem_sycl PRIVATE OpenPQC::sycl openpqc_mlkem)   # the GPU library, as applications use it
     target_compile_features(test_mlkem_sycl PRIVATE cxx_std_20)
     add_test(NAME mlkem_sycl COMMAND test_mlkem_sycl 1000)
     set_tests_properties(mlkem_sycl PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 1800)
@@ -41,7 +41,7 @@ if(OPENPQC_HAVE_SYCL)
     # fault inside the signing loop on an NVIDIA GPU, after which CUDA refuses all work of the process on that
     # device: a process of its own (skipped without an NVIDIA device).
     add_executable(test_mldsa_sycl test_mldsa_sycl.cpp)
-    target_link_libraries(test_mldsa_sycl PRIVATE openpqc_mldsa_sycl openpqc_mldsa)
+    target_link_libraries(test_mldsa_sycl PRIVATE OpenPQC::sycl openpqc_mldsa)   # the GPU library, as applications use it
     target_compile_features(test_mldsa_sycl PRIVATE cxx_std_20)
     add_test(NAME mldsa_sycl COMMAND test_mldsa_sycl 200)
     add_test(NAME mldsa_sycl_sticky COMMAND test_mldsa_sycl sticky)
@@ -63,7 +63,7 @@ if(OPENPQC_HAVE_SYCL)
     # the i7-11370H: DPC++ (Iris Xe twice, RTX 3050) 9-15 minutes, AdaptiveCpp (RTX 3050, Iris Xe twice, OpenMP
     # host) 42-56 minutes, the longer times when the devices' JIT caches are cold.
     add_executable(test_slhdsa_sycl test_slhdsa_sycl.cpp)
-    target_link_libraries(test_slhdsa_sycl PRIVATE openpqc_slhdsa_sycl openpqc_slhdsa)
+    target_link_libraries(test_slhdsa_sycl PRIVATE OpenPQC::sycl openpqc_slhdsa)   # the GPU library, as applications use it
     target_compile_features(test_slhdsa_sycl PRIVATE cxx_std_20)
     add_test(NAME slhdsa_sycl COMMAND test_slhdsa_sycl)
     set_tests_properties(slhdsa_sycl PROPERTIES SKIP_RETURN_CODE 77 LABELS "gpu;slow" TIMEOUT 7200)

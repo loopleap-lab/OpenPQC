@@ -227,9 +227,9 @@ typedef struct opqc_sycl_mldsa opqc_sycl_mldsa;
  * operations. Then the self-test runs (above): 0, -1, -2 or
  * OPQC_SYCL_MLDSA_SELF_TEST_FAIL, and *ctx is NULL unless 0.
  */
-OPQC_MUST_CHECK int opqc_sycl_mldsa_create(opqc_sycl_mldsa **ctx, int level, size_t max_batch, int device);
-void opqc_sycl_mldsa_destroy(opqc_sycl_mldsa *ctx);
-const char *opqc_sycl_mldsa_device_name(const opqc_sycl_mldsa *ctx);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_create(opqc_sycl_mldsa **ctx, int level, size_t max_batch, int device);
+OPENPQC_API void opqc_sycl_mldsa_destroy(opqc_sycl_mldsa *ctx);
+OPENPQC_API const char *opqc_sycl_mldsa_device_name(const opqc_sycl_mldsa *ctx);
 
 /*
  * For experiments: the scheduling of the signing loop, which does not change any
@@ -248,27 +248,31 @@ const char *opqc_sycl_mldsa_device_name(const opqc_sycl_mldsa *ctx);
  * page-locked coin buffer or of the copy of the coins), leave them unchanged, so they
  * are then still those of the call before it.
  */
-OPQC_MUST_CHECK int opqc_sycl_mldsa_set_speculation(opqc_sycl_mldsa *ctx, unsigned max_attempts, size_t fill);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_sign_stats(const opqc_sycl_mldsa *ctx, size_t *rounds, size_t *attempts);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_set_speculation(opqc_sycl_mldsa *ctx, unsigned max_attempts,
+                                                                size_t fill);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_sign_stats(const opqc_sycl_mldsa *ctx, size_t *rounds,
+                                                           size_t *attempts);
 
-OPQC_MUST_CHECK int opqc_sycl_mldsa_keypair_derand(opqc_sycl_mldsa *ctx, uint8_t *pk, uint8_t *sk,
-                                                   const uint8_t *seeds, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_keypair(opqc_sycl_mldsa *ctx, uint8_t *pk, uint8_t *sk, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_keypair_derand(opqc_sycl_mldsa *ctx, uint8_t *pk, uint8_t *sk,
+                                                               const uint8_t *seeds, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_keypair(opqc_sycl_mldsa *ctx, uint8_t *pk, uint8_t *sk, size_t n);
 
-OPQC_MUST_CHECK int opqc_sycl_mldsa_sign_derand(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *msg,
-                                                const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                                const uint8_t *rnd, const uint8_t *sk, int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_sign(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *msg,
-                                         const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                         const uint8_t *sk, int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_sign_mu_derand(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *mu,
-                                                   const uint8_t *rnd, const uint8_t *sk, int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_sign_derand(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *msg,
+                                                            const uint64_t *offsets, const uint8_t *ctxstr,
+                                                            size_t ctxlen, const uint8_t *rnd, const uint8_t *sk,
+                                                            int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_sign(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *msg,
+                                                     const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
+                                                     const uint8_t *sk, int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_sign_mu_derand(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *mu,
+                                                               const uint8_t *rnd, const uint8_t *sk, int32_t *status,
+                                                               size_t n);
 
-OPQC_MUST_CHECK int opqc_sycl_mldsa_verify(opqc_sycl_mldsa *ctx, const uint8_t *sig, const uint8_t *msg,
-                                           const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                           const uint8_t *pk, int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_verify_mu(opqc_sycl_mldsa *ctx, const uint8_t *sig, const uint8_t *mu,
-                                              const uint8_t *pk, int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_verify(opqc_sycl_mldsa *ctx, const uint8_t *sig, const uint8_t *msg,
+                                                       const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
+                                                       const uint8_t *pk, int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_verify_mu(opqc_sycl_mldsa *ctx, const uint8_t *sig, const uint8_t *mu,
+                                                          const uint8_t *pk, int32_t *status, size_t n);
 
 /*
  * Batches under one key: sk (or pk) is a single key in device memory, used for all n
@@ -277,31 +281,35 @@ OPQC_MUST_CHECK int opqc_sycl_mldsa_verify_mu(opqc_sycl_mldsa *ctx, const uint8_
  * for signing NTT(s1), NTT(s2), NTT(t0), for verifying tr) is computed once per launch
  * instead of once per operation.
  */
-OPQC_MUST_CHECK int opqc_sycl_mldsa_sign_one_key_derand(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *msg,
-                                                        const uint64_t *offsets, const uint8_t *ctxstr,
-                                                        size_t ctxlen, const uint8_t *rnd, const uint8_t *sk,
-                                                        int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_sign_one_key(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *msg,
-                                                 const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                                 const uint8_t *sk, int32_t *status, size_t n);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_verify_one_key(opqc_sycl_mldsa *ctx, const uint8_t *sig, const uint8_t *msg,
-                                                   const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
-                                                   const uint8_t *pk, int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_sign_one_key_derand(opqc_sycl_mldsa *ctx, uint8_t *sig,
+                                                                    const uint8_t *msg, const uint64_t *offsets,
+                                                                    const uint8_t *ctxstr, size_t ctxlen,
+                                                                    const uint8_t *rnd, const uint8_t *sk,
+                                                                    int32_t *status, size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_sign_one_key(opqc_sycl_mldsa *ctx, uint8_t *sig, const uint8_t *msg,
+                                                             const uint64_t *offsets, const uint8_t *ctxstr,
+                                                             size_t ctxlen, const uint8_t *sk, int32_t *status,
+                                                             size_t n);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_verify_one_key(opqc_sycl_mldsa *ctx, const uint8_t *sig,
+                                                               const uint8_t *msg, const uint64_t *offsets,
+                                                               const uint8_t *ctxstr, size_t ctxlen, const uint8_t *pk,
+                                                               int32_t *status, size_t n);
 
 /* Waits until all queued work of the context is done: 0, or -2 if the context has
  * failed, before or during the wait (Device failures). */
-OPQC_MUST_CHECK int opqc_sycl_mldsa_sync(opqc_sycl_mldsa *ctx);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_sync(opqc_sycl_mldsa *ctx);
 
 /* Memory: device memory on the context's device, and page-locked host memory
  * (faster transfers); both are freed with opqc_sycl_mldsa_free. Copies in any
  * direction: memcpy waits for the copy (and so for the context's earlier work),
  * memcpy_async queues it behind that work. -1 for a NULL pointer (bytes > 0);
  * -2 once the context has failed, also when the copy was still made. */
-void *opqc_sycl_mldsa_malloc(opqc_sycl_mldsa *ctx, size_t bytes);
-void *opqc_sycl_mldsa_malloc_host(opqc_sycl_mldsa *ctx, size_t bytes);
-void opqc_sycl_mldsa_free(opqc_sycl_mldsa *ctx, void *p);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_memcpy(opqc_sycl_mldsa *ctx, void *dst, const void *src, size_t bytes);
-OPQC_MUST_CHECK int opqc_sycl_mldsa_memcpy_async(opqc_sycl_mldsa *ctx, void *dst, const void *src, size_t bytes);
+OPENPQC_API void *opqc_sycl_mldsa_malloc(opqc_sycl_mldsa *ctx, size_t bytes);
+OPENPQC_API void *opqc_sycl_mldsa_malloc_host(opqc_sycl_mldsa *ctx, size_t bytes);
+OPENPQC_API void opqc_sycl_mldsa_free(opqc_sycl_mldsa *ctx, void *p);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_memcpy(opqc_sycl_mldsa *ctx, void *dst, const void *src, size_t bytes);
+OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_memcpy_async(opqc_sycl_mldsa *ctx, void *dst, const void *src,
+                                                             size_t bytes);
 
 #ifdef __cplusplus
 }

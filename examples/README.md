@@ -43,7 +43,7 @@ example:
 
 ```c
 #include "ML/DSA/openpqc_mldsa.h"               /* the sizes MLDSA65_* */
-#include "ML/DSA/sycl/openpqc_mldsa_sycl.h"     /* link openpqc::mldsa_sycl */
+#include "ML/DSA/sycl/openpqc_mldsa_sycl.h"     /* link OpenPQC::sycl */
 
 opqc_sycl_mldsa *gpu;
 if (opqc_sycl_mldsa_create(&gpu, 65, n, -1) != 0)   /* 1. parameter set, largest batch, device (-1: default) */

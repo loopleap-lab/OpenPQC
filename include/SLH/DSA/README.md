@@ -136,7 +136,7 @@ reference's NIST KAT generator gives upstream's SHA-256 for all twelve sets thro
 
 ## Usage
 
-C (link `openpqc::slhdsa`):
+C (link `OpenPQC::openpqc`):
 
 ```c
 #include "SLH/DSA/openpqc_slhdsa.h"
@@ -205,7 +205,7 @@ byte-identical to the CPU library:
 
 ```c
 #include "SLH/DSA/openpqc_slhdsa.h"
-#include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"   /* link openpqc::slhdsa_sycl */
+#include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"   /* link OpenPQC::sycl */
 
 opqc_sycl_slhdsa *ctx;
 if (opqc_sycl_slhdsa_create(&ctx, OPENPQC_SLHDSA_SHA2_128F, max_batch, -1) != 0)  /* -1: default device */
@@ -623,11 +623,14 @@ work.
 
 ## Build
 
-`include/SLH/DSA/CMakeLists.txt` compiles `slhdsa.cpp` once and makes two libraries of it: `openpqc_slhdsa` takes its
+`include/SLH/DSA/CMakeLists.txt` compiles `slhdsa.cpp` once. The objects go into the library `openpqc`
+(`OpenPQC::openpqc`, which applications link; see the top-level README) and into two libraries for the tests and
+benchmarks, built only when they need them and never installed: `openpqc_slhdsa` takes its
 randomness from the operating system, `openpqc_slhdsa_testrng` calls the application's `randombytes()` (tests only;
 never link it into a program together with a production library: both define `opqc_randombytes`, and the linker
 keeps the first definition it finds, without an error).
-`openpqc_slhdsa_sycl` is added when a SYCL compiler is found (see the top-level README), with the development option
+The GPU backend is part of the GPU library `openpqc_sycl` when a SYCL compiler is found (see the top-level
+README); `openpqc_slhdsa_sycl` is its static copy for the tests, with the development option
 `OPENPQC_SLHDSA_SYCL_SETS` described above.
 
 ## Tests

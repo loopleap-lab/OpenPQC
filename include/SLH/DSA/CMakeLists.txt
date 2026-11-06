@@ -13,7 +13,8 @@
 #   openpqc_slhdsa           the library; randomness from the operating system
 #   openpqc_slhdsa_testrng   the same code, randomness from the application's
 #                            randombytes(), for the tests
-#   openpqc_slhdsa_sycl      the SYCL backend (OPENPQC_SYCL, see the top-level CMakeLists.txt)
+#   openpqc_slhdsa_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
+#                           library for the tests and benchmarks (top-level CMakeLists.txt)
 #
 # A build of slhdsa.cpp with the definition OPENPQC_SLHDSA_KEYGEN_PCT adds the
 # pair-wise consistency test of FIPS 140-3 to key generation (scheme/slh_dsa.hpp);
@@ -21,15 +22,17 @@
 
 add_library(openpqc_slhdsa_objects OBJECT slhdsa.cpp)
 target_include_directories(openpqc_slhdsa_objects PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
 target_compile_features(openpqc_slhdsa_objects PUBLIC cxx_std_20)
 target_link_libraries(openpqc_slhdsa_objects PRIVATE openpqc_strict_warnings)
-set_target_properties(openpqc_slhdsa_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
+openpqc_library_objects(openpqc_slhdsa_objects NO_CXX_RUNTIME)   # cmake/OpenPQCLibrary.cmake
 
-foreach(variant "" _testrng)
-    add_library(openpqc_slhdsa${variant} STATIC $<TARGET_OBJECTS:openpqc_slhdsa_objects>)
+foreach(variant "" ${OPENPQC_TESTRNG_VARIANT})   # _testrng only with the tests (top-level CMakeLists.txt)
+    add_library(openpqc_slhdsa${variant} STATIC EXCLUDE_FROM_ALL $<TARGET_OBJECTS:openpqc_slhdsa_objects>)
     target_include_directories(openpqc_slhdsa${variant} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+        $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
     target_link_libraries(openpqc_slhdsa${variant} PUBLIC openpqc_core${variant})
     set_target_properties(openpqc_slhdsa${variant} PROPERTIES LINKER_LANGUAGE CXX)
 endforeach()
@@ -46,15 +49,11 @@ add_library(openpqc::slhdsa ALIAS openpqc_slhdsa)
 set(OPENPQC_SLHDSA_SYCL_SETS "" CACHE STRING
     "Development only: the SLH-DSA parameter-set ids (1-12) that the SYCL backend contains, e.g. 3,4; empty: all")
 if(OPENPQC_HAVE_SYCL)
-    add_library(openpqc_slhdsa_sycl STATIC sycl/slhdsa_sycl.cpp)
-    add_library(openpqc::slhdsa_sycl ALIAS openpqc_slhdsa_sycl)
-    target_include_directories(openpqc_slhdsa_sycl PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-    target_compile_features(openpqc_slhdsa_sycl PRIVATE cxx_std_20)
-    target_link_libraries(openpqc_slhdsa_sycl PUBLIC openpqc_core openpqc_core_sycl)
+    set(_openpqc_slhdsa_sycl_definitions "")
     if(OPENPQC_SLHDSA_SYCL_SETS)
-        target_compile_definitions(openpqc_slhdsa_sycl PUBLIC OPENPQC_SLHDSA_SYCL_SETS=${OPENPQC_SLHDSA_SYCL_SETS})
+        set(_openpqc_slhdsa_sycl_definitions OPENPQC_SLHDSA_SYCL_SETS=${OPENPQC_SLHDSA_SYCL_SETS})
     endif()
-    set_target_properties(openpqc_slhdsa_sycl PROPERTIES LINKER_LANGUAGE CXX POSITION_INDEPENDENT_CODE ON)
-    openpqc_sycl_sources(openpqc_slhdsa_sycl sycl/slhdsa_sycl.cpp)
+    _openpqc_sycl_backend(openpqc_slhdsa_sycl sycl/slhdsa_sycl.cpp DEFINITIONS ${_openpqc_slhdsa_sycl_definitions})
+    add_library(openpqc::slhdsa_sycl ALIAS openpqc_slhdsa_sycl)
+    target_link_libraries(openpqc_slhdsa_sycl PUBLIC openpqc_core openpqc_core_sycl)
 endif()

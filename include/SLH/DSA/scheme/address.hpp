@@ -15,9 +15,11 @@
 #include <array>
 #include <cstdint>
 
+#include "../../../Core/abi.hpp"
 #include "../math/slhdsa_address.h"
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 // The types of address (Section 4.2, footnote 5)
 inline constexpr std::uint32_t WOTS_HASH = SLHDSA_WOTS_HASH;
@@ -51,4 +53,5 @@ struct Adrs {
     }
 };
 
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

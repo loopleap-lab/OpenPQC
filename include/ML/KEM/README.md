@@ -131,7 +131,7 @@ that the outputs are byte-identical to mlkem-native's.
 
 ## Usage
 
-C (link `openpqc::mlkem`):
+C (link `OpenPQC::openpqc`):
 
 ```c
 #include "ML/KEM/openpqc_mlkem.h"
@@ -231,7 +231,7 @@ buffers of the context that are still allocated (the header, "What the buffer ch
 
 ```c
 #include "ML/KEM/openpqc_mlkem.h"             /* the sizes MLKEM768_* */
-#include "ML/KEM/sycl/openpqc_mlkem_sycl.h"   /* link openpqc::mlkem_sycl */
+#include "ML/KEM/sycl/openpqc_mlkem_sycl.h"   /* link OpenPQC::sycl */
 
 opqc_sycl_mlkem *ctx;
 if (opqc_sycl_mlkem_create(&ctx, 768, max_batch, -1) != 0)   /* -1: default device (or OPENPQC_SYCL_DEVICE) */
@@ -319,12 +319,15 @@ both toolchains and the Iris Xe under DPC++'s Level Zero), and smaller leaks not
 
 ## Build
 
-`include/ML/KEM/CMakeLists.txt` compiles `mlkem.cpp` once and makes two libraries of it. `openpqc_mlkem` takes its
+`include/ML/KEM/CMakeLists.txt` compiles `mlkem.cpp` once. The objects go into the library `openpqc`
+(`OpenPQC::openpqc`, which applications link; see the top-level README) and into two libraries for the tests and
+benchmarks, built only when they need them and never installed: `openpqc_mlkem` takes its
 randomness from the operating system; `openpqc_mlkem_testrng` calls the application's `randombytes()` and exists for
 the tests: never link it into a program for production use, nor together with a production library (both define
-`opqc_randombytes`, and the linker keeps the first definition it finds, without an error). `openpqc_mlkem_sycl` is
-added when a SYCL compiler is found (see the top-level README). The CMake option `OPENPQC_MLKEM_KEYGEN_PCT` compiles
-the pair-wise consistency test into both CPU libraries; the presets `gcc-release-pct` and `clang-release-pct` build
+`opqc_randombytes`, and the linker keeps the first definition it finds, without an error). The GPU backend
+is part of the GPU library `openpqc_sycl` when a SYCL compiler is found (see the top-level README);
+`openpqc_mlkem_sycl` is its static copy for the tests. The CMake option `OPENPQC_MLKEM_KEYGEN_PCT` compiles
+the pair-wise consistency test into the CPU libraries (`openpqc` and the tests' copies); the presets `gcc-release-pct` and `clang-release-pct` build
 with it (and with ML-DSA's `OPENPQC_MLDSA_KEYGEN_PCT`) and run the quick ML-KEM and ML-DSA tests, without the
 constant-time ones, against those libraries.
 

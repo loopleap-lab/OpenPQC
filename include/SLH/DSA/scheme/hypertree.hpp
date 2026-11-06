@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_ct.h"
 #include "../math/slhdsa_encode.h"
 #include "address.hpp"
@@ -27,6 +28,7 @@
 #include "xmss.hpp"
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 // SIG_HT.getXMSSSignature(j): SIG_HT[j (h' + len) n : (j + 1)(h' + len) n] (Algorithm 13, lines 3 and 10)
 template <ParameterSet P, class T>
@@ -82,4 +84,5 @@ bool ht_verify(std::span<const std::uint8_t, P::n> M, std::span<const std::uint8
     return opqc_ct_memcmp(node.data(), PK_root.data(), P::n) == 0;       // 13-17: node = PK.root
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

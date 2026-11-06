@@ -109,6 +109,9 @@
 // unrolled); no register array kept across a barrier (the tree stages re-read what they need after
 // each); every output word written once; no shift by 64 (idx_tree has 64 bits for SLH-DSA-*-256f).
 
+// Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
+#define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
 #include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"
 
 #include <sycl/sycl.hpp>

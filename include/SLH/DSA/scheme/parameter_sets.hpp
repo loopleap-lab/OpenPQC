@@ -18,9 +18,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../../Core/abi.hpp"
 #include "../math/slhdsa_encode.h"
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 // The hash family that instantiates H_msg, PRF, PRF_msg, F, H and T_l (Section 11)
 enum class HashFamily { sha2, shake };
@@ -149,4 +151,5 @@ static_assert(table2_sizes<params::SLH_DSA_SHA2_192f, 48, 35664> && table2_sizes
 static_assert(table2_sizes<params::SLH_DSA_SHA2_256s, 64, 29792> && table2_sizes<params::SLH_DSA_SHAKE_256s, 64, 29792>);
 static_assert(table2_sizes<params::SLH_DSA_SHA2_256f, 64, 49856> && table2_sizes<params::SLH_DSA_SHAKE_256f, 64, 49856>);
 
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

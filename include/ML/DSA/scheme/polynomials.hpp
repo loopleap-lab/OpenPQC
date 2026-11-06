@@ -37,6 +37,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/zeroize.hpp"
 #include "../math/mldsa_field.h"
 #include "../math/mldsa_ntt.h"
@@ -44,6 +45,7 @@
 #include "parameter_sets.hpp"
 
 namespace openpqc::mldsa {
+OPENPQC_ABI_BEGIN
 
 // An element of R_q (coefficients w_0, ..., w_255 of w = w_0 + w_1 X + ... + w_255 X^255)
 // or of T_q (an NTT representation w^[0], ..., w^[255]), Section 2.4.1. The derived
@@ -223,4 +225,5 @@ unsigned count_ones(const PolyVec<N>& h) {
     return n;
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mldsa

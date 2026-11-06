@@ -16,7 +16,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../../Core/abi.hpp"
+
 namespace openpqc::mlkem::gpu::self_test {
+OPENPQC_ABI_BEGIN
 
 // Everything here has internal linkage: every translation unit uses the inputs and answers it was compiled with,
 // also when a program links two that disagree (the control builds of the test do).
@@ -91,4 +94,5 @@ constexpr std::array<Answers, 3> answers = {{
 }};
 // clang-format on
 
+OPENPQC_ABI_END
 } // namespace openpqc::mlkem::gpu::self_test

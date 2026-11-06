@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_ct.h"
 #include "../../../Core/opqc_platform.h"
 #include "../../../Core/zeroize.hpp"
@@ -56,6 +57,7 @@
 #include "sampling.hpp"
 
 namespace openpqc::mldsa {
+OPENPQC_ABI_BEGIN
 
 // Results. The values are those of the OPENPQC_MLDSA_ERR_* macros of the C API.
 enum class Status : int {
@@ -268,4 +270,5 @@ bool verify(std::span<const std::uint8_t, Sizes<P>::pk> pk, ByteStrings M_prime,
 }
 
 } // namespace internal
+OPENPQC_ABI_END
 } // namespace openpqc::mldsa

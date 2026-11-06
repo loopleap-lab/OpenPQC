@@ -16,6 +16,9 @@
 // pk or sk, so their failures leave them unchanged, and ss is never set to a
 // fixed value; a failed pair-wise consistency check zeroizes pk and sk
 // (scheme/ml_kem.hpp).
+// Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
+#define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
 #include "ML/KEM/openpqc_mlkem.h"
 
 #include <cstddef>

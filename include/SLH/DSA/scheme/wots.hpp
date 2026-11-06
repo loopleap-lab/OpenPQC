@@ -20,12 +20,14 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../math/slhdsa_encode.h"
 #include "address.hpp"
 #include "crypto_functions.hpp"
 #include "parameter_sets.hpp"
 
 namespace openpqc::slhdsa {
+OPENPQC_ABI_BEGIN
 
 // Algorithm 5: tmp <- chain(X, i, s, PK.seed, ADRS), F iterated s times on X from position i
 // (i + s < w). ADRS has the type WOTS_HASH and the address of the chain; the hash address is set here.
@@ -129,4 +131,5 @@ Value<P::n> wots_pk_from_sig(std::span<const std::uint8_t, Sizes<P>::wots_sig> s
     return pk_sig;                                                       // 16
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::slhdsa

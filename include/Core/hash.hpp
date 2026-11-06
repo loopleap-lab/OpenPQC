@@ -34,11 +34,13 @@
 #include <cstdint>
 #include <span>
 
+#include "abi.hpp"
 #include "opqc_platform.h"
 #include "opqc_sha2.h"
 #include "opqc_sha3.h"
 
 namespace openpqc::fips202 {
+OPENPQC_ABI_BEGIN
 
 inline constexpr std::size_t SHAKE128_RATE = OPQC_SHAKE128_RATE;
 inline constexpr std::size_t SHAKE256_RATE = OPQC_SHAKE256_RATE;
@@ -126,10 +128,12 @@ inline void sha3_512(std::span<std::uint8_t, 64> h, std::span<const std::uint8_t
     opqc_sha3_512(h.data(), in.data(), in.size());
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::fips202
 
 // FIPS 180-4: SHA-224, SHA-256, SHA-384, SHA-512, SHA-512/224, SHA-512/256 (one-shot)
 namespace openpqc::sha2 {
+OPENPQC_ABI_BEGIN
 
 inline void sha224(std::span<std::uint8_t, 28> h, std::span<const std::uint8_t> in) {
     opqc_sha224(h.data(), in.data(), in.size());
@@ -150,4 +154,5 @@ inline void sha512_256(std::span<std::uint8_t, 32> h, std::span<const std::uint8
     opqc_sha512_256(h.data(), in.data(), in.size());
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::sha2

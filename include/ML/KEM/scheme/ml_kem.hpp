@@ -44,6 +44,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../../Core/abi.hpp"
 #include "../../../Core/opqc_ct.h"
 #include "../../../Core/opqc_platform.h"
 #include "../../../Core/zeroize.hpp"
@@ -59,6 +60,7 @@
 #endif
 
 namespace openpqc::mlkem {
+OPENPQC_ABI_BEGIN
 
 // Results. The values are those of mlkem-native's MLK_ERR_* codes and of the
 // OPENPQC_MLKEM_ERR_* macros of the C API.
@@ -328,4 +330,5 @@ Status decaps(std::span<std::uint8_t, 32> K, std::span<const std::uint8_t, Sizes
     return s;
 }
 
+OPENPQC_ABI_END
 } // namespace openpqc::mlkem

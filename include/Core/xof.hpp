@@ -27,6 +27,7 @@
 #include <initializer_list>
 #include <span>
 
+#include "abi.hpp"
 #include "opqc_platform.h"
 #include "opqc_sha3.h"
 #include "zeroize.hpp"
@@ -38,6 +39,7 @@
 #endif
 
 namespace openpqc {
+OPENPQC_ABI_BEGIN
 
 // A list of byte strings that is hashed as their concatenation: H({a, b, c}) is H(a || b || c)
 using ByteStrings = std::initializer_list<std::span<const std::uint8_t>>;
@@ -96,4 +98,5 @@ private:
     bool squeezing_ = false;
 };
 
+OPENPQC_ABI_END
 } // namespace openpqc

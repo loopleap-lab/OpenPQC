@@ -52,6 +52,9 @@
 // OPENPQC_MLDSA_KEYGEN_PCT tests every key pair that KeyGen makes, as the CPU
 // library's option does.
 
+// Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
+#define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
 #include "ML/DSA/sycl/openpqc_mldsa_sycl.h"
 
 #include <sycl/sycl.hpp>

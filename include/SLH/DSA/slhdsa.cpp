@@ -13,6 +13,9 @@
 // failure leaves them unchanged; only a failed pair-wise consistency test
 // after KeyGen zeroizes pk and sk (scheme/slh_dsa.hpp). The check of ph below
 // comes before any write as well.
+// Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
+#define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
 #include "SLH/DSA/openpqc_slhdsa.h"
 
 #include <cstddef>
