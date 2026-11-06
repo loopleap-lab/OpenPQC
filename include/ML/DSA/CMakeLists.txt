@@ -16,7 +16,7 @@
 #   openpqc_mldsa_testrng   the same, with randomness from the application's randombytes() (tests only)
 #   (both built only when a test or benchmark needs them)
 #   openpqc_mldsa_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
-#                           library for the tests and benchmarks (top-level CMakeLists.txt)
+#                           library for the benchmarks (top-level CMakeLists.txt; the tests use OpenPQC::sycl_testing)
 
 add_library(openpqc_mldsa_objects OBJECT mldsa.cpp)
 target_include_directories(openpqc_mldsa_objects PUBLIC

@@ -129,6 +129,7 @@
 
 #include "Core/opqc_platform.h"
 #include "Core/prehash.hpp"
+#include "Core/sycl/opqc_sycl_backends.hpp"
 #include "Core/sycl/opqc_sycl_context.hpp"
 #include "Core/sycl/opqc_sycl_messages.hpp"
 #include "Core/sycl/opqc_sycl_runtime.hpp"
@@ -1312,8 +1313,8 @@ struct opqc_sycl_slhdsa : openpqc::gpu::Context<gpu::SECTIONS> {
     Workspace ws{};
     std::size_t local_mem_bytes = 0;   // info::device::local_mem_size
 
-    opqc_sycl_slhdsa(const sycl::device& dev, int set, std::size_t batch)
-        : openpqc::gpu::Context<gpu::SECTIONS>(dev, batch), param_set(set) {}
+    opqc_sycl_slhdsa(const sycl::device& dev, int set, std::size_t batch, const sycl::context* app)
+        : openpqc::gpu::Context<gpu::SECTIONS>(dev, batch, app), param_set(set) {}
 };
 
 namespace {
@@ -1443,7 +1444,12 @@ extern "C" std::size_t opqc_sycl_slhdsa_workspace_bytes(int param_set, std::size
     return total;
 }
 
-extern "C" int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa** out, int param_set, std::size_t max_batch, int device) {
+namespace {
+
+// create, on the device with index `device` (opqc_sycl_slhdsa_create) or on the device `given`, in the SYCL
+// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp)
+int create_context(opqc_sycl_slhdsa** out, int param_set, std::size_t max_batch, int device, const sycl::device* given,
+           const sycl::context* app) {
     if (!out) return -1;
     *out = nullptr;
     std::array<std::size_t, gpu::SECTIONS> per_op{};
@@ -1459,10 +1465,11 @@ extern "C" int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa** out, int param_set, st
     if (max_batch == 0 || max_batch > static_cast<std::size_t>(INT_MAX) / items) return -1;
     return guarded([&] {
         sycl::device dev;
-        if (!openpqc::gpu::select_device(device, dev)) return -1;
+        if (given) dev = *given;
+        else if (!openpqc::gpu::select_device(device, dev)) return -1;
         const auto local_mem = static_cast<std::size_t>(dev.get_info<sycl::info::device::local_mem_size>());
         if (local_mem < local) return -1;   // the tree stages' local memory per work-group
-        auto* ctx = new opqc_sycl_slhdsa(dev, param_set, max_batch);
+        auto* ctx = new opqc_sycl_slhdsa(dev, param_set, max_batch, app);
         ctx->local_mem_bytes = local_mem;
         std::uint8_t* head = nullptr;
         try {
@@ -1482,6 +1489,12 @@ extern "C" int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa** out, int param_set, st
         *out = ctx;
         return 0;
     });
+}
+
+} // namespace
+
+extern "C" int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa** out, int param_set, std::size_t max_batch, int device) {
+    return create_context(out, param_set, max_batch, device, nullptr, nullptr);
 }
 
 // Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device still accepts
@@ -1509,17 +1522,25 @@ extern "C" int opqc_sycl_slhdsa_keypair_derand(opqc_sycl_slhdsa* ctx, std::uint8
 
 namespace {
 
-// The messages of a call: M with offsets (pure), PH(M) at a fixed stride (pre-hash), or M' with offsets
-// (internal)
+// The messages of a call: M with offsets or at a fixed stride (pure), PH(M) at a fixed stride (pre-hash), or M'
+// with offsets (internal). len and stride: Core's Messages (Core/sycl/opqc_sycl_messages.hpp), from the GPU API.
 enum class Form { pure, prehash, internal };
 struct CallMessages {
     Form form;
     const std::uint8_t* msg;        // M, PH(M) or M'
-    const std::uint64_t* offsets;   // pure and internal
+    const std::uint64_t* offsets;   // pure and internal, unless strided
     int ph;                         // pre-hash: the OPENPQC_PREHASH_* value
     const std::uint8_t* ctxstr;
     std::size_t ctxlen;
+    std::uint64_t len = openpqc::gpu::UNCHECKED_LENGTH;   // the bytes of msg: a message outside is read as empty
+    bool strided = false;                                 // pure: messages of stride bytes each, no offsets
+    std::uint64_t stride = 0;
 };
+
+// The messages of a pure or internal call as the kernels read them
+openpqc::gpu::Messages messages_of(const CallMessages& m) {
+    return {m.msg, m.offsets, m.ctxlen, m.len, m.strided, m.stride};
+}
 
 // What check_messages finds out about the messages of a call: for the pre-hash versions, PH's length and OID
 struct MessageInfo {
@@ -1539,7 +1560,7 @@ bool check_messages(const CallMessages& m, MessageInfo& info) {
         info.oid = openpqc::prehash_oid(ph);
         return aligned(m.msg);
     }
-    return m.offsets && aligned(m.offsets);
+    return m.strided || (m.offsets && aligned(m.offsets));
 }
 
 // The messages of operations off, off + 1, ... of a checked call: the offsets, or the pre-hashes PH(M), from
@@ -1548,6 +1569,7 @@ bool check_messages(const CallMessages& m, MessageInfo& info) {
 CallMessages messages_from(const CallMessages& m, const MessageInfo& info, std::size_t off) {
     CallMessages r = m;
     if (m.form == Form::prehash) r.msg = m.msg + off * info.phlen;
+    else if (m.strided) r.msg = m.msg + off * m.stride;
     else r.offsets = m.offsets + off;
     return r;
 }
@@ -1570,8 +1592,8 @@ int put_context(opqc_sycl_slhdsa* ctx, const CallMessages& m, const MessageInfo&
 gpu::MessageForm chunk_messages(opqc_sycl_slhdsa* ctx, const CallMessages& m, const MessageInfo& info,
                                 std::size_t off, std::size_t count) {
     switch (m.form) {
-        case Form::pure: return {{m.msg, m.offsets + off, m.ctxlen}, 0, 0, false};
-        case Form::internal: return {{m.msg, m.offsets + off, 0}, 0, 0, true};
+        case Form::pure: return {openpqc::gpu::chunk(messages_of(m), off), 0, 0, false};
+        case Form::internal: return {openpqc::gpu::chunk(messages_of(m), off), 0, 0, true};
         default: {
             std::uint64_t* offs = ctx->ws.offsets;
             const std::uint64_t len = info.phlen;
@@ -1856,4 +1878,45 @@ extern "C" int opqc_sycl_slhdsa_memcpy(opqc_sycl_slhdsa* ctx, void* dst, const v
 
 extern "C" int opqc_sycl_slhdsa_memcpy_async(opqc_sycl_slhdsa* ctx, void* dst, const void* src, std::size_t bytes) {
     return openpqc::gpu::copy(ctx, dst, src, bytes, false);
+}
+
+// ---------------------------------------------------------------------- the GPU API (openpqc/sycl.h)
+
+namespace {
+
+// The messages of a GPU API call: PH(M) at the stride of PH's length (pre-hash; the API has checked that the
+// messages are strided so), or M with offsets or a stride and the buffer's length (pure)
+CallMessages call_messages(const openpqc::gpu::Messages& msgs, const std::uint8_t* ctxstr, int ph) {
+    if (ph != 0) return prehash_messages(msgs.msg, ph, ctxstr, msgs.ctxlen);
+    CallMessages m = pure_messages(msgs.msg, msgs.strided ? nullptr : msgs.offsets, ctxstr, msgs.ctxlen);
+    m.len = msgs.len;
+    m.strided = msgs.strided;
+    m.stride = msgs.stride;
+    return m;
+}
+
+} // namespace
+
+int openpqc::gpu::slhdsa_create(opqc_sycl_slhdsa** out, int param_set, std::size_t max_batch, const sycl::device& dev,
+                                const sycl::context* app) {
+    return create_context(out, param_set, max_batch, -1, &dev, app);
+}
+
+openpqc::gpu::Handle openpqc::gpu::handle(opqc_sycl_slhdsa* ctx) {
+    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch};
+}
+
+int openpqc::gpu::slhdsa_sign(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const Messages& msgs,
+                              const std::uint8_t* ctxstr, int ph, Coins coins, const std::uint8_t* addrnd,
+                              const std::uint8_t* sk, bool one_key, std::size_t n) {
+    const CallMessages m = call_messages(msgs, ctxstr, ph);
+    if (coins == Coins::random) return sign_random(ctx, sig, m, sk, one_key, n);
+    if (coins == Coins::given && !addrnd) return -1;   // nullptr would be the deterministic variant
+    return sign_any(ctx, sig, m, coins == Coins::given ? addrnd : nullptr, sk, one_key, n);
+}
+
+int openpqc::gpu::slhdsa_verify(opqc_sycl_slhdsa* ctx, const std::uint8_t* sig, const Messages& msgs,
+                                const std::uint8_t* ctxstr, int ph, const std::uint8_t* pk, bool one_key,
+                                std::int32_t* status, std::size_t n) {
+    return verify_any(ctx, sig, call_messages(msgs, ctxstr, ph), pk, one_key, status, n);
 }

@@ -6,6 +6,10 @@
 /*
  * openpqc_mlkem_sycl.h -- batched ML-KEM (FIPS 203) on GPUs and other SYCL devices
  *
+ * Internal: the backend's own C API, which the GPU API (openpqc/sycl.h, include/openpqc/sycl.cpp) sits on.
+ * Not installed, and not exported by the library openpqc_sycl (cmake/openpqc_sycl.map); the library
+ * openpqc_sycl_testing exports it, for the white-box tests, the benchmarks and the profilers.
+ *
  * One call runs n independent operations of the context's parameter set. All key,
  * ciphertext, shared-secret, coin and status buffers are DEVICE buffers (allocate
  * them with opqc_sycl_mlkem_malloc; page-locked host memory of
@@ -170,8 +174,9 @@ extern "C" {
 
 /* Results of operations, in status (the CPU library's OPENPQC_MLKEM_ERR_* values for
  * the same failures, openpqc_mlkem.h) */
-#define OPQC_SYCL_MLKEM_FAILED (-2)     /* no result: its call failed or was refused, or the
-                                           device failed before the operation's last kernel */
+#define OPQC_SYCL_MLKEM_FAILED (-10)    /* = OPENPQC_ERR_NOT_COMPUTED, no result: its call failed or
+                                           was refused, or the device failed before the operation's
+                                           last kernel */
 #define OPQC_SYCL_MLKEM_INVALID_PK (-4) /* ek failed the check of FIPS 203, Section 7.2 */
 #define OPQC_SYCL_MLKEM_INVALID_SK (-5) /* dk failed the check of FIPS 203, Section 7.3 */
 

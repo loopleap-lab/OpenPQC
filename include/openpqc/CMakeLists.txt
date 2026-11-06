@@ -10,11 +10,17 @@
 #   testing.h, testing.hpp   the testing interfaces, in OpenPQC::testing (not installed)
 #   dispatch.c               common.h, kem.h and sig.h: the table of algorithms and the dispatch to the schemes
 #   testing_dispatch.c       the runtime-selected testing interfaces of testing.h
+#   sycl.h, sycl.hpp, sycl_experimental.h, sycl/interop.hpp, sycl.cpp
+#                            the GPU API: one context type for every parameter set (OPENPQC_SYCL)
+#   sycl_testing.h           its testing interfaces, in OpenPQC::sycl_testing (not installed)
+#   sycl/device.hpp          hash functions for an application's own SYCL kernels (header-only)
 #
 # Targets:
 #   openpqc_api_objects           dispatch.c, which goes into the library openpqc (top-level CMakeLists.txt)
 #   openpqc_testing_api_objects   testing_dispatch.c, which goes into OpenPQC::testing (only in a build with the
 #                                 tests, benchmarks or examples: OPENPQC_TESTING_LIBRARY)
+#   openpqc_gpu_api_objects       sycl.cpp, for the library openpqc_sycl (top-level CMakeLists.txt)
+#   openpqc_gpu_testing_api_objects  sycl.cpp with the testing interfaces, for OpenPQC::sycl_testing
 
 function(_openpqc_api_objects name source)
     add_library(${name} OBJECT ${source})
@@ -28,4 +34,10 @@ endfunction()
 _openpqc_api_objects(openpqc_api_objects dispatch.c)
 if(OPENPQC_TESTING_LIBRARY)
     _openpqc_api_objects(openpqc_testing_api_objects testing_dispatch.c)
+endif()
+if(OPENPQC_HAVE_SYCL)
+    _openpqc_sycl_backend(openpqc_gpu_api sycl.cpp)   # top-level CMakeLists.txt
+    if(OPENPQC_TESTING_LIBRARY)
+        _openpqc_sycl_backend(openpqc_gpu_testing_api sycl.cpp DEFINITIONS OPENPQC_GPU_TESTING_INTERFACES)
+    endif()
 endif()

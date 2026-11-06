@@ -17,10 +17,30 @@ if(OPENPQC_HAVE_SYCL)
     add_test(NAME core_sycl_sticky COMMAND test_core_sycl sticky)
     set_tests_properties(core_sycl core_sycl_sticky PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 900)
 
+    # The hash functions for an application's own kernels (openpqc/sycl/device.hpp) against Core's CPU functions,
+    # at every block boundary and alignment, on every device
+    add_executable(test_device_hash test_device_hash.cpp)
+    target_link_libraries(test_device_hash PRIVATE openpqc_core)
+    target_compile_features(test_device_hash PRIVATE cxx_std_20)
+    openpqc_sycl_sources(test_device_hash test_device_hash.cpp)
+    add_test(NAME device_hash COMMAND test_device_hash)
+    set_tests_properties(device_hash PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 900)
+
+    # The GPU API (openpqc/sycl.h, sycl.hpp) on the library applications link (OpenPQC::sycl, which exports nothing
+    # else), against the CPU library: every parameter set of the build, the order of checks, messages outside their
+    # buffer (F073), launches of 3 operations, a context on the application's SYCL context, the C++ layer; on every
+    # device
+    add_executable(test_gpu_api test_gpu_api.cpp)
+    target_link_libraries(test_gpu_api PRIVATE OpenPQC::sycl OpenPQC::openpqc)
+    target_compile_features(test_gpu_api PRIVATE cxx_std_20)
+    openpqc_sycl_sources(test_gpu_api test_gpu_api.cpp)
+    add_test(NAME gpu_api COMMAND test_gpu_api)
+    set_tests_properties(gpu_api PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 3600)
+
     # ML-KEM: the three parameter sets, the status and error contract, fresh coins and two threads on one context,
     # on every device
     add_executable(test_mlkem_sycl test_mlkem_sycl.cpp)
-    target_link_libraries(test_mlkem_sycl PRIVATE OpenPQC::sycl openpqc_mlkem)   # the GPU library, as applications use it
+    target_link_libraries(test_mlkem_sycl PRIVATE OpenPQC::sycl_testing openpqc_mlkem)   # the backend's own C API
     target_compile_features(test_mlkem_sycl PRIVATE cxx_std_20)
     add_test(NAME mlkem_sycl COMMAND test_mlkem_sycl 1000)
     set_tests_properties(mlkem_sycl PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 1800)
@@ -41,7 +61,7 @@ if(OPENPQC_HAVE_SYCL)
     # fault inside the signing loop on an NVIDIA GPU, after which CUDA refuses all work of the process on that
     # device: a process of its own (skipped without an NVIDIA device).
     add_executable(test_mldsa_sycl test_mldsa_sycl.cpp)
-    target_link_libraries(test_mldsa_sycl PRIVATE OpenPQC::sycl openpqc_mldsa)   # the GPU library, as applications use it
+    target_link_libraries(test_mldsa_sycl PRIVATE OpenPQC::sycl_testing openpqc_mldsa)   # the backend's own C API
     target_compile_features(test_mldsa_sycl PRIVATE cxx_std_20)
     add_test(NAME mldsa_sycl COMMAND test_mldsa_sycl 200)
     add_test(NAME mldsa_sycl_sticky COMMAND test_mldsa_sycl sticky)
@@ -63,7 +83,7 @@ if(OPENPQC_HAVE_SYCL)
     # the i7-11370H: DPC++ (Iris Xe twice, RTX 3050) 9-15 minutes, AdaptiveCpp (RTX 3050, Iris Xe twice, OpenMP
     # host) 42-56 minutes, the longer times when the devices' JIT caches are cold.
     add_executable(test_slhdsa_sycl test_slhdsa_sycl.cpp)
-    target_link_libraries(test_slhdsa_sycl PRIVATE OpenPQC::sycl openpqc_slhdsa)   # the GPU library, as applications use it
+    target_link_libraries(test_slhdsa_sycl PRIVATE OpenPQC::sycl_testing openpqc_slhdsa)   # the backend's own C API
     target_compile_features(test_slhdsa_sycl PRIVATE cxx_std_20)
     add_test(NAME slhdsa_sycl COMMAND test_slhdsa_sycl)
     set_tests_properties(slhdsa_sycl PROPERTIES SKIP_RETURN_CODE 77 LABELS "gpu;slow" TIMEOUT 7200)

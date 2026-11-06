@@ -30,7 +30,14 @@ import subprocess
 import sys
 
 HEADERS = ["ML/KEM/openpqc_mlkem.h", "ML/DSA/openpqc_mldsa.h", "SLH/DSA/openpqc_slhdsa.h", "openpqc/common.h",
-           "openpqc/kem.h", "openpqc/sig.h", "openpqc/testing.h"]
+           "openpqc/kem.h", "openpqc/sig.h", "openpqc/testing.h", "openpqc/sycl.h", "openpqc/sycl_experimental.h",
+           "openpqc/sycl_testing.h"]
+# The GPU API's functions (openpqc/sycl*.h): exported only by a build with the GPU library (its testing library is
+# then one of the archives); those that take SYCL types are declared in a C++ header (openpqc/sycl/interop.hpp)
+GPU_PREFIXES = ("openpqc_gpu_", "openpqc_testing_gpu_")
+CXX_ONLY = {"openpqc_gpu_create_on", "openpqc_gpu_event"}
+# functions that return an int that is not a result: a count
+NOT_A_RESULT = {"openpqc_gpu_device_count"}
 # a function that returns a result, and any function of the C API (its name)
 PROTO = re.compile(r"\b(?:int|openpqc_status)\s+(openpqc_\w*)\s*\(([^;()]*)\)\s*;")
 DECLARED = re.compile(r"\b(openpqc_\w+)\s*\([^;()]*\)\s*;")
@@ -40,6 +47,8 @@ def argument(a):
     """A value for a parameter of type a that compiles as C and as C++"""
     if "*" in a or "[" in a:
         return "buf" if "uint8_t" in a else "0"   # byte buffers; other pointers (opts, names) NULL
+    if "openpqc_gpu_messages" in a:
+        return "gm"   # a struct, by value
     if "openpqc_alg" in a:
         return "OPENPQC_ML_KEM_768"
     return "0"
@@ -53,6 +62,8 @@ def prototypes(inc):
                         capture_output=True, text=True, check=True).stdout
     found = {}
     for name, params in PROTO.findall(pp):
+        if name in NOT_A_RESULT:
+            continue
         args = [p.strip() for p in params.split(",")] if params.strip() and params.strip() != "void" else []
         found[name] = [argument(a) for a in args]
     return found, set(DECLARED.findall(pp))
@@ -75,6 +86,7 @@ def write_tu(path, protos, cast):
         for h in HEADERS:
             f.write(f'#include "{h}"\n')
         f.write("static uint8_t buf[1 << 16];\n")
+        f.write("static openpqc_gpu_messages gm;\n")
         f.write("void probe(void);\nvoid probe(void) {\n")
         for name, args in sorted(protos.items()):
             f.write(f"    {'(void)' if cast else ''}{name}({', '.join(args)});\n")
@@ -113,7 +125,9 @@ def main():
     protos, declared = prototypes(inc)
     print(f"prototypes in the C headers: {len(declared)}, of which return a result: {len(protos)}")
     if archives:
-        names = exported(archives)
+        names = exported(archives) - CXX_ONLY
+        if not any(n.startswith(GPU_PREFIXES) for n in names):   # a build without the GPU library
+            declared = {n for n in declared if not n.startswith(GPU_PREFIXES)}
         missing, extra = sorted(names - declared), sorted(declared - names)
         print(f"functions exported by the archives: {len(names)}; not declared: {len(missing)}; "
               f"declared, not exported: {len(extra)}")

@@ -15,7 +15,7 @@
 #   openpqc_slhdsa_testrng   the same code, randomness from the application's
 #                            randombytes(), for the tests
 #   openpqc_slhdsa_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
-#                           library for the tests and benchmarks (top-level CMakeLists.txt)
+#                           library for the benchmarks (top-level CMakeLists.txt; the tests use OpenPQC::sycl_testing)
 #
 # A build of slhdsa.cpp with the definition OPENPQC_SLHDSA_KEYGEN_PCT adds the
 # pair-wise consistency test of FIPS 140-3 to key generation (scheme/slh_dsa.hpp);

@@ -37,13 +37,11 @@
 #include <unistd.h>
 
 #include "Core/opqc_platform.h"
-#include "Core/sycl/openpqc_sycl.h"
 #include "ML/DSA/openpqc_mldsa.h"
-#include "ML/DSA/sycl/openpqc_mldsa_sycl.h"
 #include "ML/KEM/openpqc_mlkem.h"
-#include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
 #include "SLH/DSA/openpqc_slhdsa.h"
-#include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"
+#include "openpqc/openpqc.h"
+#include "openpqc/sycl.h"
 
 namespace {
 
@@ -212,30 +210,57 @@ template <class Run> double gpu_run(std::size_t n, std::size_t chunk, const Run&
 const std::uint8_t ctxstr[] = "live-demo";
 constexpr std::size_t ctxlen = sizeof ctxstr - 1, msg_bytes = 32;
 
-std::vector<std::uint64_t> message_offsets(std::size_t n) {
-    std::vector<std::uint64_t> offsets(n + 1);
-    for (std::size_t i = 0; i <= n; i++) offsets[i] = i * msg_bytes;
-    return offsets;
-}
-
 Bytes random_bytes(std::size_t n) {
     Bytes b(n);
     check(opqc_randombytes(b.data(), n), "opqc_randombytes");
     return b;
 }
 
+// The GPU context of a race (openpqc/sycl.h) and its device memory, freed (overwritten with zeros) at the end;
+// no context if the device cannot be used or the build of the GPU library lacks the parameter set
+struct Gpu {
+    openpqc_gpu* g = nullptr;
+    std::vector<void*> blocks;
+
+    Gpu(openpqc_alg alg, int device, std::size_t chunk) {
+        const openpqc_gpu_config cfg{device, chunk};
+        if (device < -1 || openpqc_gpu_create(&g, alg, &cfg) != OPENPQC_OK) g = nullptr;
+    }
+    Gpu(const Gpu&) = delete;
+    ~Gpu() { release(); }
+    explicit operator bool() const { return g != nullptr; }
+    // device memory; on failure the context goes, and the race runs on the CPU only
+    template <class T = std::uint8_t> T* alloc(std::size_t bytes) {
+        if (!g) return nullptr;
+        void* p = openpqc_gpu_malloc(g, bytes);
+        if (!p) {
+            release();
+            return nullptr;
+        }
+        blocks.push_back(p);
+        return static_cast<T*>(p);
+    }
+    void release() {
+        if (!g) return;
+        for (void* p : blocks) openpqc_gpu_free(g, p);
+        blocks.clear();
+        openpqc_gpu_destroy(g);
+        g = nullptr;
+    }
+};
+
 // A server with one ML-KEM-768 key decapsulates the ciphertexts of n clients
 struct KemRace {
     static constexpr std::size_t n = 65536, chunk = 16384, PK = OPENPQC_MLKEM768_PUBLICKEYBYTES,
                                  SK = OPENPQC_MLKEM768_SECRETKEYBYTES, CT = OPENPQC_MLKEM768_CIPHERTEXTBYTES, SS = OPENPQC_MLKEM_BYTES;
-    opqc_sycl_mlkem* gpu = nullptr;
-    Bytes pk = Bytes(PK), sks = Bytes(SK * n);  // the server's key; the GPU call takes a key per operation
+    Gpu gpu;
+    Bytes pk = Bytes(PK), sks = Bytes(SK * n);  // the server's key; Decaps on the GPU takes a key per operation
     Bytes ct = Bytes(CT * n), ss_client = Bytes(SS * n), ss_server = Bytes(SS * n);
     std::vector<std::int32_t> status = std::vector<std::int32_t>(n);
     std::uint8_t *d_sk = nullptr, *d_ct = nullptr, *d_ss = nullptr;
     std::int32_t* d_status = nullptr;
 
-    explicit KemRace(int device) {
+    explicit KemRace(int device) : gpu(OPENPQC_ML_KEM_768, device, chunk) {
         Bytes sk(SK);
         check(openpqc_mlkem768_keygen(pk.data(), sk.data()), "keypair");
         for (std::size_t i = 0; i < n; i++) std::memcpy(&sks[SK * i], sk.data(), SK);
@@ -248,144 +273,70 @@ struct KemRace {
             std::fprintf(stderr, "\nerror: %zu of %zu calls of enc failed\n", failed, n);
             std::exit(2);
         }
-        if (device < -1 || opqc_sycl_mlkem_create(&gpu, 768, chunk, device) != 0) return;
-        const auto alloc = [&](std::size_t b) { return static_cast<std::uint8_t*>(opqc_sycl_mlkem_malloc(gpu, b)); };
-        d_sk = alloc(sks.size()), d_ct = alloc(ct.size()), d_ss = alloc(ss_server.size());
-        d_status = reinterpret_cast<std::int32_t*>(alloc(4 * n));
-        if (!d_sk || !d_ct || !d_ss || !d_status) release();
-    }
-    ~KemRace() { release(); }
-    void release() {
-        if (!gpu) return;
-        for (void* p : {static_cast<void*>(d_sk), static_cast<void*>(d_ct), static_cast<void*>(d_ss),
-                        static_cast<void*>(d_status)})
-            if (p) opqc_sycl_mlkem_free(gpu, p);
-        opqc_sycl_mlkem_destroy(gpu);
-        gpu = nullptr;
+        d_sk = gpu.alloc(sks.size()), d_ct = gpu.alloc(ct.size()), d_ss = gpu.alloc(ss_server.size());
+        d_status = gpu.alloc<std::int32_t>(4 * n);
     }
 
     int cpu(std::size_t i, std::uint8_t* out) const { return openpqc_mlkem768_decaps(out, &ct[CT * i], &sks[SK * i]); }
     void run_gpu(std::size_t s, std::size_t m) {
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_ct + CT * s, &ct[CT * s], CT * m), "copy");
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_sk + SK * s, &sks[SK * s], SK * m), "copy");
-        check(opqc_sycl_mlkem_dec(gpu, d_ss + SS * s, d_ct + CT * s, d_sk + SK * s, d_status + s, m), "dec");
-        check(opqc_sycl_mlkem_memcpy_async(gpu, &ss_server[SS * s], d_ss + SS * s, SS * m), "copy");
-        check(opqc_sycl_mlkem_memcpy(gpu, &status[s], d_status + s, 4 * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_ct + CT * s, &ct[CT * s], CT * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_sk + SK * s, &sks[SK * s], SK * m), "copy");
+        check(openpqc_gpu_kem_decaps(gpu.g, d_ss + SS * s, d_ct + CT * s, d_sk + SK * s, d_status + s, m), "decaps");
+        check(openpqc_gpu_memcpy_async(gpu.g, &ss_server[SS * s], d_ss + SS * s, SS * m), "copy");
+        check(openpqc_gpu_memcpy(gpu.g, &status[s], d_status + s, 4 * m), "copy");
     }
     bool check_gpu() const {
         return ss_server == ss_client && std::all_of(status.begin(), status.end(), [](auto v) { return v == 0; });
     }
 };
 
-// A server signs n responses with its ML-DSA-65 key
-struct DsaRace {
-    static constexpr std::size_t n = 16384, chunk = 4096, PK = OPENPQC_MLDSA65_PUBLICKEYBYTES, SK = OPENPQC_MLDSA65_SECRETKEYBYTES,
-                                 SIG = OPENPQC_MLDSA65_BYTES;
-    opqc_sycl_mldsa* gpu = nullptr;
+// A signer with one key signs n messages of msg_bytes each: ML-DSA-65 (a server signing its responses) or
+// SLH-DSA-SHA2-128f (a vendor signing its software updates). The GPU signs under that one key
+// (OPENPQC_GPU_ONE_KEY) messages that lie back to back, msg_bytes apart (a stride: no offsets).
+template <openpqc_alg Alg, std::size_t N, std::size_t Chunk>
+struct SigRace {
+    static constexpr std::size_t n = N, chunk = Chunk;
+    const openpqc_alg_info* info = openpqc_alg_info_get(Alg);
+    const std::size_t PK = info->public_key_bytes, SK = info->secret_key_bytes, SIG = info->signature_bytes;
+    Gpu gpu;
     Bytes pk = Bytes(PK), sk = Bytes(SK), msg = random_bytes(msg_bytes * n), sig = Bytes(SIG * n);
-    std::vector<std::uint64_t> offsets = message_offsets(n);
     std::vector<std::int32_t> status = std::vector<std::int32_t>(n);
     std::uint8_t *d_pk = nullptr, *d_sk = nullptr, *d_msg = nullptr, *d_sig = nullptr;
-    std::uint64_t* d_off = nullptr;
     std::int32_t* d_status = nullptr;
+    const openpqc_sign_opts opts{ctxstr, ctxlen, 0, 0};
+    const openpqc_sign_opts one_key{ctxstr, ctxlen, 0, OPENPQC_GPU_ONE_KEY};
 
-    explicit DsaRace(int device) {
-        check(openpqc_mldsa65_keygen(pk.data(), sk.data()), "keypair");
-        if (device < -1 || opqc_sycl_mldsa_create(&gpu, 65, chunk, device) != 0) return;
-        const auto alloc = [&](std::size_t b) { return static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(gpu, b)); };
-        d_pk = alloc(PK), d_sk = alloc(SK), d_msg = alloc(msg.size()), d_sig = alloc(sig.size());
-        d_off = reinterpret_cast<std::uint64_t*>(alloc(8 * offsets.size()));
-        d_status = reinterpret_cast<std::int32_t*>(alloc(4 * n));
-        if (!d_pk || !d_sk || !d_msg || !d_sig || !d_off || !d_status) release();
-    }
-    ~DsaRace() { release(); }
-    void release() {
-        if (!gpu) return;
-        for (void* p : {static_cast<void*>(d_pk), static_cast<void*>(d_sk), static_cast<void*>(d_msg),
-                        static_cast<void*>(d_sig), static_cast<void*>(d_off), static_cast<void*>(d_status)})
-            if (p) opqc_sycl_mldsa_free(gpu, p);
-        opqc_sycl_mldsa_destroy(gpu);
-        gpu = nullptr;
+    explicit SigRace(int device) : gpu(Alg, device, chunk) {
+        check(openpqc_sig_keygen(Alg, pk.data(), sk.data()), "keypair");
+        d_pk = gpu.alloc(PK), d_sk = gpu.alloc(SK), d_msg = gpu.alloc(msg.size()), d_sig = gpu.alloc(sig.size());
+        d_status = gpu.alloc<std::int32_t>(4 * n);
     }
 
     int cpu(std::size_t i, std::uint8_t* out) const {
-        return openpqc_mldsa65_sign(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, sk.data());
+        return openpqc_sig_sign(Alg, out, &msg[msg_bytes * i], msg_bytes, &opts, sk.data());
     }
-    // the messages lie back to back; offsets[i] .. offsets[i + 1] delimit message i
     void run_gpu(std::size_t s, std::size_t m) {
-        if (s == 0) check(opqc_sycl_mldsa_memcpy_async(gpu, d_sk, sk.data(), SK), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_msg + msg_bytes * s, &msg[msg_bytes * s], msg_bytes * m), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_off + s, &offsets[s], 8 * (m + 1)), "copy");
-        check(opqc_sycl_mldsa_sign_one_key(gpu, d_sig + SIG * s, d_msg, d_off + s, ctxstr, ctxlen, d_sk, nullptr, m),
-              "sign");
-        check(opqc_sycl_mldsa_memcpy(gpu, &sig[SIG * s], d_sig + SIG * s, SIG * m), "copy");
+        if (s == 0) check(openpqc_gpu_memcpy_async(gpu.g, d_sk, sk.data(), SK), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_msg + msg_bytes * s, &msg[msg_bytes * s], msg_bytes * m), "copy");
+        const openpqc_gpu_messages part{d_msg + msg_bytes * s, nullptr, msg_bytes, msg_bytes * m};
+        check(openpqc_gpu_sig_sign(gpu.g, d_sig + SIG * s, part, &one_key, d_sk, d_status + s, m), "sign");
+        check(openpqc_gpu_memcpy(gpu.g, &sig[SIG * s], d_sig + SIG * s, SIG * m), "copy");
     }
     // every signature verified on the GPU, a few also by the CPU library
     bool check_gpu() {
-        check(opqc_sycl_mldsa_memcpy(gpu, d_pk, pk.data(), PK), "copy");
-        check(opqc_sycl_mldsa_verify_one_key(gpu, d_sig, d_msg, d_off, ctxstr, ctxlen, d_pk, d_status, n), "verify");
-        check(opqc_sycl_mldsa_memcpy(gpu, status.data(), d_status, 4 * n), "copy");
+        check(openpqc_gpu_memcpy(gpu.g, d_pk, pk.data(), PK), "copy");
+        const openpqc_gpu_messages all{d_msg, nullptr, msg_bytes, msg_bytes * n};
+        check(openpqc_gpu_sig_verify(gpu.g, d_sig, all, &one_key, d_pk, d_status, n), "verify");
+        check(openpqc_gpu_memcpy(gpu.g, status.data(), d_status, 4 * n), "copy");
         bool ok = std::all_of(status.begin(), status.end(), [](auto v) { return v == 0; });
         for (const std::size_t i : {std::size_t{0}, n / 2, n - 1})
-            ok = ok && openpqc_mldsa65_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                              pk.data()) == 0;
+            ok = ok && openpqc_sig_verify(Alg, &sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, &opts, pk.data()) ==
+                               OPENPQC_OK;
         return ok;
     }
 };
-
-// A vendor signs n software updates with its SLH-DSA-SHA2-128f key
-struct SlhRace {
-    static constexpr std::size_t n = 1024, chunk = 512, PK = OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES,
-                                 SK = OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES, SIG = OPENPQC_SLHDSA_SHA2_128F_BYTES;
-    opqc_sycl_slhdsa* gpu = nullptr;
-    Bytes pk = Bytes(PK), sk = Bytes(SK), msg = random_bytes(msg_bytes * n), sig = Bytes(SIG * n);
-    std::vector<std::uint64_t> offsets = message_offsets(n);
-    std::vector<std::int32_t> status = std::vector<std::int32_t>(n);
-    std::uint8_t *d_pk = nullptr, *d_sk = nullptr, *d_msg = nullptr, *d_sig = nullptr;
-    std::uint64_t* d_off = nullptr;
-    std::int32_t* d_status = nullptr;
-
-    explicit SlhRace(int device) {
-        check(openpqc_slhdsa_sha2_128f_keygen(pk.data(), sk.data()), "keypair");
-        // a build may leave this set out of the GPU backend (OPENPQC_SLHDSA_SYCL_SETS): no GPU then
-        if (device < -1 || opqc_sycl_slhdsa_create(&gpu, OPENPQC_SLHDSA_SHA2_128F, chunk, device) != 0) return;
-        const auto alloc = [&](std::size_t b) { return static_cast<std::uint8_t*>(opqc_sycl_slhdsa_malloc(gpu, b)); };
-        d_pk = alloc(PK), d_sk = alloc(SK), d_msg = alloc(msg.size()), d_sig = alloc(sig.size());
-        d_off = reinterpret_cast<std::uint64_t*>(alloc(8 * offsets.size()));
-        d_status = reinterpret_cast<std::int32_t*>(alloc(4 * n));
-        if (!d_pk || !d_sk || !d_msg || !d_sig || !d_off || !d_status) release();
-    }
-    ~SlhRace() { release(); }
-    void release() {
-        if (!gpu) return;
-        for (void* p : {static_cast<void*>(d_pk), static_cast<void*>(d_sk), static_cast<void*>(d_msg),
-                        static_cast<void*>(d_sig), static_cast<void*>(d_off), static_cast<void*>(d_status)})
-            if (p) opqc_sycl_slhdsa_free(gpu, p);
-        opqc_sycl_slhdsa_destroy(gpu);
-        gpu = nullptr;
-    }
-
-    int cpu(std::size_t i, std::uint8_t* out) const {
-        return openpqc_slhdsa_sha2_128f_sign(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen, sk.data());
-    }
-    void run_gpu(std::size_t s, std::size_t m) {
-        if (s == 0) check(opqc_sycl_slhdsa_memcpy_async(gpu, d_sk, sk.data(), SK), "copy");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_msg + msg_bytes * s, &msg[msg_bytes * s], msg_bytes * m), "copy");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_off + s, &offsets[s], 8 * (m + 1)), "copy");
-        check(opqc_sycl_slhdsa_sign_one_key(gpu, d_sig + SIG * s, d_msg, d_off + s, ctxstr, ctxlen, d_sk, m), "sign");
-        check(opqc_sycl_slhdsa_memcpy(gpu, &sig[SIG * s], d_sig + SIG * s, SIG * m), "copy");
-    }
-    bool check_gpu() {
-        check(opqc_sycl_slhdsa_memcpy(gpu, d_pk, pk.data(), PK), "copy");
-        check(opqc_sycl_slhdsa_verify_one_key(gpu, d_sig, d_msg, d_off, ctxstr, ctxlen, d_pk, d_status, n), "verify");
-        check(opqc_sycl_slhdsa_memcpy(gpu, status.data(), d_status, 4 * n), "copy");
-        bool ok = std::all_of(status.begin(), status.end(), [](auto v) { return v == 0; });
-        for (const std::size_t i : {std::size_t{0}, n / 2, n - 1})
-            ok = ok && openpqc_slhdsa_sha2_128f_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr,
-                                                       ctxlen, pk.data()) == 0;
-        return ok;
-    }
-};
+using DsaRace = SigRace<OPENPQC_ML_DSA_65, 16384, 4096>;
+using SlhRace = SigRace<OPENPQC_SLH_DSA_SHA2_128F, 1024, 512>;
 
 struct Score {
     std::string what;
@@ -527,8 +478,8 @@ void summary(const std::string& cpu, const std::string& gpu) {
 int pick_device(int requested) {
     if (requested >= -1) return requested;
     if (std::getenv("OPENPQC_SYCL_DEVICE")) return -1;
-    for (int i = 0; i < opqc_sycl_device_count(); i++)
-        if (std::strstr(opqc_sycl_device_name(i), "NVIDIA") || std::strstr(opqc_sycl_device_platform(i), "CUDA"))
+    for (int i = 0; i < openpqc_gpu_device_count(); i++)
+        if (std::strstr(openpqc_gpu_device_name(i), "NVIDIA") || std::strstr(openpqc_gpu_device_platform(i), "CUDA"))
             return i;
     return -1;
 }
@@ -548,7 +499,7 @@ int main(int argc, char** argv) {
     tty = isatty(STDOUT_FILENO) != 0;
     color = tty && !std::getenv("NO_COLOR");
 
-    const int count = opqc_sycl_device_count();
+    const int count = openpqc_gpu_device_count();
     const int device = count > 0 ? pick_device(requested) : -2;  // -2: no GPU
     if (device >= count) {
         std::fprintf(stderr, "error: no device %d (there are %d)\n", device, count);
@@ -569,7 +520,7 @@ int main(int argc, char** argv) {
     warm_up(dsa);
     warm_up(slh);
     const std::string cpu = cpu_model();
-    const std::string gpu = kem.gpu ? opqc_sycl_mlkem_device_name(kem.gpu) : "none";
+    const std::string gpu = kem.gpu ? openpqc_gpu_name(kem.gpu.g) : "none";
     std::printf("\r  %-60s\n\n", "ready.");
     std::printf("  CPU  %s (%u threads)\n  GPU  %s\n", cpu.c_str(), cpu_threads, gpu.c_str());
     next();

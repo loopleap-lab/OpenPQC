@@ -6,6 +6,10 @@
 /*
  * openpqc_mldsa_sycl.h -- batched ML-DSA (FIPS 204) on GPUs and other SYCL devices
  *
+ * Internal: the backend's own C API, which the GPU API (openpqc/sycl.h, include/openpqc/sycl.cpp) sits on.
+ * Not installed, and not exported by the library openpqc_sycl (cmake/openpqc_sycl.map); the library
+ * openpqc_sycl_testing exports it, for the white-box tests, the benchmarks and the profilers.
+ *
  * One call runs n independent operations. All key, signature, message, seed
  * and status buffers are DEVICE buffers (allocate them with
  * opqc_sycl_mldsa_malloc) holding the n operations back to back in the FIPS 204
@@ -59,7 +63,9 @@
  * Messages. The n messages lie back to back in one device buffer `msg`; message i
  * is msg[offsets[i] .. offsets[i + 1]), with offsets a device buffer of n + 1
  * uint64_t (offsets[0] is usually 0). The offsets must not decrease and must stay
- * within msg; they are device data and are not checked. All messages of a call
+ * within msg. They are device data: the kernels read an operation whose offsets
+ * decrease as the empty message, and cannot see an end past msg, whose length these
+ * functions do not take (the GPU API, openpqc/sycl.h, checks it). All messages of a call
  * share one context string ctx of ctxlen <= 255 bytes, given in HOST memory.
  *
  * Randomness. opqc_sycl_mldsa_keypair, opqc_sycl_mldsa_sign and

@@ -6,6 +6,10 @@
 /*
  * openpqc_sycl.h -- the SYCL devices that OpenPQC's GPU backends run on
  *
+ * Internal: the backend's own C API, which the GPU API (openpqc/sycl.h, include/openpqc/sycl.cpp) sits on.
+ * Not installed, and not exported by the library openpqc_sycl (cmake/openpqc_sycl.map); the library
+ * openpqc_sycl_testing exports it, for the white-box tests, the benchmarks and the profilers.
+ *
  * Shared by the backends of all schemes (ML/KEM/sycl, ML/DSA/sycl): a context
  * of any backend is created on one of these devices, by index. Defined in
  * Core/sycl/opqc_sycl_runtime.cpp (library openpqc_core_sycl).

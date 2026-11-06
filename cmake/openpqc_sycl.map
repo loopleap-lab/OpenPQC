@@ -1,0 +1,9 @@
+/* The symbols that the shared library openpqc_sycl exports: the GPU API (openpqc/sycl.h, openpqc/sycl/interop.hpp,
+ * openpqc/sycl_experimental.h). Everything else, the backends' own C functions included, stays local
+ * (top-level CMakeLists.txt; test sycl_exports). */
+{
+  global:
+    openpqc_gpu_*;
+  local:
+    *;
+};

@@ -3,35 +3,25 @@
 //
 // demo_gpu.cpp  --  OpenPQC's three schemes in batches on a GPU, compared with the CPU
 //
-// A GPU is fast when it has many independent operations to run at once, so the
-// GPU backends take a whole batch per call: n key pairs, n signatures, ... For
-// each of ML-KEM-768, ML-DSA-65 and SLH-DSA-SHA2-128f this demo
+// A GPU is fast when it has many independent operations to run at once, so the GPU API (openpqc/sycl.h) takes a
+// whole batch per call: n key pairs, n signatures, ... For each of ML-KEM-768, ML-DSA-65 and SLH-DSA-SHA2-128f this
+// demo
 //
-//   1. creates a context on a SYCL device (a GPU, or whatever device you pick),
-//   2. runs one batch of each operation: copy the inputs to the device, one call,
-//      copy the outputs back,
-//   3. checks that the GPU gave exactly the bytes the CPU library gives for the
-//      same inputs (the _derand functions take the randomness as an input, so the
-//      CPU can recompute the results),
-//   4. measures the operations per second on the CPU (1 thread and all threads)
-//      and on the GPU (a batch of 1 and a full batch), copies included.
+//   1. creates a context for the parameter set on a SYCL device (a GPU, or whatever device you pick),
+//   2. runs one batch of each operation: copy the inputs to the device, one call, copy the outputs back,
+//   3. checks the GPU against the CPU library: the same bytes where both compute from the same inputs (key pairs
+//      from seeds, Decaps, deterministic signatures), and the CPU's acceptance of what the GPU made with its own
+//      randomness (shared secrets, hedged signatures, key pairs),
+//   4. measures the operations per second on the CPU (1 thread and all threads) and on the GPU (a batch of 1 and a
+//      full batch), copies included.
 //
 // Usage: demo_gpu [device]   the device index from the list printed at the start;
 //                            default: the SYCL default device (or OPENPQC_SYCL_DEVICE)
 //
-// The GPU calls are the C API of ML/KEM/sycl/openpqc_mlkem_sycl.h,
-// ML/DSA/sycl/openpqc_mldsa_sycl.h and SLH/DSA/sycl/openpqc_slhdsa_sycl.h. The
-// benchmarks in bench/gpu measure the same with more care (cooling, percentiles,
-// all batch sizes and parameter sets).
-//
-// The _derand functions are what makes the comparison with the CPU possible: a
-// test, which is what FIPS 203 (Section 3.3), FIPS 204 (Section 6) and FIPS 205
-// (Section 9) reserve the interfaces that take the random values for. An
-// application calls the randomized functions (keypair, enc, sign), which draw
-// the randomness themselves; on the GPU they also draw it on the host and copy
-// it over, so the GPU columns, which time the _derand functions, are an upper
-// bound for them. Every call's result is checked, on the CPU as on the GPU: a
-// call that fails produces no output (the headers say what its buffers hold).
+// One code path serves every parameter set: the context is created from an openpqc_alg, and the calls are the same
+// for all KEMs and all signature schemes. The demo links what an application links (OpenPQC::sycl and
+// OpenPQC::openpqc) and uses no testing interface. The benchmarks in bench/gpu measure with more care (cooling,
+// percentiles, all batch sizes and parameter sets).
 
 #include <algorithm>
 #include <atomic>
@@ -40,44 +30,33 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "Core/opqc_platform.h"
-#include "Core/sycl/openpqc_sycl.h"
-#include "ML/DSA/openpqc_mldsa.h"
-#include "openpqc/testing.h"
-#include "ML/DSA/sycl/openpqc_mldsa_sycl.h"
-#include "ML/KEM/openpqc_mlkem.h"
-#include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
-#include "SLH/DSA/openpqc_slhdsa.h"
-#include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"
+#include "openpqc/openpqc.h"
+#include "openpqc/sycl.h"
 
 namespace {
 
 using Bytes = std::vector<std::uint8_t>;
 using Clock = std::chrono::steady_clock;
 
-// Batch sizes: large enough to keep a laptop GPU busy, small enough for its memory
-constexpr std::size_t mlkem_batch = 8192;
-constexpr std::size_t mldsa_batch = 4096;
-constexpr std::size_t slhdsa_batch = 1024;
-
-// Messages to sign: 32 bytes each, all with the same context string
+// Messages to sign: 32 bytes each, back to back (a stride, no offsets), all with the same context string
 constexpr std::size_t msg_bytes = 32;
 const std::uint8_t ctxstr[] = "demo-payments-v1";
-constexpr std::size_t ctxlen = sizeof ctxstr - 1;
+const openpqc_sign_opts hedged{ctxstr, sizeof ctxstr - 1, 0, 0};
+const openpqc_sign_opts deterministic{ctxstr, sizeof ctxstr - 1, 0, OPENPQC_SIGN_DETERMINISTIC};
 
 const unsigned cpu_threads = std::max(1u, std::thread::hardware_concurrency());
 int failures = 0;
 
 double seconds_since(Clock::time_point t0) { return std::chrono::duration<double>(Clock::now() - t0).count(); }
 
-void check(int rc, const char* what) {
-    if (rc != 0) {
-        std::fprintf(stderr, "error: %s returned %d\n", what, rc);
+void check(openpqc_status s, const char* what) {
+    if (s != OPENPQC_OK) {
+        std::fprintf(stderr, "error: %s: %s\n", what, openpqc_status_string(s));
         std::exit(2);
     }
 }
@@ -89,16 +68,8 @@ void expect(bool ok, const std::string& what) {
 
 Bytes random_bytes(std::size_t n) {
     Bytes b(n);
-    check(opqc_randombytes(b.data(), n), "opqc_randombytes");
+    if (opqc_randombytes(b.data(), n) != 0) std::exit(2);
     return b;
-}
-
-// n messages back to back, and the n + 1 offsets that delimit them (message i is
-// msg[offsets[i] .. offsets[i + 1]))
-std::vector<std::uint64_t> message_offsets(std::size_t n) {
-    std::vector<std::uint64_t> offsets(n + 1);
-    for (std::size_t i = 0; i <= n; i++) offsets[i] = i * msg_bytes;
-    return offsets;
 }
 
 // The operations checked against the CPU: the first, the second, one in the middle and the last
@@ -106,16 +77,22 @@ std::vector<std::size_t> sample(std::size_t n) { return {0, 1, n / 2, n - 1}; }
 
 bool same(const std::uint8_t* a, const std::uint8_t* b, std::size_t len) { return std::memcmp(a, b, len) == 0; }
 
-// Device memory of one context, freed when the section ends. Malloc and Free are
-// the backend's opqc_sycl_*_malloc and opqc_sycl_*_free.
-template <class Ctx> struct DeviceMemory {
-    Ctx* ctx;
-    void* (*malloc_fn)(Ctx*, std::size_t);
-    void (*free_fn)(Ctx*, void*);
+// A context of the GPU API and its device memory, freed (and overwritten with zeros) at the end
+struct Gpu {
+    openpqc_gpu* g = nullptr;
     std::vector<void*> blocks;
 
+    Gpu(openpqc_alg alg, int device, std::size_t batch) {
+        const openpqc_gpu_config cfg{device, batch};
+        check(openpqc_gpu_create(&g, alg, &cfg), "openpqc_gpu_create");
+    }
+    Gpu(const Gpu&) = delete;
+    ~Gpu() {
+        for (void* p : blocks) openpqc_gpu_free(g, p);
+        openpqc_gpu_destroy(g);
+    }
     std::uint8_t* get(std::size_t bytes) {
-        void* p = malloc_fn(ctx, bytes);
+        void* p = openpqc_gpu_malloc(g, bytes);
         if (!p) {
             std::fprintf(stderr, "error: out of device memory\n");
             std::exit(2);
@@ -123,23 +100,28 @@ template <class Ctx> struct DeviceMemory {
         blocks.push_back(p);
         return static_cast<std::uint8_t*>(p);
     }
-    ~DeviceMemory() {
-        for (void* p : blocks) free_fn(ctx, p);
+    std::int32_t* status(std::size_t n) { return reinterpret_cast<std::int32_t*>(get(4 * n)); }
+    void put(void* dst, const Bytes& src) { check(openpqc_gpu_memcpy_async(g, dst, src.data(), src.size()), "copy"); }
+    void take(Bytes& dst, const void* src) { check(openpqc_gpu_memcpy(g, dst.data(), src, dst.size()), "copy"); }
+    // every operation of the last call has a result
+    bool all_ok(const std::int32_t* status, std::size_t n) {
+        std::vector<std::int32_t> s(n);
+        check(openpqc_gpu_sync(g), "openpqc_gpu_sync");
+        check(openpqc_gpu_memcpy(g, s.data(), status, 4 * n), "copy");
+        return std::all_of(s.begin(), s.end(), [](std::int32_t x) { return x == OPENPQC_OK; });
     }
 };
 
 // ---- Timing --------------------------------------------------------------------------------------------------
 
-// Operations per second of op(i, out) on `threads` CPU threads that run for about half
-// a second. Thread t computes operations t, t + threads, ... of the batch (round robin)
-// into a scratch buffer of its own. op returns the C API's result; calls that fail are
-// counted and reported.
+// Operations per second of op(i, out) on `threads` CPU threads that run for about half a second. Thread t computes
+// operations t, t + threads, ... of the batch (round robin) into a scratch buffer of its own. op returns the C API's
+// result; calls that fail are counted and reported.
 //
-// std::thread gives each thread the platform's default stack: with glibc the stack
-// limit (ulimit -s, usually 8 MiB), with musl 128 KiB, too little for ML-DSA-65 signing
-// (openpqc_mldsa.h, Stack). On musl, create the threads with pthread_attr_setstacksize
-// and OPENPQC_MLDSA65_STACK_BYTES, or link with -Wl,-z,stack-size=N.
-template <class Op> double cpu_rate(const char* name, unsigned threads, std::size_t n, const Op& op) {
+// std::thread gives each thread the platform's default stack: with glibc the stack limit (ulimit -s, usually 8 MiB),
+// with musl 128 KiB, too little for ML-DSA-65 signing (openpqc_mldsa.h, Stack). On musl, create the threads with
+// pthread_attr_setstacksize and OPENPQC_MLDSA65_STACK_BYTES, or link with -Wl,-z,stack-size=N.
+template <class Op> double cpu_rate(const std::string& name, unsigned threads, std::size_t n, const Op& op) {
     std::atomic<std::size_t> total{0}, failed{0};
     std::vector<std::thread> pool;
     const auto t0 = Clock::now();
@@ -148,22 +130,22 @@ template <class Op> double cpu_rate(const char* name, unsigned threads, std::siz
             Bytes out(64 * 1024);
             std::size_t done = 0, bad = 0;
             for (std::size_t i = t; seconds_since(t0) < 0.5; i += threads, done++)
-                if (op(i % n, out.data()) != 0) bad++;
+                if (op(i % n, out.data()) != OPENPQC_OK) bad++;
             total += done;
             failed += bad;
         });
     for (auto& th : pool) th.join();
     const double rate = static_cast<double>(total) / seconds_since(t0);
     if (failed != 0) {
-        std::printf("  %s: %zu of %zu calls on the CPU FAILED  <-- unexpected\n", name, failed.load(), total.load());
+        std::printf("  %s: %zu of %zu calls on the CPU FAILED  <-- unexpected\n", name.c_str(), failed.load(),
+                    total.load());
         failures++;
     }
     return rate;
 }
 
-// Seconds per call of run(): the median of three calls, after one untimed call that
-// warms the GPU up (and lets a SYCL runtime that compiles kernels at their first
-// launch do so)
+// Seconds per call of run(): the median of three calls, after one untimed call that warms the GPU up (and lets a
+// SYCL runtime that compiles kernels at their first launch do so)
 template <class Run> double gpu_seconds(const Run& run) {
     run();
     double t[3];
@@ -183,272 +165,171 @@ struct Row {
 };
 std::vector<Row> rows;
 
-// Measures one operation: cpu_op(i, out) computes operation i on the CPU and returns the
-// C API's result, gpu_run(m) runs the first m operations of the batch on the GPU, copies
-// included
+// Measures one operation: cpu_op(i, out) computes operation i on the CPU and returns the C API's result,
+// gpu_run(m) runs the first m operations of the batch on the GPU, copies included
 template <class CpuOp, class GpuRun>
 void compare(const std::string& name, std::size_t n, const CpuOp& cpu_op, const GpuRun& gpu_run) {
     Row r{name, n, 0, 0, 0, 0};
-    r.cpu1 = cpu_rate(name.c_str(), 1, n, cpu_op);
-    r.cpu_all = cpu_rate(name.c_str(), cpu_threads, n, cpu_op);
+    r.cpu1 = cpu_rate(name, 1, n, cpu_op);
+    r.cpu_all = cpu_rate(name, cpu_threads, n, cpu_op);
     r.gpu1 = 1.0 / gpu_seconds([&] { gpu_run(1); });
     r.gpu_n = static_cast<double>(n) / gpu_seconds([&] { gpu_run(n); });
     rows.push_back(r);
 }
 
-// ---- ML-KEM-768 ----------------------------------------------------------------------------------------------
+// ---- KEMs ----------------------------------------------------------------------------------------------------
 
-void demo_mlkem(int device) {
-    constexpr std::size_t n = mlkem_batch, PK = OPENPQC_MLKEM768_PUBLICKEYBYTES, SK = OPENPQC_MLKEM768_SECRETKEYBYTES,
-                          CT = OPENPQC_MLKEM768_CIPHERTEXTBYTES, SS = OPENPQC_MLKEM_BYTES;
+void demo_kem(openpqc_alg alg, int device, std::size_t n) {
+    const openpqc_alg_info* a = openpqc_alg_info_get(alg);
+    const std::size_t PK = a->public_key_bytes, SK = a->secret_key_bytes, CT = a->ciphertext_bytes,
+                      SS = a->shared_secret_bytes, SEED = a->seed_bytes;
+    Gpu gpu(alg, device, n);
+    std::printf("\n== %s on %s: batches of %zu\n", a->name, openpqc_gpu_name(gpu.g), n);
 
-    // A context: the parameter set (512, 768, 1024), the largest batch per call, the device
-    opqc_sycl_mlkem* raw = nullptr;
-    check(opqc_sycl_mlkem_create(&raw, 768, n, device), "opqc_sycl_mlkem_create");
-    std::unique_ptr<opqc_sycl_mlkem, decltype(&opqc_sycl_mlkem_destroy)> context(raw, opqc_sycl_mlkem_destroy);
-    opqc_sycl_mlkem* gpu = context.get();
-    std::printf("\n== ML-KEM-768 on %s: batches of %zu\n", opqc_sycl_mlkem_device_name(gpu), n);
-
-    // Host buffers: the n operations back to back, in the byte formats of FIPS 203
-    const Bytes coins_kg = random_bytes(2 * OPENPQC_MLKEM_SYMBYTES * n);  // d || z of each key pair
-    const Bytes coins_enc = random_bytes(OPENPQC_MLKEM_SYMBYTES * n);     // m of each encapsulation
+    // KeyGen from seeds (d || z), Encaps with the device's randomness, Decaps of what it encapsulated
+    const Bytes seeds = random_bytes(SEED * n);
     Bytes pk(PK * n), sk(SK * n), ct(CT * n), ss_enc(SS * n), ss_dec(SS * n);
-    std::vector<std::int32_t> status(n);
-
-    // Device buffers, the same layout
-    DeviceMemory<opqc_sycl_mlkem> dev{gpu, opqc_sycl_mlkem_malloc, opqc_sycl_mlkem_free, {}};
-    std::uint8_t *d_coins_kg = dev.get(coins_kg.size()), *d_coins_enc = dev.get(coins_enc.size());
-    std::uint8_t *d_pk = dev.get(pk.size()), *d_sk = dev.get(sk.size()), *d_ct = dev.get(ct.size());
-    std::uint8_t *d_ss_enc = dev.get(ss_enc.size()), *d_ss_dec = dev.get(ss_dec.size());
-    auto* d_status = reinterpret_cast<std::int32_t*>(dev.get(4 * n));
-
-    // One batch of the first m operations. The calls of a context run in the order they are
-    // made: the _async copies and the operations are queued, and a plain memcpy waits for
-    // everything before it.
+    std::uint8_t *d_seeds = gpu.get(seeds.size()), *d_pk = gpu.get(pk.size()), *d_sk = gpu.get(sk.size()),
+                 *d_ct = gpu.get(ct.size()), *d_ss = gpu.get(ss_enc.size());
+    std::int32_t* d_status = gpu.status(n);
     const auto keygen = [&](std::size_t m) {
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_coins_kg, coins_kg.data(), 2 * OPENPQC_MLKEM_SYMBYTES * m), "copy");
-        check(opqc_sycl_mlkem_keypair_derand(gpu, d_pk, d_sk, d_coins_kg, m), "keypair");
-        check(opqc_sycl_mlkem_memcpy_async(gpu, pk.data(), d_pk, PK * m), "copy");
-        check(opqc_sycl_mlkem_memcpy(gpu, sk.data(), d_sk, SK * m), "copy");
+        check(openpqc_gpu_kem_keygen(gpu.g, d_pk, d_sk, d_status, m), "keygen");
+        check(openpqc_gpu_memcpy_async(gpu.g, pk.data(), d_pk, PK * m), "copy");
+        check(openpqc_gpu_memcpy(gpu.g, sk.data(), d_sk, SK * m), "copy");
     };
     const auto encaps = [&](std::size_t m) {
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_pk, pk.data(), PK * m), "copy");
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_coins_enc, coins_enc.data(), OPENPQC_MLKEM_SYMBYTES * m), "copy");
-        check(opqc_sycl_mlkem_enc_derand(gpu, d_ct, d_ss_enc, d_pk, d_coins_enc, d_status, m), "enc");
-        check(opqc_sycl_mlkem_memcpy_async(gpu, ct.data(), d_ct, CT * m), "copy");
-        check(opqc_sycl_mlkem_memcpy(gpu, ss_enc.data(), d_ss_enc, SS * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_pk, pk.data(), PK * m), "copy");
+        check(openpqc_gpu_kem_encaps(gpu.g, d_ct, d_ss, d_pk, d_status, m), "encaps");
+        check(openpqc_gpu_memcpy_async(gpu.g, ct.data(), d_ct, CT * m), "copy");
+        check(openpqc_gpu_memcpy(gpu.g, ss_enc.data(), d_ss, SS * m), "copy");
     };
     const auto decaps = [&](std::size_t m) {
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_ct, ct.data(), CT * m), "copy");
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_sk, sk.data(), SK * m), "copy");
-        check(opqc_sycl_mlkem_dec(gpu, d_ss_dec, d_ct, d_sk, d_status, m), "dec");
-        check(opqc_sycl_mlkem_memcpy_async(gpu, ss_dec.data(), d_ss_dec, SS * m), "copy");
-        check(opqc_sycl_mlkem_memcpy(gpu, status.data(), d_status, 4 * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_ct, ct.data(), CT * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_sk, sk.data(), SK * m), "copy");
+        check(openpqc_gpu_kem_decaps(gpu.g, d_ss, d_ct, d_sk, d_status, m), "decaps");
+        check(openpqc_gpu_memcpy(gpu.g, ss_dec.data(), d_ss, SS * m), "copy");
     };
 
-    // Run each once, then check the results: status[i] is operation i's result (0: done),
-    // and an operation that failed has no outputs
-    const auto all_ok = [&] { return std::all_of(status.begin(), status.end(), [](auto s) { return s == 0; }); };
-    keygen(n);
+    gpu.put(d_seeds, seeds);
+    check(openpqc_gpu_kem_keygen_from_seed(gpu.g, d_pk, d_sk, d_seeds, d_status, n), "keygen_from_seed");
+    expect(gpu.all_ok(d_status, n), "KeyGen from seeds: every operation has a result");
+    gpu.take(pk, d_pk);
+    gpu.take(sk, d_sk);
     encaps(n);
-    check(opqc_sycl_mlkem_memcpy(gpu, status.data(), d_status, 4 * n), "copy");
-    expect(all_ok(), "all " + std::to_string(n) + " encapsulations succeed (status 0)");
+    expect(gpu.all_ok(d_status, n), "Encaps: every operation has a result");
     decaps(n);
-    expect(ss_enc == ss_dec && all_ok(), "all " + std::to_string(n) + " decapsulations give the encapsulated secret");
-    bool identical = true;
-    for (const std::size_t i : sample(n)) {
-        std::uint8_t cpk[PK], csk[SK], cct[CT], css[SS];
-        check(openpqc_mlkem768_keygen_from_seed(cpk, csk, &coins_kg[2 * OPENPQC_MLKEM_SYMBYTES * i]), "keypair_derand");
-        check(openpqc_testing_mlkem768_encaps_derand(cct, css, cpk, &coins_enc[OPENPQC_MLKEM_SYMBYTES * i]), "enc_derand");
-        identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
-                    same(cct, &ct[CT * i], CT) && same(css, &ss_enc[SS * i], SS);
+    expect(gpu.all_ok(d_status, n), "Decaps: every operation has a result");
+
+    bool keys = true, secrets = true;
+    for (std::size_t i : sample(n)) {
+        Bytes cpk(PK), csk(SK), css(SS);
+        check(openpqc_kem_keygen_from_seed(alg, cpk.data(), csk.data(), &seeds[SEED * i]), "CPU keygen_from_seed");
+        keys = keys && same(cpk.data(), &pk[PK * i], PK) && same(csk.data(), &sk[SK * i], SK);
+        check(openpqc_kem_decaps(alg, css.data(), &ct[CT * i], &sk[SK * i]), "CPU decaps");
+        secrets = secrets && same(css.data(), &ss_enc[SS * i], SS);
     }
-    expect(identical, "GPU keys, ciphertexts and secrets = the CPU library's (sample)");
-
-    // The same operations on the CPU, for the comparison
-    std::printf("  measuring the speed on the CPU and the GPU...\n");
-    compare("ML-KEM-768 keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_mlkem768_keygen_from_seed(out, out + PK, &coins_kg[2 * OPENPQC_MLKEM_SYMBYTES * i]);
-    }, keygen);
-    compare("ML-KEM-768 encaps", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_testing_mlkem768_encaps_derand(out, out + CT, &pk[PK * i], &coins_enc[OPENPQC_MLKEM_SYMBYTES * i]);
-    }, encaps);
-    compare("ML-KEM-768 decaps", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_mlkem768_decaps(out, &ct[CT * i], &sk[SK * i]);
-    }, decaps);
-}
-
-// ---- ML-DSA-65 -----------------------------------------------------------------------------------------------
-
-void demo_mldsa(int device) {
-    constexpr std::size_t n = mldsa_batch, PK = OPENPQC_MLDSA65_PUBLICKEYBYTES, SK = OPENPQC_MLDSA65_SECRETKEYBYTES,
-                          SIG = OPENPQC_MLDSA65_BYTES;
-
-    opqc_sycl_mldsa* raw = nullptr;
-    check(opqc_sycl_mldsa_create(&raw, 65, n, device), "opqc_sycl_mldsa_create");
-    std::unique_ptr<opqc_sycl_mldsa, decltype(&opqc_sycl_mldsa_destroy)> context(raw, opqc_sycl_mldsa_destroy);
-    opqc_sycl_mldsa* gpu = context.get();
-    std::printf("\n== ML-DSA-65 on %s: batches of %zu\n", opqc_sycl_mldsa_device_name(gpu), n);
-
-    const Bytes seeds = random_bytes(OPENPQC_MLDSA_SEEDBYTES * n);  // xi of each key pair
-    const Bytes rnd = random_bytes(OPENPQC_MLDSA_RNDBYTES * n);     // the randomness of each signature
-    const Bytes msg = random_bytes(msg_bytes * n);          // n messages of 32 bytes, signer i signs message i
-    const std::vector<std::uint64_t> offsets = message_offsets(n);
-    Bytes pk(PK * n), sk(SK * n), sig(SIG * n);
-    std::vector<std::int32_t> status(n);
-
-    DeviceMemory<opqc_sycl_mldsa> dev{gpu, opqc_sycl_mldsa_malloc, opqc_sycl_mldsa_free, {}};
-    std::uint8_t *d_seeds = dev.get(seeds.size()), *d_rnd = dev.get(rnd.size()), *d_msg = dev.get(msg.size());
-    auto* d_offsets = reinterpret_cast<std::uint64_t*>(dev.get(8 * offsets.size()));
-    std::uint8_t *d_pk = dev.get(pk.size()), *d_sk = dev.get(sk.size()), *d_sig = dev.get(sig.size());
-    auto* d_status = reinterpret_cast<std::int32_t*>(dev.get(4 * n));
-
-    const auto keygen = [&](std::size_t m) {
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_seeds, seeds.data(), OPENPQC_MLDSA_SEEDBYTES * m), "copy");
-        check(opqc_sycl_mldsa_keypair_derand(gpu, d_pk, d_sk, d_seeds, m), "keypair");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, pk.data(), d_pk, PK * m), "copy");
-        check(opqc_sycl_mldsa_memcpy(gpu, sk.data(), d_sk, SK * m), "copy");
-    };
-    // signing waits for each round of FIPS 204's rejection loop, so it returns when it is done
-    const auto sign = [&](std::size_t m) {
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_msg, msg.data(), msg_bytes * m), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_offsets, offsets.data(), 8 * (m + 1)), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_rnd, rnd.data(), OPENPQC_MLDSA_RNDBYTES * m), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_sk, sk.data(), SK * m), "copy");
-        check(opqc_sycl_mldsa_sign_derand(gpu, d_sig, d_msg, d_offsets, ctxstr, ctxlen, d_rnd, d_sk, nullptr, m),
-              "sign");
-        check(opqc_sycl_mldsa_memcpy(gpu, sig.data(), d_sig, SIG * m), "copy");
-    };
-    const auto verify = [&](std::size_t m) {
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_sig, sig.data(), SIG * m), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_msg, msg.data(), msg_bytes * m), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_offsets, offsets.data(), 8 * (m + 1)), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_pk, pk.data(), PK * m), "copy");
-        check(opqc_sycl_mldsa_verify(gpu, d_sig, d_msg, d_offsets, ctxstr, ctxlen, d_pk, d_status, m), "verify");
-        check(opqc_sycl_mldsa_memcpy(gpu, status.data(), d_status, 4 * m), "copy");
-    };
-
-    keygen(n);
-    sign(n);
-    verify(n);
-    expect(std::all_of(status.begin(), status.end(), [](auto s) { return s == 0; }),
-           "the GPU finds all " + std::to_string(n) + " signatures valid");
-    bool identical = true, valid = true;
-    for (const std::size_t i : sample(n)) {
-        std::uint8_t cpk[PK], csk[SK], csig[SIG];
-        check(openpqc_mldsa65_keygen_from_seed(cpk, csk, &seeds[OPENPQC_MLDSA_SEEDBYTES * i]), "keypair_derand");
-        check(openpqc_testing_mldsa65_sign_derand(csig, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                          &rnd[OPENPQC_MLDSA_RNDBYTES * i], csk),
-              "sign_derand");
-        identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
-                    same(csig, &sig[SIG * i], SIG);
-        valid = valid && openpqc_mldsa65_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                                &pk[PK * i]) == 0;
-    }
-    expect(identical, "GPU keys and signatures = the CPU library's (sample)");
-    expect(valid, "the CPU finds the GPU's signatures valid (sample)");
+    expect(keys, "the key pairs are the CPU's for the same seeds (4 checked)");
+    expect(secrets, "the CPU decapsulates the GPU's ciphertexts to the GPU's keys (4 checked)");
+    expect(ss_enc == ss_dec, "the GPU's Decaps gives every Encaps' key back (" + std::to_string(n) + ")");
 
     std::printf("  measuring the speed on the CPU and the GPU...\n");
-    compare("ML-DSA-65 keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_mldsa65_keygen_from_seed(out, out + PK, &seeds[OPENPQC_MLDSA_SEEDBYTES * i]);
-    }, keygen);
-    compare("ML-DSA-65 sign", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_testing_mldsa65_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                           &rnd[OPENPQC_MLDSA_RNDBYTES * i], &sk[SK * i]);
-    }, sign);
-    compare("ML-DSA-65 verify", n, [&](std::size_t i, std::uint8_t*) {
-        return openpqc_mldsa65_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                      &pk[PK * i]);
-    }, verify);
+    const std::string name = a->name;
+    compare(name + " keygen", n, [&](std::size_t, std::uint8_t* out) { return openpqc_kem_keygen(alg, out, out + PK); },
+            keygen);
+    compare(name + " encaps", n,
+            [&](std::size_t i, std::uint8_t* out) { return openpqc_kem_encaps(alg, out, out + CT, &pk[PK * i]); },
+            encaps);
+    compare(name + " decaps", n,
+            [&](std::size_t i, std::uint8_t* out) { return openpqc_kem_decaps(alg, out, &ct[CT * i], &sk[SK * i]); },
+            decaps);
 }
 
-// ---- SLH-DSA-SHA2-128f ---------------------------------------------------------------------------------------
+// ---- Signature schemes ---------------------------------------------------------------------------------------
 
-void demo_slhdsa(int device) {
-    constexpr std::size_t n = slhdsa_batch, PK = OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES,
-                          SK = OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES, SIG = OPENPQC_SLHDSA_SHA2_128F_BYTES,
-                          SEED = OPENPQC_SLHDSA_SHA2_128F_SEEDBYTES, RND = OPENPQC_SLHDSA_SHA2_128F_RNDBYTES;
+void demo_sig(openpqc_alg alg, int device, std::size_t n) {
+    const openpqc_alg_info* a = openpqc_alg_info_get(alg);
+    const std::size_t PK = a->public_key_bytes, SK = a->secret_key_bytes, SIG = a->signature_bytes;
+    const bool from_seed = (alg >> 8) == 2;   // ML-DSA has KeyGen from a seed xi; SLH-DSA does not
+    Gpu gpu(alg, device, n);
+    std::printf("\n== %s on %s: batches of %zu\n", a->name, openpqc_gpu_name(gpu.g), n);
 
-    // The parameter set is an OPENPQC_SLHDSA_* id. A build may leave sets out of the GPU
-    // backend (OPENPQC_SLHDSA_SYCL_SETS); creating a context for one of those fails.
-    opqc_sycl_slhdsa* raw = nullptr;
-    if (opqc_sycl_slhdsa_create(&raw, OPENPQC_SLHDSA_SHA2_128F, n, device) != 0) {
-        std::printf("\n== SLH-DSA-SHA2-128f: skipped, the GPU backend of this build does not contain it\n"
-                    "   (or the device lacks the memory); see examples/README.md\n");
-        return;
-    }
-    std::unique_ptr<opqc_sycl_slhdsa, decltype(&opqc_sycl_slhdsa_destroy)> context(raw, opqc_sycl_slhdsa_destroy);
-    opqc_sycl_slhdsa* gpu = context.get();
-    std::printf("\n== SLH-DSA-SHA2-128f on %s: batches of %zu\n", opqc_sycl_slhdsa_device_name(gpu), n);
-
-    const Bytes seeds = random_bytes(SEED * n);  // SK.seed || SK.prf || PK.seed of each key pair
-    const Bytes addrnd = random_bytes(RND * n);  // the randomness of each signature
     const Bytes msg = random_bytes(msg_bytes * n);
-    const std::vector<std::uint64_t> offsets = message_offsets(n);
-    Bytes pk(PK * n), sk(SK * n), sig(SIG * n);
-    std::vector<std::int32_t> status(n);
-
-    DeviceMemory<opqc_sycl_slhdsa> dev{gpu, opqc_sycl_slhdsa_malloc, opqc_sycl_slhdsa_free, {}};
-    std::uint8_t *d_seeds = dev.get(seeds.size()), *d_addrnd = dev.get(addrnd.size()), *d_msg = dev.get(msg.size());
-    auto* d_offsets = reinterpret_cast<std::uint64_t*>(dev.get(8 * offsets.size()));
-    std::uint8_t *d_pk = dev.get(pk.size()), *d_sk = dev.get(sk.size()), *d_sig = dev.get(sig.size());
-    auto* d_status = reinterpret_cast<std::int32_t*>(dev.get(4 * n));
-
+    Bytes pk(PK * n), sk(SK * n), sig(SIG * n), sig_det(SIG * n);
+    std::uint8_t *d_pk = gpu.get(pk.size()), *d_sk = gpu.get(sk.size()), *d_sig = gpu.get(sig.size()),
+                 *d_msg = gpu.get(msg.size());
+    std::int32_t* d_status = gpu.status(n);
+    const openpqc_gpu_messages messages{d_msg, nullptr, msg_bytes, msg.size()};
     const auto keygen = [&](std::size_t m) {
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_seeds, seeds.data(), SEED * m), "copy");
-        check(opqc_sycl_slhdsa_keypair_derand(gpu, d_pk, d_sk, d_seeds, m), "keypair");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, pk.data(), d_pk, PK * m), "copy");
-        check(opqc_sycl_slhdsa_memcpy(gpu, sk.data(), d_sk, SK * m), "copy");
+        check(openpqc_gpu_sig_keygen(gpu.g, d_pk, d_sk, d_status, m), "keygen");
+        check(openpqc_gpu_memcpy_async(gpu.g, pk.data(), d_pk, PK * m), "copy");
+        check(openpqc_gpu_memcpy(gpu.g, sk.data(), d_sk, SK * m), "copy");
     };
     const auto sign = [&](std::size_t m) {
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_msg, msg.data(), msg_bytes * m), "copy");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_offsets, offsets.data(), 8 * (m + 1)), "copy");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_addrnd, addrnd.data(), RND * m), "copy");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_sk, sk.data(), SK * m), "copy");
-        check(opqc_sycl_slhdsa_sign_derand(gpu, d_sig, d_msg, d_offsets, ctxstr, ctxlen, d_addrnd, d_sk, m), "sign");
-        check(opqc_sycl_slhdsa_memcpy(gpu, sig.data(), d_sig, SIG * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_msg, msg.data(), msg_bytes * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_sk, sk.data(), SK * m), "copy");
+        check(openpqc_gpu_sig_sign(gpu.g, d_sig, messages, &hedged, d_sk, d_status, m), "sign");
+        check(openpqc_gpu_memcpy(gpu.g, sig.data(), d_sig, SIG * m), "copy");
     };
     const auto verify = [&](std::size_t m) {
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_sig, sig.data(), SIG * m), "copy");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_msg, msg.data(), msg_bytes * m), "copy");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_offsets, offsets.data(), 8 * (m + 1)), "copy");
-        check(opqc_sycl_slhdsa_memcpy_async(gpu, d_pk, pk.data(), PK * m), "copy");
-        check(opqc_sycl_slhdsa_verify(gpu, d_sig, d_msg, d_offsets, ctxstr, ctxlen, d_pk, d_status, m), "verify");
-        check(opqc_sycl_slhdsa_memcpy(gpu, status.data(), d_status, 4 * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_sig, sig.data(), SIG * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_msg, msg.data(), msg_bytes * m), "copy");
+        check(openpqc_gpu_memcpy_async(gpu.g, d_pk, pk.data(), PK * m), "copy");
+        check(openpqc_gpu_sig_verify(gpu.g, d_sig, messages, &hedged, d_pk, d_status, m), "verify");
+        check(openpqc_gpu_sync(gpu.g), "sync");
     };
 
-    keygen(n);
-    sign(n);
-    verify(n);
-    expect(std::all_of(status.begin(), status.end(), [](auto s) { return s == 0; }),
-           "the GPU finds all " + std::to_string(n) + " signatures valid");
-    bool identical = true, valid = true;
-    Bytes csig(SIG);
-    for (const std::size_t i : sample(n)) {
-        std::uint8_t cpk[PK], csk[SK];
-        check(openpqc_testing_slhdsa_sha2_128f_keygen_derand(cpk, csk, &seeds[SEED * i]), "keypair_derand");
-        check(openpqc_testing_slhdsa_sha2_128f_sign_derand(csig.data(), &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                                   &addrnd[RND * i], csk),
-              "sign_derand");
-        identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
-                    same(csig.data(), &sig[SIG * i], SIG);
-        valid = valid && openpqc_slhdsa_sha2_128f_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr,
-                                                         ctxlen, &pk[PK * i]) == 0;
+    // keys: from seeds (ML-DSA, the same bytes as the CPU's), else with the device's randomness
+    Bytes seeds;
+    if (from_seed) {
+        seeds = random_bytes(a->seed_bytes * n);
+        std::uint8_t* d_seeds = gpu.get(seeds.size());
+        gpu.put(d_seeds, seeds);
+        check(openpqc_gpu_sig_keygen_from_seed(gpu.g, d_pk, d_sk, d_seeds, d_status, n), "keygen_from_seed");
+        expect(gpu.all_ok(d_status, n), "KeyGen from seeds: every operation has a result");
+        gpu.take(pk, d_pk);
+        gpu.take(sk, d_sk);
+    } else {
+        keygen(n);
+        expect(gpu.all_ok(d_status, n), "KeyGen: every operation has a result");
     }
-    expect(identical, "GPU keys and signatures = the CPU library's (sample)");
-    expect(valid, "the CPU finds the GPU's signatures valid (sample)");
+    gpu.put(d_msg, msg);
+    check(openpqc_gpu_sig_sign(gpu.g, d_sig, messages, &deterministic, d_sk, d_status, n), "sign (deterministic)");
+    expect(gpu.all_ok(d_status, n), "deterministic signing: every operation has a result");
+    gpu.take(sig_det, d_sig);
+    sign(n);
+    expect(gpu.all_ok(d_status, n), "hedged signing: every operation has a result");
+    verify(n);
+    expect(gpu.all_ok(d_status, n), "the GPU accepts every signature (" + std::to_string(n) + ")");
+
+    bool keys = true, det = true, hedged_ok = true;
+    for (std::size_t i : sample(n)) {
+        Bytes cpk(PK), csk(SK), csig(SIG);
+        if (from_seed) {
+            check(openpqc_sig_keygen_from_seed(alg, cpk.data(), csk.data(), &seeds[a->seed_bytes * i]), "CPU keygen");
+            keys = keys && same(cpk.data(), &pk[PK * i], PK) && same(csk.data(), &sk[SK * i], SK);
+        } else {
+            keys = keys && openpqc_sig_check_keypair(alg, &pk[PK * i], &sk[SK * i]) == OPENPQC_OK;
+        }
+        check(openpqc_sig_sign(alg, csig.data(), &msg[msg_bytes * i], msg_bytes, &deterministic, &sk[SK * i]),
+              "CPU sign");
+        det = det && same(csig.data(), &sig_det[SIG * i], SIG);
+        hedged_ok = hedged_ok && openpqc_sig_verify(alg, &sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, &hedged,
+                                                    &pk[PK * i]) == OPENPQC_OK;
+    }
+    expect(keys, from_seed ? "the key pairs are the CPU's for the same seeds (4 checked)"
+                           : "the CPU accepts the GPU's key pairs (4 checked)");
+    expect(det, "the deterministic signatures are the CPU's (4 checked)");
+    expect(hedged_ok, "the CPU accepts the GPU's hedged signatures (4 checked)");
 
     std::printf("  measuring the speed on the CPU and the GPU...\n");
-    compare("SLH-DSA-SHA2-128f keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_testing_slhdsa_sha2_128f_keygen_derand(out, out + PK, &seeds[SEED * i]);
-    }, keygen);
-    compare("SLH-DSA-SHA2-128f sign", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_testing_slhdsa_sha2_128f_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                                    &addrnd[RND * i], &sk[SK * i]);
+    const std::string name = a->name;
+    compare(name + " keygen", n, [&](std::size_t, std::uint8_t* out) { return openpqc_sig_keygen(alg, out, out + PK); },
+            keygen);
+    compare(name + " sign", n, [&](std::size_t i, std::uint8_t* out) {
+        return openpqc_sig_sign(alg, out, &msg[msg_bytes * i], msg_bytes, &hedged, &sk[SK * i]);
     }, sign);
-    compare("SLH-DSA-SHA2-128f verify", n, [&](std::size_t i, std::uint8_t*) {
-        return openpqc_slhdsa_sha2_128f_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                               &pk[PK * i]);
+    compare(name + " verify", n, [&](std::size_t i, std::uint8_t*) {
+        return openpqc_sig_verify(alg, &sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, &hedged, &pk[PK * i]);
     }, verify);
 }
 
@@ -482,10 +363,10 @@ int main(int argc, char** argv) {
     const int device = argc > 1 ? std::atoi(argv[1]) : -1;
 
     std::printf("OpenPQC on a GPU (SYCL, %s): ML-KEM, ML-DSA and SLH-DSA\n\nSYCL devices:\n",
-                opqc_sycl_implementation());
-    const int count = opqc_sycl_device_count();
+                openpqc_gpu_implementation());
+    const int count = openpqc_gpu_device_count();
     for (int i = 0; i < count; i++)
-        std::printf("  %d  %s  (%s)\n", i, opqc_sycl_device_name(i), opqc_sycl_device_platform(i));
+        std::printf("  %d  %s  (%s)\n", i, openpqc_gpu_device_name(i), openpqc_gpu_device_platform(i));
     if (count == 0) {
         std::printf("  none\n");
         return 2;
@@ -496,9 +377,17 @@ int main(int argc, char** argv) {
     }
     if (device == -1) std::printf("(using the default device; pick another with: demo_gpu <index>)\n");
 
-    demo_mlkem(device);
-    demo_mldsa(device);
-    demo_slhdsa(device);
+    // batch sizes: large enough to keep a laptop GPU busy, small enough for its memory
+    demo_kem(OPENPQC_ML_KEM_768, device, 8192);
+    demo_sig(OPENPQC_ML_DSA_65, device, 4096);
+    openpqc_gpu* probe = nullptr;   // a development build may leave SHA2-128f out (OPENPQC_SLHDSA_SYCL_SETS)
+    const openpqc_gpu_config one{device, 1};
+    if (openpqc_gpu_create(&probe, OPENPQC_SLH_DSA_SHA2_128F, &one) == OPENPQC_OK) {
+        openpqc_gpu_destroy(probe);
+        demo_sig(OPENPQC_SLH_DSA_SHA2_128F, device, 1024);
+    } else {
+        std::printf("\n== SLH-DSA-SHA2-128f: not in this build of the GPU library\n");
+    }
     print_table();
     std::printf("\n%s\n", failures ? "SOME CHECKS FAILED" : "all checks passed");
     return failures ? 1 : 0;

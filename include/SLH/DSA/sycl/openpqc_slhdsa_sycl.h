@@ -6,6 +6,10 @@
 /*
  * openpqc_slhdsa_sycl.h -- batched SLH-DSA (FIPS 205) on GPUs and other SYCL devices
  *
+ * Internal: the backend's own C API, which the GPU API (openpqc/sycl.h, include/openpqc/sycl.cpp) sits on.
+ * Not installed, and not exported by the library openpqc_sycl (cmake/openpqc_sycl.map); the library
+ * openpqc_sycl_testing exports it, for the white-box tests, the benchmarks and the profilers.
+ *
  * One call runs n independent operations of the context's parameter set. All key,
  * signature, message, seed, addrnd, pre-hash, offset and status buffers are DEVICE
  * buffers (allocate them with opqc_sycl_slhdsa_malloc) holding the n operations back
@@ -63,8 +67,10 @@
  *
  * Messages. The n messages lie back to back in one device buffer `msg`; message i is
  * msg[offsets[i] .. offsets[i + 1]), with offsets a device buffer of n + 1 uint64_t
- * (offsets[0] is usually 0). The offsets must not decrease and must stay within msg;
- * they are device data and are not checked. For the same reason msg (mprime, ph_m)
+ * (offsets[0] is usually 0). The offsets must not decrease and must stay within msg.
+ * They are device data: the kernels read an operation whose offsets decrease as the
+ * empty message, and cannot see an end past msg, whose length these functions do not
+ * take (the GPU API, openpqc/sycl.h, checks it). For the same reason msg (mprime, ph_m)
  * must not be NULL even when every message is empty: the call cannot see that no
  * byte will be read, and refuses NULL with -1 (verification fails closed, see
  * Status), where the CPU library accepts NULL for an empty message. All messages of a

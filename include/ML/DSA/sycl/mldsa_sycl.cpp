@@ -73,6 +73,7 @@
 
 #include "Core/opqc_platform.h"
 #include "Core/opqc_sha3.h"
+#include "Core/sycl/opqc_sycl_backends.hpp"
 #include "Core/sycl/opqc_sycl_context.hpp"
 #include "Core/sycl/opqc_sycl_messages.hpp"
 #include "Core/sycl/opqc_sycl_runtime.hpp"
@@ -1335,8 +1336,8 @@ struct opqc_sycl_mldsa : openpqc::gpu::Context<gpu::SECTIONS> {
     gpu::Schedule schedule;
     gpu::SignStats stats;
 
-    opqc_sycl_mldsa(const sycl::device& dev, int lvl, std::size_t batch)
-        : openpqc::gpu::Context<gpu::SECTIONS>(dev, batch), level(lvl) {}
+    opqc_sycl_mldsa(const sycl::device& dev, int lvl, std::size_t batch, const sycl::context* app)
+        : openpqc::gpu::Context<gpu::SECTIONS>(dev, batch, app), level(lvl) {}
 };
 
 namespace {
@@ -1402,8 +1403,8 @@ bool usable_status(const opqc_sycl_mldsa* ctx, const std::int32_t* status) {
 
 // Whether a signing call's arguments are acceptable (else -1, before anything is queued or any
 // randomness drawn): a context string of at most 255 bytes (FIPS 204, Algorithm 2, lines 1-3),
-// given if it is not empty; the messages (msg and offsets) or the message representatives mu;
-// and, for n > 0, buffers that the kernels can use (usable): the signatures and messages, which
+// given if it is not empty; the messages (msg, and offsets unless they are strided) or the message
+// representatives mu; and, for n > 0, buffers that the kernels can use (usable): the signatures and messages, which
 // may start at any byte, the buffers that the kernels read in 8-byte words, 8-byte aligned, and
 // a status buffer, if any, 4-byte aligned. rnd: nullptr for the randomized calls before they draw
 // it (it is then in the workspace); the signing itself (sign_any) requires it.
@@ -1411,10 +1412,11 @@ bool sign_accepts(const opqc_sycl_mldsa* ctx, const gpu::Messages& msgs, const s
                   const std::uint8_t* mu, const std::uint8_t* rnd, const std::uint8_t* sk, const std::uint8_t* sig,
                   const std::int32_t* status, std::size_t n) {
     if (msgs.ctxlen > openpqc::gpu::MAX_CONTEXT_BYTES || (msgs.ctxlen > 0 && !ctxstr)) return false;
-    if (msgs.msg ? !msgs.offsets : !mu) return false;
+    if (msgs.msg ? !msgs.strided && !msgs.offsets : !mu) return false;
     if (!aligned(msgs.offsets, mu, rnd, sk) || !status_aligned(status)) return false;
     if (n == 0) return true;
-    const bool messages = msgs.msg ? usable(ctx, msgs.msg, 1) && usable(ctx, msgs.offsets) : usable(ctx, mu);
+    const bool messages = msgs.msg ? usable(ctx, msgs.msg, 1) && (msgs.strided || usable(ctx, msgs.offsets))
+                                   : usable(ctx, mu);
     return messages && usable(ctx, sig, 1) && usable(ctx, sk) && (!rnd || usable(ctx, rnd)) &&
            (!status || usable_status(ctx, status));
 }
@@ -1450,7 +1452,7 @@ int sign_any(opqc_sycl_mldsa* ctx, std::uint8_t* sig, gpu::Messages msgs, const 
             const std::uint8_t* keys = one_key ? sk : sk + off * S::sk;
             const std::size_t key_step = one_key ? 0 : 1;
             if (msgs.msg) {
-                const gpu::Messages part{msgs.msg, msgs.offsets + off, msgs.ctxlen};
+                const gpu::Messages part = openpqc::gpu::chunk(msgs, off);
                 slots = gpu::sign<P, true>(ctx->queue, ctx->ws, ctx->schedule, ctx->max_batch, ctx->stats,
                                            sig + off * S::sig, keys, key_step, part, nullptr, rnd + off * 32, st, m);
             } else {
@@ -1504,12 +1506,13 @@ int verify_any(opqc_sycl_mldsa* ctx, const std::uint8_t* sig, gpu::Messages msgs
     // the buffers the kernels use, for n > 0 (usable); a status buffer that is not usable is not filled
     // either: a fill into it would fault the device or be lost
     const bool status_ok = status && status_aligned(status) && (n == 0 || usable_status(ctx, status));
-    const bool buffers_ok = n == 0 || (usable(ctx, sig, 1) && usable(ctx, pk) &&
-                                       (msgs.msg ? usable(ctx, msgs.msg, 1) && usable(ctx, msgs.offsets)
-                                                 : usable(ctx, mu)));
+    const bool buffers_ok =
+            n == 0 || (usable(ctx, sig, 1) && usable(ctx, pk) &&
+                       (msgs.msg ? usable(ctx, msgs.msg, 1) && (msgs.strided || usable(ctx, msgs.offsets))
+                                 : usable(ctx, mu)));
     const Lock lock(ctx->mutex);
     if (!status_ok || !buffers_ok || msgs.ctxlen > openpqc::gpu::MAX_CONTEXT_BYTES || (msgs.ctxlen > 0 && !ctxstr) ||
-        (msgs.msg ? !msgs.offsets : !mu) || !aligned(msgs.offsets, mu, pk)) {
+        (msgs.msg ? !msgs.strided && !msgs.offsets : !mu) || !aligned(msgs.offsets, mu, pk)) {
         fail_closed(ctx, status_ok ? status : nullptr, n, true);
         return -1;
     }
@@ -1524,7 +1527,7 @@ int verify_any(opqc_sycl_mldsa* ctx, const std::uint8_t* sig, gpu::Messages msgs
                 const std::uint8_t* keys = one_key ? pk : pk + off * S::pk;
                 const std::size_t key_step = one_key ? 0 : 1;
                 if (msgs.msg) {
-                    const gpu::Messages part{msgs.msg, msgs.offsets + off, msgs.ctxlen};
+                    const gpu::Messages part = openpqc::gpu::chunk(msgs, off);
                     gpu::verify<P, true>(ctx->queue, ctx->ws, sig + off * S::sig, part, nullptr, keys, key_step,
                                          status + off, m);
                 } else {
@@ -1643,18 +1646,20 @@ int with_random_coins(opqc_sycl_mldsa* ctx, std::size_t n, int sticky, F f) {
                                            [&](std::size_t m) { zeroize_workspace(ctx, m, 0, gpu::bit(gpu::COINS)); });
 }
 
-} // namespace
-
-extern "C" int opqc_sycl_mldsa_create(opqc_sycl_mldsa** out, int level, std::size_t max_batch, int device) {
+// create, on the device with index `device` (opqc_sycl_mldsa_create) or on the device `given`, in the SYCL
+// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp)
+int create_context(opqc_sycl_mldsa** out, int level, std::size_t max_batch, int device, const sycl::device* given,
+           const sycl::context* app) {
     if (!out) return -1;
     *out = nullptr;
     if ((level != 44 && level != 65 && level != 87) || max_batch == 0 || max_batch > UINT32_MAX) return -1;
     return guarded([&] {
         sycl::device dev;
-        if (!openpqc::gpu::select_device(device, dev)) return -1;
+        if (given) dev = *given;
+        else if (!openpqc::gpu::select_device(device, dev)) return -1;
         // destroyed on every way out but the last (an exception included: no leak of device memory)
         std::unique_ptr<opqc_sycl_mldsa, void (*)(opqc_sycl_mldsa*)> ctx(
-                new opqc_sycl_mldsa(dev, level, max_batch), [](opqc_sycl_mldsa* c) { openpqc::gpu::destroy(c); });
+                new opqc_sycl_mldsa(dev, level, max_batch, app), [](opqc_sycl_mldsa* c) { openpqc::gpu::destroy(c); });
         std::array<std::size_t, gpu::SECTIONS> per_op{};
         with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
         // 256-byte aligned sections; then the context string and the counters
@@ -1675,6 +1680,12 @@ extern "C" int opqc_sycl_mldsa_create(opqc_sycl_mldsa** out, int level, std::siz
         *out = ctx.release();
         return 0;
     });
+}
+
+} // namespace
+
+extern "C" int opqc_sycl_mldsa_create(opqc_sycl_mldsa** out, int level, std::size_t max_batch, int device) {
+    return create_context(out, level, max_batch, device, nullptr, nullptr);
 }
 
 // Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device
@@ -1877,4 +1888,71 @@ extern "C" int opqc_sycl_mldsa_memcpy(opqc_sycl_mldsa* ctx, void* dst, const voi
 
 extern "C" int opqc_sycl_mldsa_memcpy_async(opqc_sycl_mldsa* ctx, void* dst, const void* src, std::size_t bytes) {
     return openpqc::gpu::copy(ctx, dst, src, bytes, false);
+}
+
+// ---------------------------------------------------------------------- the GPU API (openpqc/sycl.h)
+
+namespace {
+
+// The deterministic variant (FIPS 204, Section 3.4): rnd = {0}^32 for every signature, from the coin section of
+// the workspace, zeroed for each launch of max_batch operations. Called with the lock held. A context that has
+// failed signs nothing (-2).
+template <class F>
+int with_zero_coins(opqc_sycl_mldsa* ctx, std::size_t n, F f) {
+    const Lock lock(ctx->mutex);
+    int rc = ctx->check();
+    for (std::size_t off = 0; off < n && rc == 0; off += ctx->max_batch) {
+        const std::size_t m = std::min(n - off, ctx->max_batch);
+        rc = ctx->guard([&] {
+            ctx->queue.memset(ctx->ws.coins, 0, 32 * m);
+            return 0;
+        });
+        if (rc == 0) rc = f(off, m, static_cast<const std::uint8_t*>(ctx->ws.coins));
+    }
+    return rc == -2 ? ctx->check() : rc;
+}
+
+// Signing with rnd from the caller, the RNG or zeros: the arguments are checked for the whole call before any
+// randomness is drawn, then every launch goes to sign_any with its own rnd (as opqc_sycl_mldsa_sign does)
+int sign_with(opqc_sycl_mldsa* ctx, std::uint8_t* sig, const gpu::Messages& msgs, const std::uint8_t* ctxstr,
+              const std::uint8_t* mu, openpqc::gpu::Coins coins, const std::uint8_t* rnd, const std::uint8_t* sk,
+              bool one_key, std::int32_t* status, std::size_t n) {
+    if (!ctx) return -1;
+    if (coins == openpqc::gpu::Coins::given) return sign_any(ctx, sig, msgs, ctxstr, mu, rnd, sk, one_key, status, n);
+    if ((!msgs.msg && !mu) || !sign_accepts(ctx, msgs, ctxstr, mu, nullptr, sk, sig, status, n)) return -1;
+    const auto launch = [&](std::size_t off, std::size_t m, const std::uint8_t* r) {
+        int rc = 0;
+        with_level(ctx->level, [&](auto p) {
+            using S = Sizes<decltype(p)>;
+            rc = sign_any(ctx, sig + off * S::sig, msgs.msg ? openpqc::gpu::chunk(msgs, off) : msgs, ctxstr,
+                          mu ? mu + off * 64 : nullptr, r, one_key ? sk : sk + off * S::sk, one_key,
+                          status ? status + off : nullptr, m);
+        });
+        return rc;
+    };
+    if (coins == openpqc::gpu::Coins::random) return with_random_coins(ctx, n, OPENPQC_ERR_SIGNING_LIMIT, launch);
+    return with_zero_coins(ctx, n, launch);
+}
+
+} // namespace
+
+int openpqc::gpu::mldsa_create(opqc_sycl_mldsa** out, int level, std::size_t max_batch, const sycl::device& dev,
+                               const sycl::context* app) {
+    return create_context(out, level, max_batch, -1, &dev, app);
+}
+
+openpqc::gpu::Handle openpqc::gpu::handle(opqc_sycl_mldsa* ctx) {
+    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch};
+}
+
+int openpqc::gpu::mldsa_sign(opqc_sycl_mldsa* ctx, std::uint8_t* sig, const Messages& msgs, const std::uint8_t* ctxstr,
+                             const std::uint8_t* mu, Coins coins, const std::uint8_t* rnd, const std::uint8_t* sk,
+                             bool one_key, std::int32_t* status, std::size_t n) {
+    return sign_with(ctx, sig, msgs, ctxstr, mu, coins, rnd, sk, one_key, status, n);
+}
+
+int openpqc::gpu::mldsa_verify(opqc_sycl_mldsa* ctx, const std::uint8_t* sig, const Messages& msgs,
+                               const std::uint8_t* ctxstr, const std::uint8_t* mu, const std::uint8_t* pk, bool one_key,
+                               std::int32_t* status, std::size_t n) {
+    return verify_any(ctx, sig, msgs, ctxstr, mu, pk, one_key, status, n);
 }

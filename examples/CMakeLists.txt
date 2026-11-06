@@ -18,11 +18,10 @@ endif()
 
 if(OPENPQC_HAVE_SYCL)
     find_package(Threads REQUIRED)
-    # The GPU library (OpenPQC::sycl) and the CPU library, as an application uses them
+    # The GPU library (OpenPQC::sycl) and the CPU library, as an application uses them: the GPU API (openpqc/sycl.h)
+    # for all three schemes, checked against the CPU without testing interfaces
     add_executable(demo_gpu demo_gpu.cpp)
-    # It compares the GPU's _derand functions with the CPU's testing interfaces (OpenPQC::testing) on the same
-    # inputs; the GPU API of Phase 4 replaces both
-    target_link_libraries(demo_gpu PRIVATE OpenPQC::sycl OpenPQC::testing openpqc_strict_warnings
+    target_link_libraries(demo_gpu PRIVATE OpenPQC::sycl OpenPQC::openpqc openpqc_strict_warnings
                                            Threads::Threads ${CMAKE_DL_LIBS})
     target_compile_features(demo_gpu PRIVATE cxx_std_20)
 
@@ -31,4 +30,11 @@ if(OPENPQC_HAVE_SYCL)
     target_link_libraries(live_demo PRIVATE OpenPQC::sycl OpenPQC::openpqc openpqc_strict_warnings
                                             Threads::Threads ${CMAKE_DL_LIBS})
     target_compile_features(live_demo PRIVATE cxx_std_20)
+
+    # device_hash: OpenPQC's hash functions inside the application's own SYCL kernel (openpqc/sycl/device.hpp,
+    # header-only); a SYCL program of its own, which links OpenPQC::openpqc only for the CPU's check
+    add_executable(device_hash device_hash.cpp)
+    target_link_libraries(device_hash PRIVATE OpenPQC::openpqc)
+    target_compile_features(device_hash PRIVATE cxx_std_20)
+    openpqc_sycl_sources(device_hash device_hash.cpp)
 endif()

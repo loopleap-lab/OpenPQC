@@ -235,8 +235,11 @@ public:
 
     // The errors pending when the queue is made can only be other queues' (under AdaptiveCpp, whose list
     // is the process's): the handler counts them, for the contexts that exist, and this one starts
-    // healthy. Then the record is armed.
-    explicit ContextQueue(const sycl::device& dev) : ContextQueue(dev, std::make_shared<FailureRecord>()) {
+    // healthy. Then the record is armed. app: the SYCL context to make the queue in (an application's,
+    // which must contain dev: openpqc/sycl.hpp, openpqc_gpu_create_on), so that USM memory the application
+    // allocated in it is memory of this queue's context; nullptr: a SYCL context of the queue's own.
+    explicit ContextQueue(const sycl::device& dev, const sycl::context* app = nullptr)
+        : ContextQueue(dev, app, std::make_shared<FailureRecord>()) {
         guarded([&] {
             sycl::queue::throw_asynchronous();
             return 0;
@@ -292,9 +295,12 @@ public:
     }
 
 private:
-    ContextQueue(const sycl::device& dev, std::shared_ptr<FailureRecord> record)
-        : sycl::queue(dev, recording_handler(record), sycl::property::queue::in_order()),
-          record_(std::move(record)) {}
+    ContextQueue(const sycl::device& dev, const sycl::context* app, std::shared_ptr<FailureRecord> record)
+        : sycl::queue(make(dev, app, record)), record_(std::move(record)) {}
+    static sycl::queue make(const sycl::device& dev, const sycl::context* app, std::shared_ptr<FailureRecord> record) {
+        if (app) return sycl::queue(*app, dev, recording_handler(std::move(record)), sycl::property::queue::in_order());
+        return sycl::queue(dev, recording_handler(std::move(record)), sycl::property::queue::in_order());
+    }
 
     void run_hook() noexcept {
         if (hook_) hook_(hook_arg_);
@@ -319,8 +325,9 @@ struct Context {
     mutable std::recursive_mutex mutex;    // taken by every call and by the helpers (the top of the file)
     bool wiped_after_failure = false;      // check has zeroized the workspace (under the lock)
 
-    Context(const sycl::device& dev, std::size_t batch)
-        : queue(dev), max_batch(batch), device_name(dev.get_info<sycl::info::device::name>()) {
+    // app: the application's SYCL context to work in, or nullptr (ContextQueue)
+    Context(const sycl::device& dev, std::size_t batch, const sycl::context* app = nullptr)
+        : queue(dev, app), max_batch(batch), device_name(dev.get_info<sycl::info::device::name>()) {
         // a wait through queue.wait_and_throw() that finds the context failed zeroizes the workspace
         // (once), as sync does
         queue.on_failure([](void* self) noexcept { static_cast<Context*>(self)->check(); }, this);

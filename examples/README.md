@@ -5,8 +5,9 @@ Small programs that show how to use OpenPQC's three schemes and what a GPU chang
 | Program | What it shows |
 |---|---|
 | [`demo_cpu.c`](demo_cpu.c) | The C API, one scheme at a time: ML-KEM-768 (Alice and Bob agree on a shared secret), ML-DSA-65 and SLH-DSA-SHA2-128f (sign, verify, and reject a changed message, signature or context string). Then the speed of each operation on one CPU core. |
-| [`demo_gpu.cpp`](demo_gpu.cpp) | The same operations in batches on a SYCL device (a GPU): copy the inputs over, one call per operation for the whole batch, copy the results back. It checks that the GPU returns exactly the bytes the CPU library gives for the same inputs, then times the CPU (1 thread and all threads) against the GPU (a batch of 1 and a full batch). |
-| [`live_demo.cpp`](live_demo.cpp) | **For presenting** ([below](#live-demo-for-a-presentation)): one scene per scheme with a story (Alice and Bob, a forged payment order, a backdoored firmware image), then three CPU-vs-GPU races with live progress bars and a scoreboard. |
+| [`demo_gpu.cpp`](demo_gpu.cpp) | The same operations in batches on a SYCL device (a GPU), through the GPU API (`openpqc/sycl.h`), with one code path for every parameter set: copy the inputs over, one call per operation for the whole batch, copy the results back. It checks the GPU against the CPU library without testing interfaces: the same bytes where both compute from the same inputs (key pairs from seeds, Decaps, deterministic signatures), and the CPU's acceptance of what the GPU made with its own randomness (shared secrets, hedged signatures, SLH-DSA's key pairs). Then it times the CPU (1 thread and all threads) against the GPU (a batch of 1 and a full batch). |
+| [`live_demo.cpp`](live_demo.cpp) | **For presenting** ([below](#live-demo-for-a-presentation)): one scene per scheme with a story (Alice and Bob, a forged payment order, a backdoored firmware image), then three CPU-vs-GPU races with live progress bars and a scoreboard, on the GPU API. |
+| [`device_hash.cpp`](device_hash.cpp) | OpenPQC's hash functions inside the application's own SYCL kernel (`openpqc/sycl/device.hpp`, header-only): one work-item per record derives a 32-byte key with HMAC-SHA-256 and hashes the record with SHA3-256, in one launch; the CPU checks the hashes. |
 
 ## Build and run
 
@@ -28,54 +29,62 @@ cmake -S . -B build-gpu -DCMAKE_BUILD_TYPE=Release \
       -DOPENPQC_SYCL=ON -DOPENPQC_SYCL_TARGETS=nvptx64-nvidia-cuda,spir64 \
       "-DOPENPQC_SYCL_FLAGS=-Xsycl-target-backend=nvptx64-nvidia-cuda --offload-arch=sm_86" \
       -DOPENPQC_SLHDSA_SYCL_SETS=3
-cmake --build build-gpu --target demo_cpu demo_gpu live_demo -j
+cmake --build build-gpu --target demo_cpu demo_gpu live_demo device_hash -j
 ./build-gpu/examples/demo_gpu        # lists the devices and uses the default one
 ./build-gpu/examples/demo_gpu 2      # or the device with that index
+./build-gpu/examples/device_hash 2   # SYCL's device list; default: SYCL's default device
 ```
+
+`demo_gpu` and `live_demo` link what an application links, `OpenPQC::sycl` and `OpenPQC::openpqc`; `device_hash` is a
+SYCL program of its own and links only `OpenPQC::openpqc`, for the CPU's check.
 
 AdaptiveCpp works as well (`-DAdaptiveCpp_DIR=<acpp>/lib/cmake/AdaptiveCpp -DACPP_TARGETS=generic`, see the top-level
 README); it compiles the kernels at their first launch, which the demo's untimed first call absorbs.
 
-## Using a GPU backend, in five steps
+## Using the GPU API, in five steps
 
-Every backend (`opqc_sycl_mlkem_*`, `opqc_sycl_mldsa_*`, `opqc_sycl_slhdsa_*`) works the same way; ML-DSA-65 as the
-example:
+One context type serves every parameter set (`openpqc/sycl.h`); ML-DSA-65 as the example:
 
 ```c
-#include "ML/DSA/openpqc_mldsa.h"               /* the sizes OPENPQC_MLDSA65_* */
-#include "ML/DSA/sycl/openpqc_mldsa_sycl.h"     /* link OpenPQC::sycl */
+#include "openpqc/sycl.h"                           /* link OpenPQC::sycl */
 
-opqc_sycl_mldsa *gpu;
-if (opqc_sycl_mldsa_create(&gpu, 65, n, -1) != 0)   /* 1. parameter set, largest batch, device (-1: default) */
-    return -1;                                      /*    no such device, or not enough device memory */
-uint8_t *d_pk = opqc_sycl_mldsa_malloc(gpu, n * OPENPQC_MLDSA65_PUBLICKEYBYTES);   /* 2. device buffers: */
-uint8_t *d_sk = opqc_sycl_mldsa_malloc(gpu, n * OPENPQC_MLDSA65_SECRETKEYBYTES);   /*    n operations back to back */
-int rc = d_pk && d_sk ? 0 : -1;
-if (rc == 0) rc = opqc_sycl_mldsa_keypair(gpu, d_pk, d_sk, n);              /* 3. one call: n key pairs */
-if (rc == 0) rc = opqc_sycl_mldsa_memcpy(gpu, pk, d_pk, n * OPENPQC_MLDSA65_PUBLICKEYBYTES);   /* 4. results back */
-if (d_pk) opqc_sycl_mldsa_free(gpu, d_pk);
-if (d_sk) opqc_sycl_mldsa_free(gpu, d_sk);
-opqc_sycl_mldsa_destroy(gpu);                                               /* 5. done */
-if (rc != 0)
+const openpqc_alg_info *a = openpqc_alg_info_get(OPENPQC_ML_DSA_65);    /* the sizes */
+const openpqc_gpu_config cfg = {-1, n};             /* 1. device (-1: default), operations per launch */
+openpqc_gpu *gpu;
+if (openpqc_gpu_create(&gpu, OPENPQC_ML_DSA_65, &cfg) != OPENPQC_OK)
+    return -1;                                      /*    no such device, not enough memory, or a failed self-test */
+uint8_t *d_pk = openpqc_gpu_malloc(gpu, n * a->public_key_bytes);       /* 2. device buffers: */
+uint8_t *d_sk = openpqc_gpu_malloc(gpu, n * a->secret_key_bytes);       /*    n operations back to back, */
+int32_t *d_status = openpqc_gpu_malloc(gpu, n * sizeof(int32_t));      /*    and a status entry for each */
+openpqc_status rc = d_pk && d_sk && d_status ? OPENPQC_OK : OPENPQC_ERR_DEVICE;
+if (rc == OPENPQC_OK) rc = openpqc_gpu_sig_keygen(gpu, d_pk, d_sk, d_status, n);        /* 3. one call: n key pairs */
+if (rc == OPENPQC_OK) rc = openpqc_gpu_sync(gpu);
+if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, pk, d_pk, n * a->public_key_bytes);   /* 4. results back */
+if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, status, d_status, n * sizeof(int32_t));
+openpqc_gpu_destroy(gpu);                           /* 5. done: also frees the buffers, overwritten with zeros */
+if (rc != OPENPQC_OK)
     return -1;                                      /*    none of the n key pairs may be used */
+/* key pair i only if status[i] == OPENPQC_OK */
 ```
 
-Every call returns 0 or a negative error code, and its result must be checked: a call that fails produces no usable
-output. Some operations also report a result per operation in a `status` buffer of n `int32_t`, which must be
-checked as well: ML-KEM's `enc` and `dec` (required; `status[i] = 0`: operation i has a result), ML-DSA signing
-(optional; without it, a call returns `OPENPQC_ERR_SIGNING_LIMIT` itself when one of its signatures reaches
-the bound on the attempts) and the verification of ML-DSA and SLH-DSA (required; `status[i] = 0`: signature i is
-valid). SLH-DSA signing cannot fail on the device and has no status buffer. Messages to sign or verify lie back to
-back in one device buffer, with `n + 1` offsets that delimit them (`demo_gpu.cpp`, `message_offsets`). The calls of
-one context run in order; `memcpy` waits for everything before it, `memcpy_async` and the operations only queue the
-work. The headers (`ML/KEM/sycl/openpqc_mlkem_sycl.h`, `ML/DSA/sycl/openpqc_mldsa_sycl.h`,
-`SLH/DSA/sycl/openpqc_slhdsa_sycl.h`) document every function.
+Every call returns an `openpqc_status`, and its result must be checked (`OPENPQC_MUST_CHECK`): a call that fails
+produces no usable output. Every call also takes a `status` buffer of n `int32_t`, which must be checked as well:
+`status[i] = OPENPQC_OK` means that operation i has a result (for a verification, that signature i is valid), and any
+other value says why not (`openpqc/sycl.h`, Status). Messages to sign or verify lie back to back in one device
+buffer, at a fixed stride (`demo_gpu.cpp`, `live_demo.cpp`) or with `n + 1` offsets that delimit them, described by
+an `openpqc_gpu_messages` that also gives the size of the buffer, against which the device checks the offsets. The
+calls of one context run in order; `openpqc_gpu_memcpy` waits for everything before it, `openpqc_gpu_memcpy_async`
+and the operations only queue the work, and `openpqc_gpu_sync` waits for all of it. `openpqc/sycl.h` documents every
+function; `openpqc/sycl.hpp` offers the same in C++, with host data staged for the caller
+(`openpqc::sycl::Context<openpqc::ML_DSA_65>`).
 
-`demo_gpu` calls the GPU's `_derand` functions, which take the random values as inputs, and the CPU's counterparts on
-the same inputs (`keygen_from_seed` and the testing interfaces of `openpqc/testing.h`, for which it links
-`OpenPQC::testing`), so that the CPU can recompute every GPU result: a test, which is what FIPS 203 §3.3, FIPS 204 §6
-and FIPS 205 §9 reserve those interfaces for. An application calls the GPU's `keypair`, `enc` and `sign`, or the
-CPU's `keygen`, `encaps` and `sign`, which draw the randomness themselves.
+`demo_gpu` uses no testing interface. It compares the GPU with the CPU where both compute from the same inputs: KeyGen
+from seeds (`openpqc_gpu_kem_keygen_from_seed`, and `openpqc_gpu_sig_keygen_from_seed` for ML-DSA, against the CPU's
+`keygen_from_seed`), Decaps, and deterministic signatures (`OPENPQC_SIGN_DETERMINISTIC`); and it lets the CPU
+decapsulate the GPU's ciphertexts, verify its hedged signatures and check SLH-DSA's key pairs
+(`openpqc_sig_check_keypair`), all of which the GPU made with randomness of its own. Randomness that the caller
+chooses is for testing only (FIPS 203 §3.3, FIPS 204 §6, FIPS 205 §9): on the GPU it is in `openpqc/sycl_testing.h`
+(`OpenPQC::sycl_testing`), as on the CPU in `openpqc/testing.h` (`OpenPQC::testing`).
 
 ## What to expect
 
@@ -107,10 +116,10 @@ SLH-DSA-SHA2-128f verify      627 /s    2.3 k/s     100 /s    44.6 k/s   1024   
   slow on the CPU: one SHA2-128f signature takes about 27 ms on a core.
 - The CPU columns are OpenPQC's portable C code (no AVX2). The numbers move by some percent between runs (clock,
   temperature); `bench/run_benchmarks.sh` measures them properly.
-- The KeyGen, Encaps and Sign rows time the GPU's `_derand` functions and their CPU counterparts, with the random
-  values copied in as inputs. The
-  randomized functions that an application calls draw the randomness on the host and copy it over in each call,
-  so on the GPU these rows are an upper bound for them.
+- The table is from the demo's earlier version, whose KeyGen, Encaps and Sign rows timed the GPU backends' `_derand`
+  functions and their CPU counterparts, with the random values copied in as inputs. The demo now times the
+  randomized calls of the GPU API and of the CPU library, which draw the randomness on the host (on the GPU, copied
+  over in each call), so these GPU rows of the table are an upper bound for them; they have not been measured again.
 
 ## Live demo for a presentation
 
@@ -135,7 +144,8 @@ CPU alone. `NO_COLOR=1` turns the colours off.
 | 4 · Races | the CPU on all threads, then the GPU, on the same work: 65,536 ML-KEM handshakes, 16,384 ML-DSA signatures, 1,024 SLH-DSA signatures | A server does these by the thousand. The CPU bar crawls (up to 7 s for SLH-DSA); the GPU finishes in about 0.1 s. Every GPU result is checked: each handshake key against its client's, each signature verified. |
 | Results | the scoreboard | 10-17x for the lattice schemes, about 70x for SLH-DSA. The GPU wins on volume; a single ML-KEM or ML-DSA operation is still quicker on the CPU. |
 
-On the laptop above (DPC++, RTX 3050 Laptop, quiet machine, 2026-10-23) the scoreboard read:
+On the laptop above (DPC++, RTX 3050 Laptop, quiet machine, 2026-10-23, with the demo's earlier version, which called
+the GPU backends' own functions; not measured again) the scoreboard read:
 
 ```
                                              CPU       GPU   speed-up

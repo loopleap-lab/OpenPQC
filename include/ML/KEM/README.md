@@ -8,7 +8,7 @@ layer can be read on its own, and the comments cite FIPS 203 section, algorithm 
 | math core | `math/mlkem_field.h`, `mlkem_ntt.h`, `mlkem_encode.h`, `mlkem_sample.h` | C11, header-only | arithmetic in Z_q, NTT and NTT-domain multiplication, compression and byte encoding, sampling (FIPS 203 §2.3–§4.3, Algorithms 3–12) |
 | scheme layer | `scheme/parameter_sets.hpp`, `polynomials.hpp`, `crypto_functions.hpp`, `kpke.hpp`, `mlkem_internal.hpp`, `ml_kem.hpp` | C++20, header-only templates | the parameter sets (§8), the hash functions (§4.1), K-PKE (§5, Algorithms 13–15), the internal algorithms (§6, 16–18), ML-KEM with its input checks (§7, 19–21) |
 | interfaces | `openpqc_mlkem.h` (C API), `mlkem.cpp` (its implementation), `mlkem.hpp` (C++ API); `mlkem_testing.cpp` (the testing interfaces of `openpqc/testing.h`) | C / C++20 | the functions applications call, for the three parameter sets |
-| GPU backend | `sycl/openpqc_mlkem_sycl.h`, `sycl/mlkem_sycl.cpp` | SYCL 2020 | batched ML-KEM on GPUs and other SYCL devices, from the same math core |
+| GPU backend | `sycl/openpqc_mlkem_sycl.h` (internal), `sycl/mlkem_sycl.cpp` | SYCL 2020 | batched ML-KEM on GPUs and other SYCL devices, from the same math core, under the GPU API (`openpqc/sycl.h`) |
 
 The math core is compiled three ways: as C11, as part of the C++20 scheme layer, and into the SYCL kernels. To make
 that possible it avoids every construct one of the three lacks (see `Core/opqc_common.h`). The CPU and the GPU
@@ -244,69 +244,86 @@ application, and the library cannot enforce it:
 
 ## GPU backend (`sycl/`)
 
-`sycl/openpqc_mlkem_sycl.h` runs n operations per call on a SYCL device, with buffers in device memory and results
-byte-identical to the CPU library. The buffers must be device memory of the context (`opqc_sycl_mlkem_malloc`, or
-page-locked host memory from `opqc_sycl_mlkem_malloc_host`), 8-byte aligned (status 4-byte aligned); calls with
-other buffers, or with a NULL one, return -1. The check asks the SYCL runtime, which lets some memory through: a buffer
-that has been freed is not refused under DPC++'s Level Zero and on AdaptiveCpp's OpenMP host device, where the runtime
-still reports it as the context's (a Decaps of a freed ciphertext returned 0 with status 0 there; AdaptiveCpp's Level
-Zero refused freed SLH-DSA buffers); the OpenMP host device takes every pointer for its own (a Decaps of a ciphertext
-in another GPU's device memory ended the process there with a segmentation fault); and DPC++ and AdaptiveCpp take
-device memory of the other platform of the same Intel GPU (Level Zero or OpenCL) for this context's (seen with
-SLH-DSA's backend, which asks the same question; AdaptiveCpp with a Level Zero context and OpenCL memory). Pass only
-buffers of the context that are still allocated (the header, "What the buffer check cannot see").
+Applications reach the backend through the GPU API, `openpqc/sycl.h` (library `OpenPQC::sycl`; examples in
+[docs/GPU_ACCELERATION.md §4.2](../../../docs/GPU_ACCELERATION.md#42-api)): a context created for
+`OPENPQC_ML_KEM_512`, `_768` or `_1024` runs n operations per call on a SYCL device, with buffers in USM memory of the
+context and results byte-identical to the CPU library. The backend's own C API underneath, `sycl/openpqc_mlkem_sycl.h`
+(`opqc_sycl_mlkem_*`), is internal: not installed, not exported by the shared `openpqc_sycl`, and exported by
+`OpenPQC::sycl_testing` for the white-box tests, the benchmarks and the profilers; this section names its functions
+where it describes the backend. The buffers must be memory of the context (`openpqc_gpu_malloc`, or page-locked host
+memory from `openpqc_gpu_malloc_host`), 8-byte aligned (status 4-byte aligned); calls with other buffers, or with a
+NULL one, return `OPENPQC_ERR_INVALID_ARGUMENT` (the backend's functions -1). The check asks the SYCL runtime, which
+lets some memory through: a buffer that has been freed is not refused under DPC++'s Level Zero and on AdaptiveCpp's
+OpenMP host device, where the runtime still reports it as the context's (a Decaps of a freed ciphertext returned 0
+with status 0 there; AdaptiveCpp's Level Zero refused freed SLH-DSA buffers); the OpenMP host device takes every
+pointer for its own (a Decaps of a ciphertext in another GPU's device memory ended the process there with a
+segmentation fault); DPC++ and AdaptiveCpp take USM memory of another SYCL context on the same device for this
+context's (on every device tried, seen by `gpu_api`); and DPC++ and AdaptiveCpp take device memory of the other platform of the same
+Intel GPU (Level Zero or OpenCL) for this context's (seen with SLH-DSA's backend, which asks the same question;
+AdaptiveCpp with a Level Zero context and OpenCL memory). Pass only buffers of the context that are still allocated,
+and for an application's own allocations create the context in its SYCL context (`openpqc_gpu_create_on`,
+`openpqc/sycl/interop.hpp`; `openpqc/sycl.h`, Buffers; the backend's header, "What the buffer check cannot see").
 
 ```c
-#include "ML/KEM/openpqc_mlkem.h"             /* the sizes OPENPQC_MLKEM768_* */
-#include "ML/KEM/sycl/openpqc_mlkem_sycl.h"   /* link OpenPQC::sycl */
+#include "openpqc/sycl.h"                                    /* link OpenPQC::sycl */
 
-opqc_sycl_mlkem *ctx;
-if (opqc_sycl_mlkem_create(&ctx, 768, max_batch, -1) != 0)   /* -1: default device (or OPENPQC_SYCL_DEVICE) */
+const openpqc_alg_info *a = openpqc_alg_info_get(OPENPQC_ML_KEM_768);   /* the sizes */
+const openpqc_gpu_config cfg = {-1, max_batch};              /* -1: default device (or OPENPQC_SYCL_DEVICE); 0: 4096 */
+openpqc_gpu *gpu;
+if (openpqc_gpu_create(&gpu, OPENPQC_ML_KEM_768, &cfg) != OPENPQC_OK)
     return -1;                                               /* no such device, no memory, or the self-test failed */
-uint8_t *pk = opqc_sycl_mlkem_malloc(ctx, n * OPENPQC_MLKEM768_PUBLICKEYBYTES);  /* ... likewise sk, ct, ss, ss2 */
-int32_t *enc_status = opqc_sycl_mlkem_malloc(ctx, n * sizeof(int32_t));  /* ... likewise dec_status */
-int rc = opqc_sycl_mlkem_keypair(ctx, pk, sk, n);            /* -1 for a NULL buffer */
-if (rc == 0) rc = opqc_sycl_mlkem_enc(ctx, ct, ss, pk, enc_status, n);    /* status: n x int32, required */
-if (rc == 0) rc = opqc_sycl_mlkem_dec(ctx, ss2, ct, sk, dec_status, n);
-if (rc == 0) rc = opqc_sycl_mlkem_sync(ctx);                 /* nonzero: the context has failed */
-if (rc == 0) rc = opqc_sycl_mlkem_memcpy(ctx, host_enc_status, enc_status, n * sizeof(int32_t));
-if (rc == 0) rc = opqc_sycl_mlkem_memcpy(ctx, host_dec_status, dec_status, n * sizeof(int32_t));
-/* ... copy the results back to the host likewise, then free every buffer */
-opqc_sycl_mlkem_free(ctx, pk);                               /* wipes, then frees */
-opqc_sycl_mlkem_destroy(ctx);
-if (rc != 0)
+uint8_t *pk = openpqc_gpu_malloc(gpu, n * a->public_key_bytes);         /* ... likewise sk, ct, ss, ss2 */
+int32_t *enc_status = openpqc_gpu_malloc(gpu, n * sizeof(int32_t));     /* ... likewise kg_status, dec_status */
+openpqc_status rc = openpqc_gpu_kem_keygen(gpu, pk, sk, kg_status, n);  /* status: n x int32, required on every call */
+if (rc == OPENPQC_OK) rc = openpqc_gpu_kem_encaps(gpu, ct, ss, pk, enc_status, n);
+if (rc == OPENPQC_OK) rc = openpqc_gpu_kem_decaps(gpu, ss2, ct, sk, dec_status, n);
+if (rc == OPENPQC_OK) rc = openpqc_gpu_sync(gpu);           /* OPENPQC_ERR_DEVICE: the context has failed */
+if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, host_enc_status, enc_status, n * sizeof(int32_t));
+if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, host_dec_status, dec_status, n * sizeof(int32_t));
+/* ... kg_status and the results back to the host likewise, then free every buffer */
+openpqc_gpu_free(gpu, pk);                                   /* wipes, then frees */
+openpqc_gpu_destroy(gpu);
+if (rc != OPENPQC_OK)
     return -1;                                               /* no result of these calls may be used */
-/* operation i has a result only if host_enc_status[i] == 0 and host_dec_status[i] == 0 */
+/* operation i has a result only if its entries of kg_status, enc_status and dec_status are all OPENPQC_OK */
 ```
 
 Encaps and Decaps get a status buffer each: with one buffer for both, Decaps would overwrite the Encaps entry of an
-operation whose pk failed its check (its zero ciphertext decapsulates, by implicit rejection, with status 0), and the
-failure would go unseen. `opqc_sycl_mlkem_keypair_derand` and `opqc_sycl_mlkem_enc_derand` take the random values from
-the caller, as the CPU's `keygen_from_seed` and `openpqc_testing_mlkemNNN_encaps_derand` do: `keypair_derand` for
-testing and for a stored seed, `enc_derand` for testing only (unlike its CPU counterpart, it is still in the GPU
-library). Every function that returns a status is declared `OPQC_MUST_CHECK`.
+operation whose pk failed its check (its zero ciphertext decapsulates, by implicit rejection, with `OPENPQC_OK`), and
+the failure would go unseen. `openpqc_gpu_kem_keygen_from_seed` takes the seeds d ‖ z (64 bytes per operation) from
+the caller, as the CPU's `keygen_from_seed` does, for seeds stored in place of dk. Encapsulation with an m that the
+caller chooses is for testing only: `openpqc_testing_gpu_kem_encaps_derand` (`openpqc/sycl_testing.h`) is in
+`OpenPQC::sycl_testing`, never installed, as `openpqc_testing_mlkemNNN_encaps_derand` is in `OpenPQC::testing`. The
+backend's own `opqc_sycl_mlkem_keypair_derand` and `opqc_sycl_mlkem_enc_derand`, which they call, are not exported by
+the shared `openpqc_sycl` (test `sycl_exports`); a static `openpqc_sycl` contains them, declared in no installed
+header. Every function that returns a status is declared `OPENPQC_MUST_CHECK` (the backend's `OPQC_MUST_CHECK`).
 
 The kernels are a staged pipeline. Hashing stages run one work-item per sponge across the batch. Arithmetic stages
 run a team of 32 work-items per operation, which share the polynomials in local memory and call the math core
 functions on their coefficients. Between the stages the values wait in a workspace in device memory that the context
-holds (`Core/sycl/opqc_sycl_context.hpp`, as for ML-DSA and SLH-DSA). The header states the whole contract; in short:
+holds (`Core/sycl/opqc_sycl_context.hpp`, as for ML-DSA and SLH-DSA). `openpqc/sycl.h` and the backend's header state
+the whole contract; in short:
 
-- **Status and failures.** Encaps and Decaps require a status buffer and write 0, `OPQC_SYCL_MLKEM_INVALID_PK`
-  (FIPS 203 §7.2) or `OPQC_SYCL_MLKEM_INVALID_SK` (§7.3) per operation, the CPU library's -4 and -5
-  (`OPENPQC_ERR_INVALID_PUBLIC_KEY`, `OPENPQC_ERR_INVALID_SECRET_KEY`). Where the CPU library returns that code and
-  computes nothing, the device computes the batch and gives the failed operation zeros in place of its ciphertext and
-  shared secret: no ciphertext or key computed from a key that failed its check. The
-  status entries are set to `OPQC_SYCL_MLKEM_FAILED` before the first kernel, so an entry that no kernel reaches never
-  reads as an earlier call's result; a call that returns -2 or `OPQC_SYCL_MLKEM_RNG_FAIL` sets all of them to
-  `OPQC_SYCL_MLKEM_FAILED` and zeroes the outputs of all its operations, and a refused call (-1) sets the status
-  entries only; both wait for these writes before they return.
-- **Return values.** -1 for a refused argument (nothing else is queued), -2 for an exception of the SYCL runtime or a
-  failed context, `OPQC_SYCL_MLKEM_RNG_FAIL` (-3, the CPU's `OPENPQC_ERR_RNG`) when the RNG fails, and, from create,
-  `OPQC_SYCL_MLKEM_SELF_TEST_FAIL` (-7, `OPENPQC_ERR_SELF_TEST`). A device error found after a call has returned (by
-  sync, a waiting memcpy or a later call) fails the context for good: from then on everything returns -2 (except a
-  call whose arguments are refused: -1); destroy it and create another. On CUDA a fault that is sticky (an invalid
-  address) leaves the device unusable for the rest of the process: every context on it fails, a new create on it
-  returns -1, and only a new process can use the device again. A device error found through the context's queue does
+- **Status and failures.** Every call of the GPU API requires a status buffer. Encaps and Decaps write `OPENPQC_OK`,
+  `OPENPQC_ERR_INVALID_PUBLIC_KEY` (FIPS 203 §7.2) or `OPENPQC_ERR_INVALID_SECRET_KEY` (§7.3) per operation (the
+  backend's `OPQC_SYCL_MLKEM_INVALID_PK` and `OPQC_SYCL_MLKEM_INVALID_SK`, the same -4 and -5), and KeyGen
+  `OPENPQC_OK` (the backend's KeyGen has no status). Where the CPU library returns that code and computes nothing, the
+  device computes the batch and gives the failed operation zeros in place of its ciphertext and shared secret: no
+  ciphertext or key computed from a key that failed its check. The status entries are set to `OPENPQC_ERR_NOT_COMPUTED`
+  before the first kernel, so an entry that no kernel reaches never reads as an earlier call's result; a call that
+  fails (`OPENPQC_ERR_DEVICE`, `OPENPQC_ERR_RNG`) sets all of them to `OPENPQC_ERR_NOT_COMPUTED` and zeroes the
+  outputs of all its operations, and a refused call (`OPENPQC_ERR_INVALID_ARGUMENT`) sets the status entries only;
+  both wait for these writes before they return. The backend's code for no result, `OPQC_SYCL_MLKEM_FAILED`, is now
+  -10, the value of `OPENPQC_ERR_NOT_COMPUTED` (it was -2), so its entries pass through the GPU API unchanged.
+- **Return values.** `OPENPQC_ERR_INVALID_ARGUMENT` for a refused argument (nothing else is queued),
+  `OPENPQC_ERR_DEVICE` for an exception of the SYCL runtime or a failed context, `OPENPQC_ERR_RNG` when the RNG fails,
+  and, from `openpqc_gpu_create`, `OPENPQC_ERR_SELF_TEST` (the backend's functions: -1, -2,
+  `OPQC_SYCL_MLKEM_RNG_FAIL` -3 and `OPQC_SYCL_MLKEM_SELF_TEST_FAIL` -7). A device error found after a call has
+  returned (by sync, a waiting memcpy or a later call) fails the context for good: from then on every call, sync and
+  copy returns `OPENPQC_ERR_DEVICE`, whatever else is wrong with it (the backend's functions -2, except a call whose
+  arguments they refuse: -1); destroy it and create another. On CUDA a fault that is sticky (an invalid address) leaves
+  the device unusable for the rest of the process: every context on it fails, a new create on it fails (the backend's
+  returns -1), and only a new process can use the device again. A device error found through the context's queue does
   not end the process (the header names the three cases the library cannot catch: an error that the SYCL runtime gives
   to the SYCL context's handler instead of the queue's, a failure inside the runtime itself and, on AdaptiveCpp's
   OpenMP host device, a call with another GPU's device memory, above).
@@ -318,17 +335,18 @@ holds (`Core/sycl/opqc_sycl_context.hpp`, as for ML-DSA and SLH-DSA). The header
   calls take turns, one shared context gives one call's throughput at a time; threads that need more should each
   have a context (with ML-DSA's backend, which has the same lock, four contexts signed about twice as fast as one
   shared by four threads on the RTX 3050).
-- **Self-test.** `opqc_sycl_mlkem_create` runs a KeyGen, an Encaps and the Decaps of a valid and of a tampered
-  ciphertext of fixed inputs on the device and compares them with the CPU library's results
-  (`sycl/mlkem_sycl_self_test.hpp`; `test_mlkem_sycl` checks those answers against the CPU library). There is no
-  pair-wise consistency test of the keys the device generates.
+- **Self-test.** `openpqc_gpu_create` (in the backend, `opqc_sycl_mlkem_create`) runs a KeyGen, an Encaps and the
+  Decaps of a valid and of a tampered ciphertext of fixed inputs on the device and compares them with the CPU
+  library's results (`sycl/mlkem_sycl_self_test.hpp`; `test_mlkem_sycl` checks those answers against the CPU library).
+  There is no pair-wise consistency test of the keys the device generates.
 - **Zeroization (FIPS 203 §3.3).** The secret values in the workspace (seeds, PRF outputs, m′, K′, K̄, coins) are
   zeroized after every launch, the whole workspace when a call or the device fails, and again by destroy, as far as
   the device still accepts work (after a sticky CUDA fault it accepts none, and what the kernels wrote stays in
   device memory until the driver reuses it). The coins of the randomized calls pass
   through page-locked host memory that is wiped right after the copy; NVIDIA's driver has nevertheless been seen to
-  keep copies of such small transfers in memory of its own, out of the library's reach. `opqc_sycl_mlkem_free`
-  overwrites the buffers it frees (a freed buffer used to come back from the next allocation with the keys in it).
+  keep copies of such small transfers in memory of its own, out of the library's reach. `openpqc_gpu_free` (as the
+  backend's `opqc_sycl_mlkem_free`) overwrites the buffers it frees (a freed buffer used to come back from the next
+  allocation with the keys in it).
 - **Constant time.** The implicit-rejection key is chosen with a mask, and the mask is XORed with a word of device
   memory that holds 0: from a mask that is visibly all ones or all zeros, both CUDA toolchains had made a choice
   between the addresses of K′ and K̄ and a single load. No constant-time property of the device code is claimed or
@@ -336,9 +354,14 @@ holds (`Core/sycl/opqc_sycl_context.hpp`, as for ML-DSA and SLH-DSA). The header
 
 The backend builds with Intel DPC++ or AdaptiveCpp. It has been tested on an NVIDIA RTX 3050 (CUDA backend of both),
 an Intel Iris Xe (Level Zero and OpenCL, both implementations) and the CPU (AdaptiveCpp's OpenMP backend). The test
-`mlkem_sycl` (`tests/gpu/test_mlkem_sycl.cpp`, label `gpu`) compares every output with the CPU library, checks the
-status and error contract with every output and status buffer filled with a pattern before each call, checks that
-randomized outputs are fresh across operations, chunks and calls, and runs two threads on one context;
+`gpu_api` (`tests/gpu/test_gpu_api.cpp`, label `gpu`) runs the GPU API as an application links it, without testing
+interfaces: KeyGen from seeds and Decaps (of genuine and tampered ciphertexts) byte for byte against the CPU library,
+randomized key pairs that the CPU accepts, Encaps whose ciphertexts the CPU decapsulates to the same keys, an invalid
+ek (`OPENPQC_ERR_INVALID_PUBLIC_KEY` and zeros while the other operations go on), the order of checks and launches of
+3 operations. The test `mlkem_sycl` (`tests/gpu/test_mlkem_sycl.cpp`, label `gpu`), on the backend's own C API,
+compares every output with the CPU library, checks the status and error contract with every output and status buffer
+filled with a pattern before each call, checks that randomized outputs are fresh across operations, chunks and calls,
+and runs two threads on one context;
 `mlkem_sycl_faults` (`tests/gpu/test_mlkem_sycl_faults.cpp`) makes the device work fail part way, by fault injection,
 and checks the fail-closed status and outputs, the zeroization of the workspace, the failed state and an RNG failure,
 and that a create that fails (a wrong self-test answer, a refused launch, a workspace too large for the device)
@@ -356,8 +379,9 @@ benchmarks, built only when they need them and never installed: `openpqc_mlkem` 
 randomness from the operating system; `openpqc_mlkem_testrng` calls the application's `randombytes()` and exists for
 the tests: never link it into a program for production use, nor together with a production library (both define
 `opqc_randombytes`, and the linker keeps the first definition it finds, without an error). The GPU backend
-is part of the GPU library `openpqc_sycl` when a SYCL compiler is found (see the top-level README);
-`openpqc_mlkem_sycl` is its static copy for the tests. The CMake option `OPENPQC_MLKEM_KEYGEN_PCT` compiles
+is part of the GPU library `openpqc_sycl` when a SYCL compiler is found (see the top-level README), under the GPU
+API; `openpqc_mlkem_sycl` is its static copy for the benchmarks, and `openpqc_sycl_testing` the library of the same
+objects that exports the backend's C API, for the white-box tests. The CMake option `OPENPQC_MLKEM_KEYGEN_PCT` compiles
 the pair-wise consistency test into the CPU libraries (`openpqc` and the tests' copies); the presets `gcc-release-pct` and `clang-release-pct` build
 with it (and with ML-DSA's `OPENPQC_MLDSA_KEYGEN_PCT`) and run the quick ML-KEM and ML-DSA tests, without the
 constant-time ones, against those libraries.
@@ -386,21 +410,27 @@ mlkem-native's own test programs run against this library and against the unmodi
 | `mlkem_pct`, `mlkem_pct_fail`, `mlkem_pct_odr` | the library built with the pair-wise consistency test (`OPENPQC_MLKEM_KEYGEN_PCT`): KeyGen succeeds, draws the test's m (also `keygen_from_seed`), and zeroizes both keys when that fails; and built so that the test fails (`OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_ERR_PCT` with both keys zeroized, which shows that the test is compiled in and its result used; `mlkem_pct_odr`: the same with an application's own KeyGen, compiled without the test, linked first, which must not take the place of the library's |
 | `mlkem_pct_library` | only with the CMake option `OPENPQC_MLKEM_KEYGEN_PCT`: the test of `mlkem_pct` against the library as built, which fails unless the option has put the pair-wise consistency test into it (against the default library: 18 failed checks) |
 | `mlkemNNN_pct_func`, `_kat`, `_rng_fail`, `mlkem_differential_pct` | mlkem-native's functional, known-answer and RNG-failure tests, and the differential test, against the library with the pair-wise consistency test (the known-answer hash is the one in `META.yml`) |
-| `mlkem_sycl` | the SYCL backend against this library on every SYCL device, the status and error contract, fresh coins and two threads on one context (label `gpu`) |
+| `gpu_api` | the GPU API (`openpqc/sycl.h`, `sycl.hpp`) on every SYCL device, linked as an application links it, against this library and those of ML-DSA and SLH-DSA, for every parameter set of the build: for ML-KEM KeyGen from seeds and Decaps byte for byte, randomized KeyGen and Encaps through the CPU's checks, an invalid ek; the order of checks, launches of 3 operations, a context on the application's SYCL context, the C++ layer (label `gpu`) |
+| `mlkem_sycl` | the SYCL backend's own C API against this library on every SYCL device, the status and error contract, fresh coins and two threads on one context (label `gpu`) |
 | `mlkem_sycl_faults` | the SYCL backend when its work fails part way (white-box fault injection): fail-closed status and outputs, workspace zeroization, the failed state, an RNG failure, and creates that fail, which must free their self-test's device memory and, where the runtime reports a GPU's free memory, leak no workspace (label `gpu`) |
 | `reference_mlkemNNN_unit`, `_alloc` | mlkem-native's tests of its own internals |
 
-Four tests in `tests/` cover the C APIs of all three schemes. `c_api_errors` drives every error path and checks the
-result code and every output buffer against the headers' Results (unchanged or zero), with positive controls; it also
-checks that the testing interfaces of every parameter set refuse a NULL in place of their randomness
-(`OPENPQC_ERR_INVALID_ARGUMENT`, nothing written) and, for ML-KEM, `check_keypair` with a pk or an sk that fails its
-check and with the seed of another pair. `c_api_must_check` checks that every function of the C headers (the
-schemes', `openpqc/common.h`, `kem.h`, `sig.h` and `testing.h`) draws a warning when its result is ignored, and that
-every function that the libraries `openpqc` and `OpenPQC::testing` export is declared there. `runtime_api` checks the
-table of algorithms (`openpqc_alg_info_get`, `openpqc_alg_from_name`) and that every function of `openpqc/kem.h`,
-`openpqc/sig.h` and the runtime-selected part of `openpqc/testing.h` gives the bytes and results of the per-set
-function it stands for; an algorithm of the other kind, and what a scheme does not have (a seed for SLH-DSA, external
-μ), give `OPENPQC_ERR_UNSUPPORTED`, and an unknown flag or a NULL seed or randomness `OPENPQC_ERR_INVALID_ARGUMENT`,
-with nothing written. `production_symbols` checks that the library `openpqc` exports no testing interface (no
-`openpqc_testing_*` and no function of the C APIs named `*_derand` or `*_internal`; review finding M13), with
-`OpenPQC::testing` as the positive control.
+Four tests in `tests/` cover the C APIs of all three schemes, and a fifth the GPU library's exports. `c_api_errors`
+drives every error path and checks the result code and every output buffer against the headers' Results (unchanged
+or zero), with positive controls; it also checks that the testing interfaces of every parameter set refuse a NULL in
+place of their randomness (`OPENPQC_ERR_INVALID_ARGUMENT`, nothing written) and, for ML-KEM, `check_keypair` with a pk
+or an sk that fails its check and with the seed of another pair. `c_api_must_check` checks that every function of the
+C headers (the schemes', `openpqc/common.h`, `kem.h`, `sig.h` and `testing.h`, and the GPU API's `sycl.h`,
+`sycl_experimental.h` and `sycl_testing.h`) draws a warning when its result is ignored, and that every function that
+the libraries `openpqc`, `OpenPQC::testing` and, in a build with the GPU library, `OpenPQC::sycl_testing` export is
+declared there (the two that take SYCL types are declared in the C++ header `openpqc/sycl/interop.hpp`).
+`runtime_api` checks the table of algorithms (`openpqc_alg_info_get`, `openpqc_alg_from_name`) and that every function
+of `openpqc/kem.h`, `openpqc/sig.h` and the runtime-selected part of `openpqc/testing.h` gives the bytes and results of
+the per-set function it stands for; an algorithm of the other kind, and what a scheme does not have (a seed for
+SLH-DSA, external μ), give `OPENPQC_ERR_UNSUPPORTED`, and an unknown flag or a NULL seed or randomness
+`OPENPQC_ERR_INVALID_ARGUMENT`, with nothing written. `production_symbols` checks that the library `openpqc` exports
+no testing interface (no `openpqc_testing_*` and no function of the C APIs named `*_derand` or `*_internal`; review
+finding M13), with `OpenPQC::testing` as the positive control. `sycl_exports` (Linux, a shared GPU library) checks
+that `openpqc_sycl` exports the GPU API (`openpqc_gpu_*`) and nothing else: neither the backends' own functions
+(`opqc_sycl_*`, their `_derand` functions among them) nor `openpqc_testing_gpu_*`, with `openpqc_sycl_testing` as the
+positive control.

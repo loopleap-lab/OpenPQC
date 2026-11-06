@@ -53,6 +53,7 @@
 
 #include "Core/opqc_platform.h"
 #include "Core/opqc_sha3.h"
+#include "Core/sycl/opqc_sycl_backends.hpp"
 #include "Core/sycl/opqc_sycl_context.hpp"
 #include "Core/sycl/opqc_sycl_runtime.hpp"
 #include "Core/sycl/opqc_sycl_sponge.hpp"
@@ -724,8 +725,8 @@ struct opqc_sycl_mlkem : openpqc::gpu::Context<openpqc::mlkem::gpu::SECTIONS> {
     Workspace ws{};
     std::unordered_map<void*, Allocation> allocations;   // under the lock
 
-    opqc_sycl_mlkem(const sycl::device& dev, int lvl, std::size_t batch)
-        : openpqc::gpu::Context<openpqc::mlkem::gpu::SECTIONS>(dev, batch), level(lvl) {}
+    opqc_sycl_mlkem(const sycl::device& dev, int lvl, std::size_t batch, const sycl::context* app)
+        : openpqc::gpu::Context<openpqc::mlkem::gpu::SECTIONS>(dev, batch, app), level(lvl) {}
 };
 
 namespace {
@@ -1032,19 +1033,21 @@ bool resolve_device(int device, sycl::device& out) {
     return openpqc::gpu::select_device(device, out);
 }
 
-} // namespace
-
-extern "C" int opqc_sycl_mlkem_create(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int device) {
+// create, on the device with index `device` (opqc_sycl_mlkem_create) or on the device `given`, in the SYCL
+// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp)
+int create_context(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int device, const sycl::device* given,
+           const sycl::context* app) {
     if (!out) return -1;
     *out = nullptr;
     if ((level != 512 && level != 768 && level != 1024) || max_batch == 0 || max_batch > OPQC_SYCL_MLKEM_MAX_BATCH)
         return -1;
     return guarded([&] {
         sycl::device dev;
-        if (!resolve_device(device, dev)) return -1;
+        if (given) dev = *given;
+        else if (!resolve_device(device, dev)) return -1;
         // destroyed on every way out but the last (an exception included: no leak of device memory)
         std::unique_ptr<opqc_sycl_mlkem, void (*)(opqc_sycl_mlkem*)> ctx(
-                new opqc_sycl_mlkem(dev, level, max_batch), [](opqc_sycl_mlkem* c) { openpqc::gpu::destroy(c); });
+                new opqc_sycl_mlkem(dev, level, max_batch, app), [](opqc_sycl_mlkem* c) { openpqc::gpu::destroy(c); });
         std::array<std::size_t, gpu::SECTIONS> per_op{};
         with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
         // 256-byte aligned sections, then the zero word of the Decaps mask
@@ -1065,6 +1068,21 @@ extern "C" int opqc_sycl_mlkem_create(opqc_sycl_mlkem** out, int level, std::siz
         *out = ctx.release();
         return 0;
     });
+}
+
+} // namespace
+
+extern "C" int opqc_sycl_mlkem_create(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int device) {
+    return create_context(out, level, max_batch, device, nullptr, nullptr);
+}
+
+int openpqc::gpu::mlkem_create(opqc_sycl_mlkem** out, int level, std::size_t max_batch, const sycl::device& dev,
+                               const sycl::context* app) {
+    return create_context(out, level, max_batch, -1, &dev, app);
+}
+
+openpqc::gpu::Handle openpqc::gpu::handle(opqc_sycl_mlkem* ctx) {
+    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch};
 }
 
 // Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device

@@ -185,8 +185,12 @@ applications" except for testing (F205 §9, p. 33): exported as `_internal` / `_
 `openpqc_testing_slhdsa_<set>_*`), not in the library, and refuse a NULL addrnd; the deterministic variant is
 `openpqc_slhdsa_<set>_sign_deterministic` and `_prehash_sign_deterministic`; `check_sk` and `check_keypair` give the
 check of F205 §3.1; the status codes are those of every scheme, `OPENPQC_OK` and the `OPENPQC_ERR_*` of
-`openpqc/common.h` (a failed pair-wise consistency test −6), and the pre-hash values `OPENPQC_PREHASH_*` alone.
-[include/SLH/DSA/README.md](../../include/SLH/DSA/README.md) describes it.)
+`openpqc/common.h` (a failed pair-wise consistency test −6), and the pre-hash values `OPENPQC_PREHASH_*` alone. On the
+GPU, applications call the GPU API `openpqc/sycl.h`, one context type for every parameter set, in which every call
+takes a status buffer (signing's too) and a context string over 255 bytes is refused (`OPENPQC_ERR_INVALID_ARGUMENT`);
+the backend's C API `sycl/openpqc_slhdsa_sycl.h` is internal, and the GPU's testing interfaces are in
+`openpqc/sycl_testing.h` (`OpenPQC::sycl_testing`). [include/SLH/DSA/README.md](../../include/SLH/DSA/README.md)
+describes it.)
 
 ### 2.8 Secrets, public values, destruction (F205 §3.1)
 

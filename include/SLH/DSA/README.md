@@ -10,7 +10,7 @@ section, algorithm and line numbers, and a GPU backend built from the same math 
 | math core | `math/slhdsa_encode.h`, `slhdsa_address.h`, `slhdsa_sha2.h` | C11, header-only | gen_len2, toInt, toByte, base_2b (Algorithms 1–4) and x mod 2^b; the address ADRS with the member functions of Table 1 (§4.2, §4.3), its compressed form ADRSᶜ (§11.2, Table 3) and, for the GPU kernels, the address as eight integers; HMAC (FIPS 198-1) and MGF1 (RFC 8017, B.2.1) over Core's SHA-256 and SHA-512 |
 | scheme layer | `scheme/parameter_sets.hpp`, `address.hpp`, `crypto_functions.hpp`, `wots.hpp`, `xmss.hpp`, `hypertree.hpp`, `fors.hpp`, `slhdsa_internal.hpp`, `slh_dsa.hpp` | C++20, header-only templates | the parameter sets (§11, Table 2), the hash functions (§4.1, §11.1, §11.2), WOTS+ (§5, Algorithms 5–8), XMSS (§6, Algorithms 9–11), the hypertree (§7, Algorithms 12–13), FORS (§8, Algorithms 14–17), the internal functions (§9, Algorithms 18–20), SLH-DSA and HashSLH-DSA (§10, Algorithms 21–25) |
 | interfaces | `openpqc_slhdsa.h` (C API), `slhdsa.cpp` (its implementation), `slhdsa.hpp` (C++ API); `slhdsa_testing.cpp` (the testing interfaces of `openpqc/testing.h`) | C / C++20 | the functions applications call, for the twelve parameter sets |
-| GPU backend | `sycl/openpqc_slhdsa_sycl.h`, `sycl/slhdsa_sycl.cpp` | SYCL 2020 | batched KeyGen, Sign and Verify on GPUs and other SYCL devices, for all twelve sets, from the same math core |
+| GPU backend | `sycl/openpqc_slhdsa_sycl.h` (internal), `sycl/slhdsa_sycl.cpp` | SYCL 2020 | batched KeyGen, Sign and Verify on GPUs and other SYCL devices, for all twelve sets, from the same math core, under the GPU API (`openpqc/sycl.h`) |
 
 SHA-256 and SHA-512 (with the word-level compression that the CPU code and the GPU kernels share), SHAKE256, the
 pre-hash functions of HashSLH-DSA with their OIDs (`Core/prehash.hpp`, shared with HashML-DSA), the constant-time
@@ -228,62 +228,88 @@ costs one signature and one verification per key pair, 0.6–1.6 s for the s set
 
 ## GPU backend (`sycl/`)
 
-`sycl/openpqc_slhdsa_sycl.h` runs n operations per call on a SYCL device, with buffers in device memory and results
-byte-identical to the CPU library:
+Applications reach the backend through the GPU API, `openpqc/sycl.h` (library `OpenPQC::sycl`; examples in
+[docs/GPU_ACCELERATION.md §4.2](../../../docs/GPU_ACCELERATION.md#42-api)): a context created for one of the twelve
+sets (`OPENPQC_SLH_DSA_SHA2_128F`, ...) runs n operations per call on a SYCL device, with buffers in USM memory of the
+context and results byte-identical to the CPU library. The backend's own C API underneath,
+`sycl/openpqc_slhdsa_sycl.h` (`opqc_sycl_slhdsa_*`), is internal: not installed, not exported by the shared
+`openpqc_sycl`, and exported by `OpenPQC::sycl_testing` for the white-box tests, the benchmarks and the profilers;
+this section names its functions where it describes the backend.
 
 ```c
-#include "SLH/DSA/openpqc_slhdsa.h"
-#include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"   /* link OpenPQC::sycl */
+#include "openpqc/sycl.h"                                    /* link OpenPQC::sycl */
 
-opqc_sycl_slhdsa *ctx;
-if (opqc_sycl_slhdsa_create(&ctx, OPENPQC_SLHDSA_SHA2_128F, max_batch, -1) != 0)  /* -1: default device */
-    return -1;                                        /* no such device, or the set is not in this build */
-uint8_t *pk = opqc_sycl_slhdsa_malloc(ctx, n * OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES);  /* also sk, sig, msg, ... */
-/* message i is msg[offsets[i] .. offsets[i + 1]); one context string for all, in host memory */
-int rc = opqc_sycl_slhdsa_keypair(ctx, pk, sk, n);
-if (rc == 0) rc = opqc_sycl_slhdsa_sign(ctx, sig, msg, offsets, ctxstr, ctxlen, sk, n);          /* hedged; no status */
-if (rc == 0) rc = opqc_sycl_slhdsa_verify(ctx, sig, msg, offsets, ctxstr, ctxlen, pk, status, n);  /* status required */
-if (rc == 0) rc = opqc_sycl_slhdsa_sync(ctx);
-if (rc == 0) rc = opqc_sycl_slhdsa_memcpy(ctx, host_status, status, n * sizeof(int32_t));
-/* ... copy the results back to the host likewise, then free every buffer */
-opqc_sycl_slhdsa_free(ctx, pk);
-opqc_sycl_slhdsa_destroy(ctx);
-if (rc != 0)
-    return -1;                                        /* no result of these calls may be used */
-/* signature i is valid only if host_status[i] == 0 */
+const openpqc_alg_info *a = openpqc_alg_info_get(OPENPQC_SLH_DSA_SHA2_128F);   /* the sizes */
+const openpqc_gpu_config cfg = {-1, max_batch};              /* -1: default device; 0: 256 for the f sets, 32 for s */
+openpqc_gpu *gpu;
+if (openpqc_gpu_create(&gpu, OPENPQC_SLH_DSA_SHA2_128F, &cfg) != OPENPQC_OK)
+    return -1;                                               /* no such device, or the set is not in this build */
+uint8_t *pk = openpqc_gpu_malloc(gpu, n * a->public_key_bytes);  /* also sk, sig, msg, offsets, the status buffers */
+/* message i is msg[offsets[i] .. offsets[i + 1]) of the msg_bytes in msg; one context string for all, in host memory */
+const openpqc_gpu_messages msgs = {msg, offsets, 0, msg_bytes};
+const openpqc_sign_opts opts = {ctxstr, ctxlen, 0, 0};       /* pure, hedged */
+openpqc_status rc = openpqc_gpu_sig_keygen(gpu, pk, sk, kg_status, n);       /* status: required on every call */
+if (rc == OPENPQC_OK) rc = openpqc_gpu_sig_sign(gpu, sig, msgs, &opts, sk, sign_status, n);
+if (rc == OPENPQC_OK) rc = openpqc_gpu_sig_verify(gpu, sig, msgs, &opts, pk, status, n);
+if (rc == OPENPQC_OK) rc = openpqc_gpu_sync(gpu);
+if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, host_status, status, n * sizeof(int32_t));
+/* ... kg_status, sign_status and the results back to the host likewise, then free every buffer */
+openpqc_gpu_free(gpu, pk);                                   /* wipes, then frees */
+openpqc_gpu_destroy(gpu);
+if (rc != OPENPQC_OK)
+    return -1;                                               /* no result of these calls may be used */
+/* signature i is valid only if host_status[i] == OPENPQC_OK */
 ```
 
-Also: the `_derand` variants (seeds; addrnd, NULL for the deterministic variant), HashSLH-DSA on pre-hashes PH(M)
-computed by the caller (`_prehash_sign`, `_prehash_sign_derand`, `_prehash_verify`: the device forms M′ = 1 ‖ |ctx| ‖
-ctx ‖ OID ‖ PH(M) in place), the internal functions on caller-built M′ (`_sign_internal_derand`, `_verify_internal`),
-the `_one_key` forms of every signing and verification function (one key for the whole batch), and
-`opqc_sycl_slhdsa_workspace_bytes`, the device memory a context will take. Key, seed, addrnd, PH(M), offset and
-signature buffers must be 8-byte aligned and status buffers 4-byte aligned, as those of `opqc_sycl_slhdsa_malloc` are;
-messages may start at any byte. Every buffer must be USM memory of the context (`opqc_sycl_slhdsa_malloc` or
-`_malloc_host`, from any place inside the allocation): pageable host memory and the memory of a context on another
-device are refused with −1 before anything is queued (verification fails closed), also when n is 0. The check asks
-the SYCL runtime, which lets some memory through: AdaptiveCpp's OpenMP host device takes every pointer for its own
-(host memory, which it then uses, and another GPU's device memory, which the host cannot read: the process then ends
-with a segmentation fault, in a kernel or, on a failed context, in the fill of a verification's status); a buffer that
-has been freed is not refused under DPC++'s Level Zero (AdaptiveCpp's refused it) and on the OpenMP host device, where
-the runtime still reports it as the context's; and DPC++ and AdaptiveCpp take device memory of the other platform of
-the same Intel GPU (Level Zero or OpenCL; AdaptiveCpp seen with a Level Zero context and OpenCL memory) for this
-context's, and the kernels then compute wrong results from it while every call returns 0 (seen on an Iris Xe). Pass
-only buffers of the context that are still allocated. Sign has no status buffer: SLH-DSA signing cannot fail on the
-device. The functions return 0, −1 (invalid arguments, a parameter set not in this build, a device without enough
-local memory, memory that cannot be allocated, a max_batch for which a launch would exceed 2³¹ work-items, a
-malformed `OPENPQC_SYCL_DEVICE`; for `memcpy` and `memcpy_async` also a NULL dst or src), −2 (an exception of the SYCL
-runtime; for the randomized calls page-locked host memory that cannot be allocated; or a context that has failed: a
-device error found by a call, `sync` or `memcpy`, or an earlier exception, after which every call, `sync` and
-`memcpy` returns −2, a call with a buffer that is not USM memory included, and the calls run no more kernels (a NULL
-or unaligned buffer still gives −1); destroy the context and create a new one, and after a sticky CUDA fault, which
-leaves the device unusable for the rest of the process, start a new process; a device error found through the
-context's queue does not end the process) or `OPENPQC_ERR_RNG`. Every function that returns a status is
-declared `OPQC_MUST_CHECK`. The `_derand` and internal functions are testing interfaces, as their CPU counterparts in
-`OpenPQC::testing` are, but are still in the GPU library; on the GPU, addrnd = NULL still gives the deterministic
-variant, which the CPU library has as `*_sign_deterministic` and `*_prehash_sign_deterministic`. The calls are
-asynchronous, except that the randomized calls wait for the copy of each
-launch's coins, and that a refused or failed verification waits for its fail-closed fill.
+Every call takes a status buffer. SLH-DSA signing cannot fail on the device: it writes `OPENPQC_OK` per operation
+(the backend's signing has no status), except for an operation whose message lies outside its buffer. The n messages
+lie in one buffer, with n + 1 offsets or at a stride, and the call is told its size: the device checks the offsets,
+and an operation whose offsets decrease or end past the size is computed on the empty message and then gets
+`OPENPQC_ERR_INVALID_ARGUMENT` and, when it signs, a zero signature (review finding F073); strided messages that do
+not fit are refused. Also: the deterministic variant (`OPENPQC_SIGN_DETERMINISTIC` in the flags; on the CPU
+`*_sign_deterministic` and `*_prehash_sign_deterministic`), HashSLH-DSA on pre-hashes PH(M) computed by the caller
+(an `OPENPQC_PREHASH_*` value in the options; the messages are then the n PH(M), at a stride of PH's length, 28 to
+64 bytes, and the device forms M′ = 1 ‖ |ctx| ‖ ctx ‖ OID ‖ PH(M) in place, FIPS 205, Algorithm 23), and one key for
+the whole batch (`OPENPQC_GPU_ONE_KEY`). `openpqc_gpu_sig_keygen_from_seed` returns `OPENPQC_ERR_UNSUPPORTED`, as on
+the CPU; KeyGen from given seeds (SK.seed ‖ SK.prf ‖ PK.seed) and signing with a given addrnd are testing interfaces
+(FIPS 205 §9): `openpqc_testing_gpu_sig_keygen_derand` and `openpqc_testing_gpu_sig_sign_derand` of
+`openpqc/sycl_testing.h`, in `OpenPQC::sycl_testing`, never installed. `openpqc_gpu_create` returns
+`OPENPQC_ERR_UNSUPPORTED` for a set that the build left out (`OPENPQC_SLHDSA_SYCL_SETS`) and
+`OPENPQC_ERR_INVALID_ARGUMENT` for a device without enough local memory. The internal functions on a caller-built M′
+(`opqc_sycl_slhdsa_sign_internal_derand`, `_verify_internal`) and `opqc_sycl_slhdsa_workspace_bytes`, the device
+memory a context will take, are in the backend's C API only.
+
+Key, seed, addrnd, offset and signature buffers must be 8-byte aligned and status buffers 4-byte aligned, as those of
+`openpqc_gpu_malloc` are; messages may start at any byte (the backend's functions also require PH(M) to be 8-byte
+aligned). Every buffer must be USM memory of the context (`openpqc_gpu_malloc` or `_malloc_host`, from any place
+inside the allocation, or the application's own for a context of `openpqc_gpu_create_on`): pageable host memory and
+the memory of a context on another device are refused (`OPENPQC_ERR_INVALID_ARGUMENT`; the backend's functions −1,
+also when n is 0) before anything is queued (verification fails closed). The check asks the SYCL runtime, which lets
+some memory through: AdaptiveCpp's OpenMP host device takes every pointer for its own (host memory, which it then
+uses, and another GPU's device memory, which the host cannot read: the process then ends with a segmentation fault,
+in a kernel or, on a failed context, in the fill of a verification's status); a buffer that has been freed is not
+refused under DPC++'s Level Zero (AdaptiveCpp's refused it) and on the OpenMP host device, where the runtime still
+reports it as the context's; DPC++ and AdaptiveCpp take USM memory of another SYCL context on the same device for this
+context's (on every device tried, seen by `gpu_api`); and DPC++ and AdaptiveCpp take device memory of the other platform of the
+same Intel GPU (Level Zero or OpenCL; AdaptiveCpp seen with a Level Zero context and OpenCL memory) for this context's,
+and the kernels then compute wrong results from it while every call returns 0 (seen on an Iris Xe). Pass only buffers
+of the context that are still allocated (`openpqc/sycl.h`, Buffers). The GPU API's calls return `openpqc_status`
+values (`openpqc/sycl.h`, Results of calls). The backend's functions return 0, −1 (invalid arguments, a parameter set
+not in this build, a device without enough local memory, memory that cannot be allocated, a max_batch for which a
+launch would exceed 2³¹ work-items, a malformed `OPENPQC_SYCL_DEVICE`; for `memcpy` and `memcpy_async` also a NULL
+dst or src), −2 (an exception of the SYCL runtime; for the randomized calls page-locked host memory that cannot be
+allocated; or a context that has failed: a device error found by a call, `sync` or `memcpy`, or an earlier exception,
+after which every call, `sync` and `memcpy` returns −2, a call with a buffer that is not USM memory included, and the
+calls run no more kernels (a NULL or unaligned buffer still gives −1; the GPU API gives `OPENPQC_ERR_DEVICE` there,
+whatever else is wrong); destroy the context and create a new one, and after a sticky CUDA fault, which leaves the
+device unusable for the rest of the process, start a new process; a device error found through the context's queue
+does not end the process) or `OPENPQC_ERR_RNG`. Every function that returns a status is declared `OPENPQC_MUST_CHECK`
+(the backend's `OPQC_MUST_CHECK`). The backend's `_derand` and internal functions are testing interfaces, as their
+CPU counterparts in `OpenPQC::testing` are; the shared `openpqc_sycl` does not export them (test `sycl_exports`), and a
+static one contains them, declared in no installed header. In the backend, addrnd = NULL gives the deterministic
+variant. The calls are asynchronous, except that the randomized calls wait for the copy of each launch's coins, and
+that a refused or failed verification waits for its fail-closed fill (in the GPU API, every refused or failed call
+waits for its fills).
 
 ### Design
 
@@ -323,7 +349,8 @@ the copy of each launch's coins in the randomized calls:
   randomized calls draw their coins on the host into page-locked memory that the context holds and wipes after each
   launch's copy: a copy from pageable memory would leave them in a staging buffer of the driver, which the library
   cannot wipe. NVIDIA's driver has nevertheless been seen to keep copies of such small transfers in memory of its own,
-  also after `destroy`. `opqc_sycl_slhdsa_free` frees without wiping.
+  also after `destroy`. `openpqc_gpu_free` overwrites what it frees; the backend's own `opqc_sycl_slhdsa_free` frees
+  without wiping.
 - **Fail closed.** A verification call first sets every entry of `status` to `OPENPQC_ERR_INVALID_SIGNATURE`,
   before its first kernel, and the kernels overwrite each entry they decide, so that an entry no kernel decides (a call
   that fails part way, a device fault that only a later `sync` or `memcpy` reports, a dropped launch) reads as invalid,
@@ -333,17 +360,21 @@ the copy of each launch's coins in the randomized calls:
   read, reused or freed at once. The fills need a usable context and status buffer (a status buffer that is not USM
   memory of the context is never written) and a device that still accepts work: after a fault that loses the device
   no fill runs and `memcpy` returns −2 without copying, so take the entries as verdicts only when the call, `sync` and
-  `memcpy` all returned 0. ML-DSA's backend now does the same.
-- **One key.** The `_one_key` functions compute the PK.seed states once per launch. E0 shares nothing else between the
-  signatures of one key, so they run at the speed of the general calls (kernel-mode ratios 0.97–1.02 on the RTX with
-  DPC++, 0.98–1.03 with AdaptiveCpp, 0.89–1.17 in the Iris Xe's noisier rows).
+  `memcpy` all returned 0. ML-DSA's backend now does the same. The GPU API sets the entries of every call to
+  `OPENPQC_ERR_NOT_COMPUTED` before the backend's first kernel (those of signing, which then reads `OPENPQC_OK`,
+  too) and, after a refusal or failure, again, and waits for that fill.
+- **One key.** The `_one_key` functions (`OPENPQC_GPU_ONE_KEY` in the GPU API) compute the PK.seed states once per
+  launch. E0 shares nothing else between the signatures of one key, so they run at the speed of the general calls
+  (kernel-mode ratios 0.97–1.02 on the RTX with DPC++, 0.98–1.03 with AdaptiveCpp, 0.89–1.17 in the Iris Xe's noisier
+  rows).
 - **Threads.** A context is locked while a call queues its work; several host threads can share it, and their calls take
   turns (`memcpy` does not take the lock, and `destroy` must not run while another thread uses the context).
 - **Device failures.** A device error found by a call, `sync` or `memcpy`, and every exception of the SYCL runtime,
   fail the context for good (`Core/sycl/opqc_sycl_context.hpp`): every later call, `sync` and `memcpy` returns −2 and
   the calls launch no kernel and write nothing into the workspace (verification still fills its status). The failed
   state is checked before the memory of the buffers, so a buffer that is not USM memory gives −2 there too, while a
-  NULL or unaligned one still gives −1 (ML-KEM's and ML-DSA's backends give −1 for both). On CUDA a fault that is
+  NULL or unaligned one still gives −1 (ML-KEM's and ML-DSA's backends give −1 for both; the GPU API checks the failed
+  state before every argument and gives `OPENPQC_ERR_DEVICE` for all of them). On CUDA a fault that is
   sticky (an invalid address) leaves the device unusable for the rest of the process: every context on it fails, a
   new create on it fails, and only a new process can use the device again. Under AdaptiveCpp, which keeps one list of
   asynchronous errors per process, an error fails every context of the process, and the contexts take the errors of
@@ -351,9 +382,10 @@ the copy of each launch's coins in the randomized calls:
   real CUDA illegal-address fault under both toolchains); the header names the three cases the library cannot catch:
   an error that the SYCL runtime gives to the SYCL context's handler instead of the queue's, a failure inside the
   runtime itself and, on AdaptiveCpp's OpenMP host device, a call with another GPU's device memory (above).
-- **Differences from the CPU library.** `msg`, `mprime` and `ph_m` must not be NULL even when every message is empty
-  (the call cannot see that no byte will be read): NULL is refused with −1, and verification then fails closed, where
-  the CPU library accepts NULL for an empty message. A signature of the wrong length cannot be passed: the sizes are the
+- **Differences from the CPU library.** `msg`, `mprime` and `ph_m` (in the GPU API the messages' `data`) must not be
+  NULL even when every message is empty (the call cannot see that no byte will be read): NULL is refused with −1
+  (`OPENPQC_ERR_INVALID_ARGUMENT`), and verification then fails closed, where the CPU library accepts NULL for an
+  empty message. A signature of the wrong length cannot be passed: the sizes are the
   parameter set's.
 
 **Byte identity.** On all 7 device/compiler combinations, DPC++ (nightly 2026-10-11) on the RTX 3050 (CUDA) and on the
@@ -662,8 +694,9 @@ randomness from the operating system, `openpqc_slhdsa_testrng` calls the applica
 never link it into a program together with a production library: both define `opqc_randombytes`, and the linker
 keeps the first definition it finds, without an error).
 The GPU backend is part of the GPU library `openpqc_sycl` when a SYCL compiler is found (see the top-level
-README); `openpqc_slhdsa_sycl` is its static copy for the tests, with the development option
-`OPENPQC_SLHDSA_SYCL_SETS` described above.
+README), under the GPU API; `openpqc_slhdsa_sycl` is its static copy for the benchmarks, and `openpqc_sycl_testing`
+the library of the same objects that exports the backend's C API, for the white-box tests, both with the development
+option `OPENPQC_SLHDSA_SYCL_SETS` described above.
 
 ## Tests
 
@@ -686,12 +719,13 @@ The reference's own test programs run against this library and against the unmod
 | `slhdsa_ct` | constant-time test under valgrind (when valgrind is found and the build has no sanitizer), with the check that the declassification is not too broad (label `slow`) |
 | `slhdsa_O2_ct` | the same with the library compiled at -O2 whatever the build type, so that a Debug build checks optimized code too (label `slow`, about 10 minutes) |
 | `core_sha2` | Core's SHA-2, including the word-level compression against the FIPS 180-4 examples and a transcription with the full schedule |
-| `slhdsa_sycl` | the SYCL backend against this library on every SYCL device (labels `gpu` and `slow`, below) |
+| `gpu_api` | the GPU API (`openpqc/sycl.h`, `sycl.hpp`) on every SYCL device, linked as an application links it, for every parameter set of the build: for SLH-DSA key pairs that this library accepts, deterministic signatures byte for byte against this library, pure and pre-hash (PH(M) given) and under one key, hedged signatures that this library verifies, verification of good and tampered signatures, messages outside their buffer (review finding F073); the order of checks and launches of 3 operations (label `gpu`; see [ML-KEM's README](../../ML/KEM/README.md#tests)) |
+| `slhdsa_sycl` | the SYCL backend's own C API against this library on every SYCL device (labels `gpu` and `slow`, below) |
 | `slhdsa_sycl_faults`, `slhdsa_sycl_faults_sticky` | the SYCL backend when its work fails, by fault injection (white-box: the test compiles the backend's source for SHA2-128f and SHAKE-128f): the fail-closed status after a refusal, a failure part way and launches that never ran, the failed context (also with pageable buffers, which then give −2; a pageable status buffer may afterwards hold only its old entries or invalid ones), the zeroization of the whole workspace after a failure and of verification's sections after a call; `_sticky` with a real CUDA illegal-address fault in a process of its own (label `gpu`; skipped without an NVIDIA device) |
 
 The tests of the C APIs of all three schemes in `tests/` (`c_api_errors`, which also takes the error paths of the
 `_deterministic` functions and of `check_sk` and `check_keypair` and checks that the testing interfaces refuse a NULL
-seed or addrnd, `c_api_must_check`, `runtime_api` and `production_symbols`) are described in
+seed or addrnd, `c_api_must_check`, `runtime_api` and `production_symbols`), and `sycl_exports`, are described in
 [ML-KEM's README](../../ML/KEM/README.md#tests).
 
 Running them:
@@ -821,9 +855,10 @@ the GPU backend reported ten findings, nine distinct issues (two of its lenses f
   miscomputes is found only by the tests.
 - **What the buffer check cannot see.** It asks the SYCL runtime, so a freed buffer under DPC++'s Level Zero and on
   the OpenMP host device, any pointer on the OpenMP host device (another GPU's device memory then ends the process
-  with a segmentation fault), and under DPC++ and AdaptiveCpp the device memory of the other platform of the same
-  Intel GPU pass it (`openpqc_slhdsa_sycl.h`, Buffers). After a sticky CUDA fault the device can only be
-  used again by a new process, and nothing the kernels wrote can be wiped.
+  with a segmentation fault), under DPC++ and AdaptiveCpp USM memory of another SYCL context on the same device, and under DPC++ and
+  AdaptiveCpp the device memory of the other platform of the same Intel GPU pass it (`openpqc/sycl.h`, Buffers;
+  `openpqc_slhdsa_sycl.h`, Buffers). After a sticky CUDA fault the device can only be used again by a new process,
+  and nothing the kernels wrote can be wiped.
 - **The s-set workspace** (up to 11 MiB per operation) limits the batch per launch; the Iris Xe's comes out of host
   memory.
 - **Build and first-launch costs:** about 10 minutes and 1.2 GiB per DPC++ executable that links the backend, and about
@@ -841,5 +876,8 @@ the GPU backend reported ten findings, nine distinct issues (two of its lenses f
 - **Shared Core code.** The three GPU backends derive their contexts from Core's: the page-locked coin buffer, the
   failed state and the waited status fills are the same code for ML-KEM, ML-DSA and SLH-DSA, and a change there is
   checked by all three backends' tests and by `core_sycl`.
-- **Unchecked inputs.** The message offsets are device data and are not checked (an offset outside `msg` makes the
+- **Inputs the backend does not check.** The message offsets are device data. The GPU API checks them against the
+  size of the buffer on the device (an operation whose message lies outside gets `OPENPQC_ERR_INVALID_ARGUMENT` and,
+  when it signs, a zero signature; review finding F073); the backend's own functions take no length, read an
+  operation whose offsets decrease as the empty message, and cannot see an end past `msg` (such an offset makes the
   device read outside it).

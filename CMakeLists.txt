@@ -188,9 +188,10 @@ function(openpqc_sycl_sources target)
     endif()
 endfunction()
 
-# _openpqc_sycl_backend(<name> <source> [DEFINITIONS <def>...]): a GPU backend (or Core's SYCL runtime) as the
-# object library <name>_objects, for the library openpqc_sycl, and as the static library <name>, for the
-# tests and benchmarks (built only when they need it)
+# _openpqc_sycl_backend(<name> <source> [DEFINITIONS <def>...]): a GPU backend, Core's SYCL runtime or the GPU API
+# as the object library <name>_objects, for the libraries openpqc_sycl and openpqc_sycl_testing, and as the
+# static library <name> (built only when something links it: Core's runtime for the white-box GPU tests, the
+# schemes' backends for the benchmarks)
 function(_openpqc_sycl_backend name source)
     cmake_parse_arguments(_b "" "" "DEFINITIONS" ${ARGN})
     add_library(${name}_objects OBJECT ${source})
@@ -309,44 +310,66 @@ if(OPENPQC_TESTING_LIBRARY)
     set_target_properties(openpqc_testing PROPERTIES LINKER_LANGUAGE C)
 endif()
 
-# The GPU library: Core's SYCL runtime and the backends of the schemes in openpqc (OpenPQC::sycl after
-# find_package(OpenPQC COMPONENTS sycl)), on the library openpqc. Shared by default: DPC++ then generates the
-# device code once, when this library is linked, instead of in every program that uses it (about 10 minutes for
-# all twelve SLH-DSA sets; review findings G037, G058), and a program, in C or C++, links it as any other library.
-# It exports the GPU backends' C APIs only: hidden visibility, and the functions of a static openpqc it
-# contains stay hidden too (--exclude-libs). OPENPQC_SYCL_SHARED=OFF builds it static; programs that use it
-# are then linked as SYCL code (with DPC++: -fsycl and the device targets).
+# The GPU library: Core's SYCL runtime, the backends of the schemes and the GPU API over them (openpqc/sycl.h,
+# include/openpqc/sycl.cpp), in openpqc_sycl (OpenPQC::sycl after find_package(OpenPQC COMPONENTS sycl)), on the
+# library openpqc. Shared by default: DPC++ then generates the device code once, when this library is linked,
+# instead of in every program that uses it (about 10 minutes for all twelve SLH-DSA sets; review findings G037,
+# G058), and a program, in C or C++, links it as any other library. It exports the GPU API only (openpqc_gpu_*,
+# cmake/openpqc_sycl.map): hidden visibility, the backends' own C functions kept local, and the functions of a
+# static openpqc it contains hidden too (--exclude-libs); test sycl_exports. OPENPQC_SYCL_SHARED=OFF builds it
+# static, and then nothing is hidden from a program that links it: the backends' functions (and their testing
+# interfaces) are in the archive, undeclared in any installed header. Programs that use a static openpqc_sycl
+# are linked as SYCL code (with DPC++: -fsycl and the device targets).
+#
+# openpqc_sycl_testing (OpenPQC::sycl_testing): the same objects, with the GPU API compiled again with its
+# testing interfaces (openpqc/sycl_testing.h), exporting everything of the C APIs, the backends' functions
+# (Core/sycl/openpqc_sycl.h, <scheme>/sycl/openpqc_<scheme>_sycl.h) included, for the tests, benchmarks and
+# examples (OPENPQC_TESTING_LIBRARY); never installed. DPC++ generates its device code a second time.
 if(OPENPQC_HAVE_SYCL)
     option(OPENPQC_SYCL_SHARED "Build the GPU library openpqc_sycl as a shared library" ON)
-    set(_openpqc_sycl_objects $<TARGET_OBJECTS:openpqc_core_sycl_objects>)
+    set(_openpqc_sycl_backends $<TARGET_OBJECTS:openpqc_core_sycl_objects>)
     foreach(_openpqc_scheme IN ITEMS mlkem mldsa slhdsa)
         string(TOUPPER ${_openpqc_scheme} _openpqc_upper)
         if(OPENPQC_WITH_${_openpqc_upper})
-            list(APPEND _openpqc_sycl_objects $<TARGET_OBJECTS:openpqc_${_openpqc_scheme}_sycl_objects>)
+            list(APPEND _openpqc_sycl_backends $<TARGET_OBJECTS:openpqc_${_openpqc_scheme}_sycl_objects>)
         endif()
     endforeach()
-    if(OPENPQC_SYCL_SHARED)
-        add_library(openpqc_sycl SHARED ${_openpqc_sycl_objects})
-        openpqc_sycl_link(openpqc_sycl PRIVATE)
-        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            target_link_options(openpqc_sycl PRIVATE LINKER:--exclude-libs,ALL)
+    function(_openpqc_gpu_library name)
+        if(OPENPQC_SYCL_SHARED)
+            add_library(${name} SHARED ${ARGN})
+            openpqc_sycl_link(${name} PRIVATE)
+            if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+                target_link_options(${name} PRIVATE LINKER:--exclude-libs,ALL)
+            endif()
+            target_compile_definitions(${name} INTERFACE OPENPQC_SHARED)   # dllimport on Windows
+        else()
+            add_library(${name} STATIC ${ARGN})
+            openpqc_sycl_link(${name} PUBLIC)
         endif()
-        target_compile_definitions(openpqc_sycl INTERFACE OPENPQC_SHARED)   # dllimport on Windows
-    else()
-        add_library(openpqc_sycl STATIC ${_openpqc_sycl_objects})
-        openpqc_sycl_link(openpqc_sycl PUBLIC)
-    endif()
+        target_include_directories(${name} PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+            $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+        if(OPENPQC_SLHDSA_SYCL_SETS)
+            target_compile_definitions(${name} PUBLIC OPENPQC_SLHDSA_SYCL_SETS=${OPENPQC_SLHDSA_SYCL_SETS})
+        endif()
+        target_link_libraries(${name} PUBLIC openpqc)
+        set_target_properties(${name} PROPERTIES LINKER_LANGUAGE CXX)
+    endfunction()
+
+    _openpqc_gpu_library(openpqc_sycl ${_openpqc_sycl_backends} $<TARGET_OBJECTS:openpqc_gpu_api_objects>)
     add_library(OpenPQC::sycl ALIAS openpqc_sycl)
-    target_include_directories(openpqc_sycl PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-        $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
-    if(OPENPQC_SLHDSA_SYCL_SETS)
-        target_compile_definitions(openpqc_sycl PUBLIC OPENPQC_SLHDSA_SYCL_SETS=${OPENPQC_SLHDSA_SYCL_SETS})
+    if(OPENPQC_SYCL_SHARED AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(openpqc_sycl PRIVATE LINKER:--version-script=${PROJECT_SOURCE_DIR}/cmake/openpqc_sycl.map)
+        set_property(TARGET openpqc_sycl APPEND PROPERTY LINK_DEPENDS ${PROJECT_SOURCE_DIR}/cmake/openpqc_sycl.map)
     endif()
-    target_link_libraries(openpqc_sycl PUBLIC openpqc)
-    set_target_properties(openpqc_sycl PROPERTIES LINKER_LANGUAGE CXX EXPORT_NAME sycl
-                                                  VERSION ${PROJECT_VERSION}
+    set_target_properties(openpqc_sycl PROPERTIES EXPORT_NAME sycl VERSION ${PROJECT_VERSION}
                                                   SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
+    if(OPENPQC_TESTING_LIBRARY)
+        _openpqc_gpu_library(openpqc_sycl_testing ${_openpqc_sycl_backends}
+                             $<TARGET_OBJECTS:openpqc_gpu_testing_api_objects>)
+        add_library(OpenPQC::sycl_testing ALIAS openpqc_sycl_testing)
+        set_target_properties(openpqc_sycl_testing PROPERTIES EXCLUDE_FROM_ALL ON)
+    endif()
 endif()
 
 # The C++ learning code for ML-KEM's arithmetic (ML/KEM/reduce, ML/KEM/ntt): a Montgomery-form NTT from the
@@ -407,14 +430,19 @@ foreach(_openpqc_scheme IN ITEMS "ML/KEM:mlkem" "ML/DSA:mldsa" "SLH/DSA:slhdsa")
     if(OPENPQC_WITH_${_openpqc_upper})
         install(FILES include/${_openpqc_dir}/openpqc_${_openpqc_name}.h include/${_openpqc_dir}/${_openpqc_name}.hpp
                 DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/${_openpqc_dir})
-        if(OPENPQC_HAVE_SYCL)
-            install(FILES include/${_openpqc_dir}/sycl/openpqc_${_openpqc_name}_sycl.h
-                    DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/${_openpqc_dir}/sycl)
-        endif()
     endif()
 endforeach()
+# The GPU API (openpqc/sycl.h, sycl.hpp, sycl_experimental.h, sycl/interop.hpp), and the hash functions for an
+# application's own kernels (openpqc/sycl/device.hpp, header-only) with the three Core/sycl headers they are made
+# of. The backends' own headers and the testing interfaces (openpqc/sycl_testing.h) stay in the source tree.
 if(OPENPQC_HAVE_SYCL)
-    install(FILES include/Core/sycl/openpqc_sycl.h DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core/sycl)
+    install(FILES include/openpqc/sycl.h include/openpqc/sycl.hpp include/openpqc/sycl_experimental.h
+            DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR})
+    install(FILES include/openpqc/sycl/device.hpp include/openpqc/sycl/interop.hpp
+            DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/sycl)
+    install(FILES include/Core/sycl/opqc_sycl_sha2.hpp include/Core/sycl/opqc_sycl_sponge.hpp
+                  include/Core/sycl/opqc_sycl_team.hpp
+            DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core/sycl)
 endif()
 
 include(CMakePackageConfigHelpers)

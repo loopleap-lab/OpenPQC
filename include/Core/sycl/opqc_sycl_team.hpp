@@ -56,8 +56,8 @@ inline T* workspace(T* p) {
 // 16-byte aligned; Store16 collects values of Bits bits (8, 16, 32 or 64), value k of a group at bits
 // Bits k, and writes every group of 16 bytes as it is complete (a partial last group is not written).
 OPQC_KERNEL_INLINE inline void store16(void* p, std::uint64_t lo, std::uint64_t hi) {
-    *static_cast<sycl::vec<std::uint32_t, 4>*>(p) =
-            sycl::vec<std::uint32_t, 4>(static_cast<std::uint32_t>(lo), static_cast<std::uint32_t>(lo >> 32),
+    *static_cast<::sycl::vec<std::uint32_t, 4>*>(p) =
+            ::sycl::vec<std::uint32_t, 4>(static_cast<std::uint32_t>(lo), static_cast<std::uint32_t>(lo >> 32),
                                         static_cast<std::uint32_t>(hi), static_cast<std::uint32_t>(hi >> 32));
 }
 
@@ -86,9 +86,9 @@ struct Store16 {
 
 // f(i) for every i < n, one work-item each, in work-groups of GroupSize
 template <unsigned GroupSize = 128, class F>
-void for_each_item(sycl::queue& q, std::size_t n, F f) {
+void for_each_item(::sycl::queue& q, std::size_t n, F f) {
     const std::size_t global = (n + GroupSize - 1) / GroupSize * GroupSize;
-    q.parallel_for(sycl::nd_range<1>(global, GroupSize), [=](sycl::nd_item<1> it) OPQC_KERNEL_INLINE {
+    q.parallel_for(::sycl::nd_range<1>(global, GroupSize), [=](::sycl::nd_item<1> it) OPQC_KERNEL_INLINE {
         const std::size_t i = it.get_global_id(0);
         if (i < n) f(i);
     });
@@ -99,12 +99,12 @@ void for_each_item(sycl::queue& q, std::size_t n, F f) {
 template <class Word, unsigned TeamSize>
 struct Team {
     static constexpr unsigned size = TeamSize;
-    sycl::nd_item<1> item;
+    ::sycl::nd_item<1> item;
     std::size_t op;          // the operation of this team
     unsigned g;              // index of the work-item within its team, 0 .. TeamSize - 1
     bool active;             // false for the padding teams of the last work-group
     Word* local;             // this team's local memory
-    void barrier() const { sycl::group_barrier(item.get_group()); }
+    void barrier() const { ::sycl::group_barrier(item.get_group()); }
 };
 
 // f(team) for the n operations, TeamsPerGroup teams of TeamSize work-items per
@@ -112,12 +112,12 @@ struct Team {
 // repeat operation n - 1 without writing results, so that every work-item of a
 // work-group reaches every barrier.
 template <class Word, unsigned TeamSize, unsigned TeamsPerGroup, class F>
-void for_each_team(sycl::queue& q, std::size_t n, std::size_t local_words, F f) {
+void for_each_team(::sycl::queue& q, std::size_t n, std::size_t local_words, F f) {
     const std::size_t groups = (n + TeamsPerGroup - 1) / TeamsPerGroup;
-    q.submit([&](sycl::handler& h) {
-        sycl::local_accessor<Word, 1> local(sycl::range<1>(TeamsPerGroup * local_words), h);
-        h.parallel_for(sycl::nd_range<1>(groups * TeamsPerGroup * TeamSize, TeamsPerGroup * TeamSize),
-                       [=](sycl::nd_item<1> it) OPQC_KERNEL_INLINE {
+    q.submit([&](::sycl::handler& h) {
+        ::sycl::local_accessor<Word, 1> local(::sycl::range<1>(TeamsPerGroup * local_words), h);
+        h.parallel_for(::sycl::nd_range<1>(groups * TeamsPerGroup * TeamSize, TeamsPerGroup * TeamSize),
+                       [=](::sycl::nd_item<1> it) OPQC_KERNEL_INLINE {
                            const unsigned t = static_cast<unsigned>(it.get_local_id(0)) / TeamSize;
                            const std::size_t op = it.get_group(0) * TeamsPerGroup + t;
                            f(Team<Word, TeamSize>{it, op < n ? op : n - 1,

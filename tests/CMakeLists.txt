@@ -159,11 +159,22 @@ add_test(NAME runtime_api COMMAND test_runtime_api)
 add_test(NAME production_symbols
          COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DLIBRARY=$<TARGET_FILE:openpqc>
                  -DTESTING=$<TARGET_FILE:openpqc_testing> -P ${CMAKE_CURRENT_SOURCE_DIR}/production_symbols.cmake)
+# sycl_exports: the shared GPU library exports the GPU API (openpqc_gpu_*) and nothing else, which
+# OpenPQC::sycl_testing (the control) adds its testing interfaces and the backends' functions to
+if(OPENPQC_HAVE_SYCL AND OPENPQC_SYCL_SHARED AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME sycl_exports
+             COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DLIBRARY=$<TARGET_FILE:openpqc_sycl>
+                     -DTESTING=$<TARGET_FILE:openpqc_sycl_testing> -P ${CMAKE_CURRENT_SOURCE_DIR}/sycl_exports.cmake)
+endif()
+set(_openpqc_must_check_archives $<TARGET_FILE:openpqc> $<TARGET_FILE:openpqc_testing>)
+if(OPENPQC_HAVE_SYCL)   # the GPU API and its testing interfaces (openpqc/sycl.h, sycl_testing.h, ...)
+    list(APPEND _openpqc_must_check_archives $<TARGET_FILE:openpqc_sycl_testing>)
+endif()
 if(Python3_Interpreter_FOUND)
     add_test(NAME c_api_must_check
              COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_must_check.py
                      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/must_check
-                     $<TARGET_FILE:openpqc> $<TARGET_FILE:openpqc_testing>)
+                     ${_openpqc_must_check_archives})
     set_tests_properties(c_api_must_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
 

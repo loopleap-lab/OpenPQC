@@ -41,12 +41,39 @@ inline constexpr std::size_t MAX_OID_BYTES = 32;   // the OIDs of Core/prehash.h
 inline constexpr std::size_t MAX_HEAD_BYTES = MAX_CONTEXT_BYTES + MAX_OID_BYTES;
 
 // The messages of a call: message i is msg[offsets[i] .. offsets[i + 1]) (offsets: n + 1 entries in
-// device memory, not checked); the context string, ctxlen bytes shared by all, is in the workspace
+// device memory), or, without offsets, msg[i * stride .. (i + 1) * stride); the context string, ctxlen
+// bytes shared by all, is in the workspace. len is the size of the caller's buffer msg: a message whose
+// range does not lie in msg[0 .. len) (offsets[i] > offsets[i + 1], or an end past len) is out of range
+// (in_range) and is read as the empty message, so that no kernel reads outside the buffer (review
+// findings F073, G013); the unified API (openpqc/sycl.h) then fails that operation's status entry and
+// zeroes its signature. UNCHECKED_LENGTH (the per-scheme entry points) checks only the order of the two
+// offsets: a decreasing pair is read as the empty message there too.
+inline constexpr std::uint64_t UNCHECKED_LENGTH = UINT64_MAX;
 struct Messages {
     const std::uint8_t* msg;
-    const std::uint64_t* offsets;
+    const std::uint64_t* offsets;   // not used if strided
     std::size_t ctxlen;
+    std::uint64_t len = UNCHECKED_LENGTH;
+    bool strided = false;           // messages of stride bytes each, back to back, without offsets
+    std::uint64_t stride = 0;
 };
+
+// Whether message op lies in msg[0 .. len) (see Messages); for messages of stride bytes, the caller checks
+// n * stride <= len on the host (the unified API does)
+OPQC_KERNEL_INLINE inline bool in_range(const Messages& msgs, std::size_t op) {
+    if (msgs.strided) return true;
+    const std::uint64_t start = msgs.offsets[op], end = msgs.offsets[op + 1];
+    return start <= end && end <= msgs.len;
+}
+
+// The messages of operations first, first + 1, ... of msgs (a chunk of a call): the offsets are positions in
+// the whole buffer, so only where they start moves; strided messages move the buffer instead
+inline Messages chunk(const Messages& msgs, std::size_t first) {
+    Messages part = msgs;
+    if (msgs.strided) part.msg = msgs.msg + first * msgs.stride;
+    else part.offsets = msgs.offsets + first;
+    return part;
+}
 
 // M' of one operation, read in place (see the top of the file). Prefixed: domain || |ctx| || head || m,
 // where head is ctx || OID (headlen = |ctx| + |OID| bytes; |OID| = 0 for the pure versions); not Prefixed:
@@ -95,12 +122,14 @@ struct FormattedMessage {
     }
 };
 
-// Message op of msgs, and its length
+// Message op of msgs, and its length (the empty message for one out of range)
 OPQC_KERNEL_INLINE inline const std::uint8_t* message(const Messages& msgs, std::size_t op) {
-    return msgs.msg + msgs.offsets[op];
+    if (msgs.strided) return msgs.msg + op * msgs.stride;
+    return in_range(msgs, op) ? msgs.msg + msgs.offsets[op] : msgs.msg;
 }
 OPQC_KERNEL_INLINE inline std::size_t message_bytes(const Messages& msgs, std::size_t op) {
-    return static_cast<std::size_t>(msgs.offsets[op + 1] - msgs.offsets[op]);
+    if (msgs.strided) return static_cast<std::size_t>(msgs.stride);
+    return in_range(msgs, op) ? static_cast<std::size_t>(msgs.offsets[op + 1] - msgs.offsets[op]) : 0;
 }
 
 // M' = domain || |ctx| || ctx || OID || M of message op, with ctx || OID at head (put_context): the pure
