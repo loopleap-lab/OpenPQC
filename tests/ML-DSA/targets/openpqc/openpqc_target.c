@@ -334,7 +334,7 @@ int unpack_sig(uint8_t c[CTILDEBYTES], polyvecl *z, polyveck *h, const uint8_t s
 
 int crypto_sign_keypair(uint8_t *pk, uint8_t *sk)
 {
-    return OPENPQC_TARGET_API(keypair)(pk, sk) == 0 ? 0 : -1;
+    return OPENPQC_TARGET_API(keygen)(pk, sk) == 0 ? 0 : -1;
 }
 
 int crypto_sign_signature(uint8_t *sig, size_t *siglen, const uint8_t *m, size_t mlen,

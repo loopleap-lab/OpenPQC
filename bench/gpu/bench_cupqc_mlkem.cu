@@ -25,6 +25,7 @@
 #include <pk.hpp>
 
 #include "../../include/ML/KEM/openpqc_mlkem.h"
+#include "../../include/openpqc/testing.h"
 #include "../bench_common.hpp"
 
 using namespace cupqc;
@@ -106,14 +107,14 @@ __global__ void __launch_bounds__(T::BlockDim.x) de_kernel(std::uint8_t* ss, con
 }
 
 struct CpuApi {
-    int (*keypair_derand)(std::uint8_t*, std::uint8_t*, const std::uint8_t*);
-    int (*enc_derand)(std::uint8_t*, std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
-    int (*dec)(std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
+    openpqc_status (*keypair_derand)(std::uint8_t*, std::uint8_t*, const std::uint8_t*);
+    openpqc_status (*enc_derand)(std::uint8_t*, std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
+    openpqc_status (*dec)(std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
 };
 template <int L> CpuApi cpu();
-template <> CpuApi cpu<512>() { return {openpqc_mlkem512_keypair_derand, openpqc_mlkem512_enc_derand, openpqc_mlkem512_dec}; }
-template <> CpuApi cpu<768>() { return {openpqc_mlkem768_keypair_derand, openpqc_mlkem768_enc_derand, openpqc_mlkem768_dec}; }
-template <> CpuApi cpu<1024>() { return {openpqc_mlkem1024_keypair_derand, openpqc_mlkem1024_enc_derand, openpqc_mlkem1024_dec}; }
+template <> CpuApi cpu<512>() { return {openpqc_mlkem512_keygen_from_seed, openpqc_testing_mlkem512_encaps_derand, openpqc_mlkem512_decaps}; }
+template <> CpuApi cpu<768>() { return {openpqc_mlkem768_keygen_from_seed, openpqc_testing_mlkem768_encaps_derand, openpqc_mlkem768_decaps}; }
+template <> CpuApi cpu<1024>() { return {openpqc_mlkem1024_keygen_from_seed, openpqc_testing_mlkem1024_encaps_derand, openpqc_mlkem1024_decaps}; }
 
 template <int L> struct kem_of;
 template <> struct kem_of<512> { using type = ML_KEM_512; };

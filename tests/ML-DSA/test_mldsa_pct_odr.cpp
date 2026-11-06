@@ -8,7 +8,7 @@
 // instantiates key generation for the three parameter sets. The test links it first, ahead of test_mldsa_pct.c
 // (built with OPENPQC_TEST_EXPECT_PCT_FAIL) and of the library built with the pair-wise consistency test and
 // OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST, whose test always fails: KeyGen through the C API must still fail with
-// OPENPQC_MLDSA_ERR_PCT_FAIL and zeroize both keys. Of two copies of a template instantiation with the same name,
+// OPENPQC_ERR_PCT and zeroize both keys. Of two copies of a template instantiation with the same name,
 // the linker keeps the first; had this file's copies the names of the library's, it would keep these wherever
 // the library calls keygen_derand, keygen or check_pair_wise_consistency out of line (any build at -O0, and
 // optimized builds wherever the compiler does not inline them), and KeyGen would return key pairs that were

@@ -37,7 +37,10 @@ constant-time tests at fixed optimization levels); the workflow has not yet run 
 
 - Not FIPS 140-3 validated and not in validation: no approved random bit generator (the randomness comes from the
   operating system), no self-tests when the library is loaded, no integrity test, no error state, no service
-  indicator, no module boundary; the testing interfaces (`_derand`, `_internal`) are always in the libraries.
+  indicator, no module boundary. The testing interfaces (randomness given by the caller, the internal functions) are
+  not in the library `openpqc` but in `OpenPQC::testing`, which is built only for the tests, benchmarks and examples
+  and never installed
+  (review finding M13; test production_symbols); the GPU library still has its `_derand` functions.
 - Version 0.3.0, no releases, no stable API or ABI. Install rules, a CMake package and pkg-config files; the library is
   static by default and shared on request, and a shared build exports the C APIs only.
 - Checked: every NIST ACVP case in the suite, the known-answer tests, Wycheproof ML-KEM, byte identity with the
@@ -64,7 +67,7 @@ which are not part of this repository, list every finding, the other low and inf
 | Issue | Severity | Affects | State |
 |---|---|---|---|
 | No approved RBG: the randomness comes from `getrandom`, `arc4random_buf` or `BCryptGenRandom`, while FIPS 203 §3.3, FIPS 204 §3.6.1 and FIPS 205 §3.1 require an approved RBG (SP 800-90A/B/C) of a given strength. The only way to supply one is to build the library with `OPQC_CONFIG_EXTERNAL_RANDOMBYTES` and provide `randombytes()` (README, Security notes), an unprefixed global symbol | medium | every build used where FIPS 140-3 applies | documented; a prefixed, registrable hook is planned, with the OS RNG staying the default; an approved DRBG belongs to the planned FIPS 140-3 work (below) |
-| No FIPS 140-3 module: no known-answer self-tests at load time (the ML-KEM and ML-DSA GPU contexts run one at creation), no integrity test, no error state, no service indicator, no boundary; no ACVP test of SHA-2, SHA-3 and SHAKE themselves; header templates whose bodies depend on configuration macros (the pair-wise consistency tests are guarded by inline namespaces, other macros are not); the testing interfaces are always exported | medium | FIPS use | out of scope for now; planned as an opt-in build flag, developed on a feature branch (below) |
+| No FIPS 140-3 module: no known-answer self-tests at load time (the ML-KEM and ML-DSA GPU contexts run one at creation), no integrity test, no error state, no service indicator, no boundary; no ACVP test of SHA-2, SHA-3 and SHAKE themselves; header templates whose bodies depend on configuration macros (the pair-wise consistency tests are guarded by inline namespaces, other macros are not); the GPU library exports its `_derand` functions (the CPU library no longer has testing interfaces: they are in `OpenPQC::testing`, never installed) | medium | FIPS use | out of scope for now; planned as an opt-in build flag, developed on a feature branch (below) |
 | Constant time is verified only on x86-64 Linux with GCC 16 and Clang 23; on AArch64, RISC-V and Cortex-M only Clang's assembly of the helpers has been read by a script; cl.exe has never compiled the volatile barrier | medium | other processors and compilers | open |
 | Constant-time tests: valgrind checks copies of the scheme libraries compiled for the tests (with `OPQC_CT_TESTING`, without the x86-64 extensions that valgrind cannot decode and without stack-clash protection), not the production objects; ML-KEM's test marks one fixed set of inputs per parameter set secret, while its randomized iterations run on coins that are not marked | medium (the copies); low (ML-KEM's coins) | test coverage | open |
 | GPU code: no constant-time property is claimed; the value barrier is the identity in device code; ML-KEM's implicit-rejection select is masked through device memory after both CUDA toolchains compiled it to a secret-dependent load, but no test checks the generated code, and device timing has never been measured | medium | GPU backends on a GPU shared with untrusted code | open |

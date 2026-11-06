@@ -180,6 +180,14 @@ prehash_verify, sign_internal, verify_internal}` with `addrnd == NULL` = determi
 these components available to applications"). The internal key generation and signing "should not be made available to
 applications" except for testing (F205 §9, p. 33): exported as `_internal` / `_derand` like ML-DSA's.
 
+(These were the decisions of 2026-10-21. Since November 2026 the C API differs: `keygen` in place of `keypair`; the
+`_derand` and `_internal` functions are testing interfaces in `OpenPQC::testing` (`openpqc/testing.h`,
+`openpqc_testing_slhdsa_<set>_*`), not in the library, and refuse a NULL addrnd; the deterministic variant is
+`openpqc_slhdsa_<set>_sign_deterministic` and `_prehash_sign_deterministic`; `check_sk` and `check_keypair` give the
+check of F205 §3.1; the status codes are those of every scheme, `OPENPQC_OK` and the `OPENPQC_ERR_*` of
+`openpqc/common.h` (a failed pair-wise consistency test −6), and the pre-hash values `OPENPQC_PREHASH_*` alone.
+[include/SLH/DSA/README.md](../../include/SLH/DSA/README.md) describes it.)
+
 ### 2.8 Secrets, public values, destruction (F205 §3.1)
 
 * **Public** (declassified where they become public, STYLE §7.2): PK.seed and PK.root (KeyGen output; read from sk in

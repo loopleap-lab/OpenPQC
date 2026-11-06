@@ -31,6 +31,8 @@
 #include <vector>
 
 #include "ML/KEM/openpqc_mlkem.h"
+#include "../as_int.hpp"
+#include "openpqc/testing.h"
 
 extern "C" {
 // the reference's API (reference/mlkem-native, built with the prefix ref_mlkem)
@@ -66,10 +68,18 @@ struct Api {
     int (*check_sk)(const uint8_t*);
 };
 
-#define API(prefix, N)                                                                       \
-    Api {                                                                                    \
-        prefix##N##_keypair_derand, prefix##N##_keypair, prefix##N##_enc_derand,             \
-                prefix##N##_enc, prefix##N##_dec, prefix##N##_check_pk, prefix##N##_check_sk \
+// OpenPQC's functions return openpqc_status, the reference's int (as_int.hpp)
+#define OPENPQC_IMPL(N)                                                                                        \
+    Api {                                                                                                      \
+        as_int<openpqc_mlkem##N##_keygen_from_seed>::call, as_int<openpqc_mlkem##N##_keygen>::call,            \
+                as_int<openpqc_testing_mlkem##N##_encaps_derand>::call, as_int<openpqc_mlkem##N##_encaps>::call, \
+                as_int<openpqc_mlkem##N##_decaps>::call, as_int<openpqc_mlkem##N##_check_pk>::call,            \
+                as_int<openpqc_mlkem##N##_check_sk>::call                                                      \
+    }
+#define REF_IMPL(N)                                                                                            \
+    Api {                                                                                                      \
+        ref_mlkem##N##_keypair_derand, ref_mlkem##N##_keypair, ref_mlkem##N##_enc_derand, ref_mlkem##N##_enc,  \
+                ref_mlkem##N##_dec, ref_mlkem##N##_check_pk, ref_mlkem##N##_check_sk                           \
     }
 
 struct Level {
@@ -137,21 +147,21 @@ void run(const Level& L, int iterations) {
         bad_pk[pos] = 0xFF;
         bad_pk[pos + 1] |= 0x0F;
         check(L.openpqc.check_pk(bad_pk.data()) == L.reference.check_pk(bad_pk.data()) &&
-                      L.openpqc.check_pk(bad_pk.data()) == OPENPQC_MLKEM_ERR_INVALID_PK,
+                      L.openpqc.check_pk(bad_pk.data()) == OPENPQC_ERR_INVALID_PUBLIC_KEY,
               L.name, "check_pk (invalid)", it);
         r1 = L.openpqc.enc_derand(ct1.data(), ss1.data(), bad_pk.data(), m.data());
         r2 = L.reference.enc_derand(ct2.data(), ss2.data(), bad_pk.data(), m.data());
-        check(r1 == r2 && r1 == OPENPQC_MLKEM_ERR_INVALID_PK, L.name, "enc (invalid pk)", it);
+        check(r1 == r2 && r1 == OPENPQC_ERR_INVALID_PUBLIC_KEY, L.name, "enc (invalid pk)", it);
 
         // hash check (7.3): one bit of H(ek) or of ek inside dk changed
         Bytes bad_sk = sk1;
         bad_sk[384 * k + rng() % (384 * k + 64)] ^= 1;
         check(L.openpqc.check_sk(bad_sk.data()) == L.reference.check_sk(bad_sk.data()) &&
-                      L.openpqc.check_sk(bad_sk.data()) == OPENPQC_MLKEM_ERR_INVALID_SK,
+                      L.openpqc.check_sk(bad_sk.data()) == OPENPQC_ERR_INVALID_SECRET_KEY,
               L.name, "check_sk (invalid)", it);
         r1 = L.openpqc.dec(ss3.data(), ct2.data(), bad_sk.data());
         r2 = L.reference.dec(ss4.data(), ct2.data(), bad_sk.data());
-        check(r1 == r2 && r1 == OPENPQC_MLKEM_ERR_INVALID_SK, L.name, "dec (invalid sk)", it);
+        check(r1 == r2 && r1 == OPENPQC_ERR_INVALID_SECRET_KEY, L.name, "dec (invalid sk)", it);
 
         // randomized API: both libraries draw from the same deterministic stream, which restarts before
         // each call, so that what Encaps draws does not depend on how much KeyGen drew (with the
@@ -179,12 +189,12 @@ void run(const Level& L, int iterations) {
 int main(int argc, char** argv) {
     const int iterations = argc > 1 ? std::atoi(argv[1]) : 1000;
     const Level levels[] = {
-            {"ML-KEM-512", MLKEM512_PUBLICKEYBYTES, MLKEM512_SECRETKEYBYTES,
-             MLKEM512_CIPHERTEXTBYTES, API(openpqc_mlkem, 512), API(ref_mlkem, 512)},
-            {"ML-KEM-768", MLKEM768_PUBLICKEYBYTES, MLKEM768_SECRETKEYBYTES,
-             MLKEM768_CIPHERTEXTBYTES, API(openpqc_mlkem, 768), API(ref_mlkem, 768)},
-            {"ML-KEM-1024", MLKEM1024_PUBLICKEYBYTES, MLKEM1024_SECRETKEYBYTES,
-             MLKEM1024_CIPHERTEXTBYTES, API(openpqc_mlkem, 1024), API(ref_mlkem, 1024)},
+            {"ML-KEM-512", OPENPQC_MLKEM512_PUBLICKEYBYTES, OPENPQC_MLKEM512_SECRETKEYBYTES,
+             OPENPQC_MLKEM512_CIPHERTEXTBYTES, OPENPQC_IMPL(512), REF_IMPL(512)},
+            {"ML-KEM-768", OPENPQC_MLKEM768_PUBLICKEYBYTES, OPENPQC_MLKEM768_SECRETKEYBYTES,
+             OPENPQC_MLKEM768_CIPHERTEXTBYTES, OPENPQC_IMPL(768), REF_IMPL(768)},
+            {"ML-KEM-1024", OPENPQC_MLKEM1024_PUBLICKEYBYTES, OPENPQC_MLKEM1024_SECRETKEYBYTES,
+             OPENPQC_MLKEM1024_CIPHERTEXTBYTES, OPENPQC_IMPL(1024), REF_IMPL(1024)},
     };
     for (const auto& L : levels) run(L, iterations);
     return failures ? 1 : 0;

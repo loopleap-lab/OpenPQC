@@ -1,16 +1,17 @@
 # Copyright (c) The OpenPQC project authors
 # SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 #
-# check_must_check.py -- checks that every function of the C APIs of ML-KEM, ML-DSA and
-# SLH-DSA warns when its result is ignored (OPQC_MUST_CHECK, Core/opqc_common.h): the test
-# c_api_must_check (tests/CMakeLists.txt).
+# check_must_check.py -- checks that every function of OpenPQC's C APIs that returns a result
+# (openpqc_status) warns when the result is ignored (OPENPQC_MUST_CHECK, openpqc/common.h): the
+# test c_api_must_check (tests/CMakeLists.txt).
 #
 # Usage: python3 -I check_must_check.py <include-root> <workdir> [archive.a ...]
 #
-#   1. Preprocesses openpqc_mlkem.h, openpqc_mldsa.h and openpqc_slhdsa.h from <include-root>
-#      and collects every prototype "int openpqc_...(...)".
-#   2. With archives given: every function they export (nm, T openpqc_mlkem*/mldsa*/slhdsa*)
-#      must be among those prototypes, and the other way round.
+#   1. Preprocesses the C headers (HEADERS below: the schemes', openpqc/common.h, kem.h, sig.h
+#      and testing.h) from <include-root> and collects every prototype of a function openpqc_*,
+#      and among them those that return openpqc_status (or int).
+#   2. With archives given (the library openpqc and OpenPQC::testing): every function openpqc_*
+#      they export (nm, T) must be declared in the headers, and the other way round.
 #   3. Writes a translation unit that calls each function once and discards the result, and
 #      compiles it (to an object) as C11, C23, C++14 and C++20 with GCC and as C11, C23 and
 #      C++20 with Clang. Each compilation must give exactly one -Wunused-result warning per
@@ -28,20 +29,33 @@ import shutil
 import subprocess
 import sys
 
-HEADERS = ["ML/KEM/openpqc_mlkem.h", "ML/DSA/openpqc_mldsa.h", "SLH/DSA/openpqc_slhdsa.h"]
-PROTO = re.compile(r"\bint\s+(openpqc_(?:mlkem|mldsa|slhdsa)\w*)\s*\(([^;()]*)\)\s*;")
+HEADERS = ["ML/KEM/openpqc_mlkem.h", "ML/DSA/openpqc_mldsa.h", "SLH/DSA/openpqc_slhdsa.h", "openpqc/common.h",
+           "openpqc/kem.h", "openpqc/sig.h", "openpqc/testing.h"]
+# a function that returns a result, and any function of the C API (its name)
+PROTO = re.compile(r"\b(?:int|openpqc_status)\s+(openpqc_\w*)\s*\(([^;()]*)\)\s*;")
+DECLARED = re.compile(r"\b(openpqc_\w+)\s*\([^;()]*\)\s*;")
+
+
+def argument(a):
+    """A value for a parameter of type a that compiles as C and as C++"""
+    if "*" in a or "[" in a:
+        return "buf" if "uint8_t" in a else "0"   # byte buffers; other pointers (opts, names) NULL
+    if "openpqc_alg" in a:
+        return "OPENPQC_ML_KEM_768"
+    return "0"
 
 
 def prototypes(inc):
+    """(the functions that return a result, with an argument list for each; every function declared)"""
     src = "".join(f'#include "{h}"\n' for h in HEADERS)
     cc = next((c for c in ("gcc", "clang", "cc") if shutil.which(c)), "cc")
     pp = subprocess.run([cc, "-std=c11", "-E", "-P", "-I", inc, "-x", "c", "-"], input=src,
                         capture_output=True, text=True, check=True).stdout
     found = {}
     for name, params in PROTO.findall(pp):
-        args = [p.strip() for p in params.split(",")] if params.strip() else []
-        found[name] = ["buf" if ("*" in a or "[" in a) else "0" for a in args]
-    return found
+        args = [p.strip() for p in params.split(",")] if params.strip() and params.strip() != "void" else []
+        found[name] = [argument(a) for a in args]
+    return found, set(DECLARED.findall(pp))
 
 
 def exported(archives):
@@ -50,7 +64,8 @@ def exported(archives):
         out = subprocess.run(["nm", "-g", "--defined-only", a], capture_output=True, text=True, check=True).stdout
         for line in out.splitlines():
             parts = line.split()
-            if len(parts) == 3 and parts[1] == "T" and re.match(r"openpqc_(mlkem|mldsa|slhdsa)", parts[2]):
+            # openpqc_version is declared in Core/openpqc_version.h, which the build generates outside <include-root>
+            if len(parts) == 3 and parts[1] == "T" and parts[2].startswith("openpqc_") and parts[2] != "openpqc_version":
                 names.add(parts[2])
     return names
 
@@ -95,11 +110,11 @@ def main():
     inc, work, archives = os.path.abspath(sys.argv[1]), sys.argv[2], sys.argv[3:]
     os.makedirs(work, exist_ok=True)
     ok = True
-    protos = prototypes(inc)
-    print(f"prototypes in the C headers: {len(protos)}")
+    protos, declared = prototypes(inc)
+    print(f"prototypes in the C headers: {len(declared)}, of which return a result: {len(protos)}")
     if archives:
         names = exported(archives)
-        missing, extra = sorted(names - protos.keys()), sorted(protos.keys() - names)
+        missing, extra = sorted(names - declared), sorted(declared - names)
         print(f"functions exported by the archives: {len(names)}; not declared: {len(missing)}; "
               f"declared, not exported: {len(extra)}")
         for n in missing + extra:

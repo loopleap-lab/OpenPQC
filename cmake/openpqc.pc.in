@@ -7,6 +7,6 @@ Name: OpenPQC
 Description: FIPS 203 ML-KEM, FIPS 204 ML-DSA and FIPS 205 SLH-DSA (C APIs; C++20 APIs in the headers)
 URL: https://github.com/UCF-ML-Research/OpenPQC
 Version: @PROJECT_VERSION@
-Cflags: -I${includedir}
+Cflags: -I${includedir} -I${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 Libs: -L${libdir} -lopenpqc
 Libs.private: @OPENPQC_PC_LIBS_PRIVATE@

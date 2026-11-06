@@ -79,6 +79,7 @@
 #include "ML/KEM/math/mlkem_ntt.h"
 #include "ML/KEM/math/mlkem_sample.h"
 #include "ML/KEM/openpqc_mlkem.h"
+#include "openpqc/testing.h"
 
 #include <algorithm>
 #include <array>
@@ -473,14 +474,14 @@ template <int Level> struct Set;
 #define OPENPQC_TEST_SET(N, K, ETA1, ETA2, DU, DV)                                                   \
     template <> struct Set<N> {                                                                     \
         static constexpr unsigned k = K, eta1 = ETA1, eta2 = ETA2, du = DU, dv = DV;                \
-        static constexpr std::size_t ek_bytes = MLKEM##N##_PUBLICKEYBYTES;                          \
-        static constexpr std::size_t dk_bytes = MLKEM##N##_SECRETKEYBYTES;                          \
-        static constexpr std::size_t ct_bytes = MLKEM##N##_CIPHERTEXTBYTES;                         \
-        static constexpr auto keypair = openpqc_mlkem##N##_keypair;                                 \
-        static constexpr auto keypair_derand = openpqc_mlkem##N##_keypair_derand;                   \
-        static constexpr auto enc = openpqc_mlkem##N##_enc;                                         \
-        static constexpr auto enc_derand = openpqc_mlkem##N##_enc_derand;                           \
-        static constexpr auto dec = openpqc_mlkem##N##_dec;                                         \
+        static constexpr std::size_t ek_bytes = OPENPQC_MLKEM##N##_PUBLICKEYBYTES;                          \
+        static constexpr std::size_t dk_bytes = OPENPQC_MLKEM##N##_SECRETKEYBYTES;                          \
+        static constexpr std::size_t ct_bytes = OPENPQC_MLKEM##N##_CIPHERTEXTBYTES;                         \
+        static constexpr auto keypair = openpqc_mlkem##N##_keygen;                                 \
+        static constexpr auto keypair_derand = openpqc_mlkem##N##_keygen_from_seed;                   \
+        static constexpr auto enc = openpqc_mlkem##N##_encaps;                                         \
+        static constexpr auto enc_derand = openpqc_testing_mlkem##N##_encaps_derand;                           \
+        static constexpr auto dec = openpqc_mlkem##N##_decaps;                                         \
     };
 OPENPQC_TEST_SET(512, 2, 3, 2, 10, 4)
 OPENPQC_TEST_SET(768, 3, 2, 2, 10, 4)
@@ -843,7 +844,7 @@ int main() {
     // With the pair-wise consistency test, keypair_derand draws the test's m from randombytes() and fails
     // when there is none
     queue_randomness({});
-    library_pct = Run<512>::keypair_derand_status() == OPENPQC_MLKEM_ERR_RNG_FAIL;
+    library_pct = Run<512>::keypair_derand_status() == OPENPQC_ERR_RNG;
     std::printf("the library %s the pair-wise consistency test in KeyGen\n", library_pct ? "runs" : "does not run");
 #if defined(OPENPQC_TEST_PCT)
     CHECK(library_pct);

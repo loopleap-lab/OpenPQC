@@ -67,11 +67,13 @@ enum class Status : int {
     invalid_argument = -2,   // signing (or external mu) with a context string longer than 255
                              // bytes; an unknown pre-hash function
     rng_failure = -3,        // no randomness available: Algorithms 1, 2 and 4 return "bottom"
-    signing_limit = -4,      // the signing loop reached max_signing_attempts (Appendix C)
-    pct_failure = -5,        // the pair-wise consistency test after KeyGen failed (ml_dsa.hpp)
-    invalid_key = -6,        // a malformed private key: s1 or s2 outside [-eta, eta] (Algorithm 25,
+    invalid_key = -5,        // a malformed private key: s1 or s2 outside [-eta, eta] (Algorithm 25,
                              // lines 3 and 6), which signing refuses; or, for check_secret_key
                              // (ml_dsa.hpp), a key that is not what KeyGen computes
+    pct_failure = -6,        // the pair-wise consistency test after KeyGen failed (ml_dsa.hpp)
+    signing_limit = -8,      // the signing loop reached max_signing_attempts (Appendix C)
+    // (the values of openpqc_status, openpqc/common.h: -5 OPENPQC_ERR_INVALID_SECRET_KEY, -6 OPENPQC_ERR_PCT,
+    // -8 OPENPQC_ERR_SIGNING_LIMIT)
 };
 
 // The bound on the iterations of the signing loop (Appendix C). Table 3 derives 814 from

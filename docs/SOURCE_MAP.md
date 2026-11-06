@@ -556,9 +556,12 @@ This section describes OpenPQC as it is now (November 2026), not the vendored ml
 2. **Type checks.** The FIPS 203 type (length) checks of §7.2 and §7.3 are met by the API's fixed-size arrays.
    Callers must pass buffers of exactly the declared sizes and refuse keys or ciphertexts of other lengths themselves
    (`openpqc_mlkem.h`, Sizes).
-3. **Internal functions.** Expose only the randomized functions (`keypair`, `enc`, `dec`) to applications.
-   `keypair_derand` is for testing and for expanding a stored seed d ‖ z; `enc_derand` is for testing only (§3.3,
-   "controlled access to internal functions"). Both are always in the library.
+3. **Internal functions.** Applications call `openpqc_mlkemNNN_keygen`, `encaps` and `decaps`, and
+   `keygen_from_seed` to expand a stored seed d ‖ z (item 7). Encapsulation with m given
+   (`openpqc_testing_mlkemNNN_encaps_derand`) is for testing only (§3.3, "controlled access to internal functions"):
+   it is not in the library `openpqc` but in `OpenPQC::testing` (`openpqc/testing.h`), which is built only with the
+   tests, benchmarks or examples and never installed, and the test `production_symbols` checks that `openpqc` exports
+   no testing interface.
 4. **PCT.** For FIPS 140-3 validation, compile `ML/KEM/mlkem.cpp` with `OPENPQC_MLKEM_KEYGEN_PCT` (the CMake option
    of that name), so that every generated key pair passes the pair-wise consistency test (§7.1, FIPS 140-3 IG 10.3.A);
    it is off by default and tested by `mlkem_pct`, `mlkem_pct_fail` and `mlkem_pct_odr`, and with the option by
@@ -568,7 +571,9 @@ This section describes OpenPQC as it is now (November 2026), not the vendored ml
    is reachable only through the header-only scheme templates, which applications should not call.
 6. **The GPU backend.** It meets the destruction rule for its workspace (the secret sections are zeroized after every
    launch, the whole workspace after a failure and by `destroy`; local memory is cleared before a kernel ends) and
-   draws its coins inside the library; its `_derand` functions are testing interfaces as on the CPU. What it cannot
+   draws its coins inside the library; its `_derand` functions take the coins from the caller as the CPU's
+   `keygen_from_seed` and testing interface do (`keypair_derand` for testing and a stored seed, `enc_derand` for
+   testing only), but are still in the GPU library `openpqc_sycl`. What it cannot
    reach: copies of the coin transfers that NVIDIA's driver keeps, and memory after a sticky device fault (after
    which only a new process can use the device). Its buffer check asks the SYCL runtime, which does not tell a freed
    buffer from a live one under DPC++'s Level Zero and on AdaptiveCpp's OpenMP host device; that host device also

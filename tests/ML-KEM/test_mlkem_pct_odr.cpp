@@ -8,7 +8,7 @@
 // instantiates key generation for the three parameter sets. The test links it first, ahead of
 // test_mlkem_pct.c (built with OPENPQC_TEST_EXPECT_PCT_FAIL) and of the library built with the pair-wise
 // consistency check and OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST, whose check always fails: KeyGen through the
-// C API must still fail with OPENPQC_MLKEM_ERR_PCT_FAIL and zeroize both keys. Of two copies of a template
+// C API must still fail with OPENPQC_ERR_PCT and zeroize both keys. Of two copies of a template
 // instantiation with the same name, the linker keeps the first; had this file's copies the names of the
 // library's, it would keep these, and KeyGen would return keys that were never checked (ml_kem_keygen_derand
 // and ml_kem_keygen, which run in frames of their own and so are always called out of line, and

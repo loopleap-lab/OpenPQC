@@ -59,11 +59,11 @@ if(_openpqc)
     #                (OPENPQC_SLHDSA_KEYGEN_PCT, FIPS 140-3), so that this configuration is compiled
     #                and its KeyGen exercised
     #   slhdsa_pct_fail   the same with OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST, which breaks the
-    #                     signature inside the test: KeyGen must fail with OPENPQC_SLHDSA_ERR_PCT_FAIL and
+    #                     signature inside the test: KeyGen must fail with OPENPQC_ERR_PCT and
     #                     zeroize both keys. This shows that the test is compiled in and that its
     #                     result is used, which slhdsa_pct alone cannot show.
     foreach(variant pct pct_fail)
-        add_library(openpqc_slhdsa_${variant}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/SLH/DSA/slhdsa.cpp)
+        add_library(openpqc_slhdsa_${variant}_objects OBJECT ${OPENPQC_SLHDSA_SOURCES})
         target_include_directories(openpqc_slhdsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
         target_compile_definitions(openpqc_slhdsa_${variant}_objects PRIVATE OPENPQC_SLHDSA_KEYGEN_PCT)
         target_compile_features(openpqc_slhdsa_${variant}_objects PRIVATE cxx_std_20)
@@ -141,10 +141,11 @@ if(_openpqc)
             list(APPEND _library_options -fstack-usage)
             set(_frames --frames $<TARGET_OBJECTS:openpqc_slhdsa_pct_unprotected_objects>)
         endif()
-        set_source_files_properties(slhdsa_no_stack_clash_protection.cpp
+        set_source_files_properties(slhdsa_no_stack_clash_protection.cpp slhdsa_testing_no_stack_clash_protection.cpp
                                     PROPERTIES COMPILE_OPTIONS "${_library_options}")
         set_source_files_properties(test_slhdsa_stack_pct.cpp PROPERTIES COMPILE_OPTIONS "${_unprotected_options}")
-        add_library(openpqc_slhdsa_pct_unprotected_objects OBJECT slhdsa_no_stack_clash_protection.cpp)
+        add_library(openpqc_slhdsa_pct_unprotected_objects OBJECT slhdsa_no_stack_clash_protection.cpp
+                                                                 slhdsa_testing_no_stack_clash_protection.cpp)
         target_include_directories(openpqc_slhdsa_pct_unprotected_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
         target_compile_definitions(openpqc_slhdsa_pct_unprotected_objects PRIVATE OPENPQC_SLHDSA_KEYGEN_PCT)
         target_compile_features(openpqc_slhdsa_pct_unprotected_objects PRIVATE cxx_std_20)
@@ -186,7 +187,7 @@ if(_openpqc)
                 set(_name slhdsa_${opt}_ct)
                 set(_objects openpqc_slhdsa_ct_${opt}_objects)
             endif()
-            add_library(${_objects} OBJECT ${PROJECT_SOURCE_DIR}/include/SLH/DSA/slhdsa.cpp)
+            add_library(${_objects} OBJECT ${OPENPQC_SLHDSA_SOURCES})
             target_include_directories(${_objects} PRIVATE ${PROJECT_SOURCE_DIR}/include
                                                            ${OPENPQC_VALGRIND_INCLUDE_DIR})
             target_compile_definitions(${_objects} PRIVATE OPQC_CT_TESTING)
@@ -396,7 +397,7 @@ function(acvp_driver name test)
 endfunction()
 
 if(_openpqc)
-    acvp_driver(acvp_slhdsa slhdsa_acvp SLOW LIBRARIES openpqc_slhdsa)
+    acvp_driver(acvp_slhdsa slhdsa_acvp SLOW LIBRARIES OpenPQC::testing)   # openpqc/sig.h, openpqc/testing.h
 endif()
 if(OpenSSL_FOUND)
     acvp_driver(reference_acvp_slhdsa reference_slhdsa_acvp SLOW

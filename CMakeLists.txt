@@ -92,6 +92,15 @@ if(OPENPQC_BUILD_TESTS)
     set(OPENPQC_TESTRNG_VARIANT _testrng)
 endif()
 
+# The testing interfaces (openpqc/testing.h, the library OpenPQC::testing) exist only in a build with the tests,
+# the benchmarks (which compare the derandomized functions with the reference implementations) or the examples
+# (demo_gpu, which compares the GPU with the CPU on the same inputs); they are never installed and never part of
+# the library openpqc (review finding M13)
+set(OPENPQC_TESTING_LIBRARY OFF)
+if(OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHMARKS OR OPENPQC_BUILD_EXAMPLES)
+    set(OPENPQC_TESTING_LIBRARY ON)
+endif()
+
 # The tests, benchmarks and examples use all three schemes
 if(NOT (OPENPQC_WITH_MLKEM AND OPENPQC_WITH_MLDSA AND OPENPQC_WITH_SLHDSA)
    AND (OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHMARKS OR OPENPQC_BUILD_EXAMPLES))
@@ -228,6 +237,7 @@ add_subdirectory(include/Core)
 add_subdirectory(include/ML/KEM)
 add_subdirectory(include/ML/DSA)
 add_subdirectory(include/SLH/DSA)
+add_subdirectory(include/openpqc)   # the common C API: openpqc/common.h, kem.h, sig.h, testing.h
 
 # ML-KEM with the pair-wise consistency test after KeyGen (FIPS 140-3; FIPS 203, Section 7.1, item 4):
 # the definition is given to the library's own objects only (openpqc_mlkem and openpqc_mlkem_testrng),
@@ -251,8 +261,8 @@ message(STATUS "OpenPQC ML-DSA pair-wise consistency test after KeyGen (CPU): ${
 # BUILD_SHARED_LIBS. Applications link OpenPQC::openpqc (the name after find_package(OpenPQC) too), use the C
 # APIs from C or C++ (a C program links it with the C compiler alone: cmake/OpenPQCLibrary.cmake), and the
 # C++ APIs (mlkem.hpp, mldsa.hpp, slhdsa.hpp: C++20). Hidden visibility: a shared library exports the C APIs
-# only.
-set(_openpqc_objects $<TARGET_OBJECTS:openpqc_core_objects>)
+# only. The testing interfaces are never in it (OpenPQC::testing below).
+set(_openpqc_objects $<TARGET_OBJECTS:openpqc_core_objects> $<TARGET_OBJECTS:openpqc_api_objects>)
 foreach(_openpqc_scheme IN ITEMS mlkem mldsa slhdsa)
     string(TOUPPER ${_openpqc_scheme} _openpqc_upper)
     if(OPENPQC_WITH_${_openpqc_upper})
@@ -262,9 +272,11 @@ endforeach()
 add_library(openpqc ${_openpqc_objects})
 add_library(OpenPQC::openpqc ALIAS openpqc)
 add_library(openpqc::openpqc ALIAS openpqc)
+# Installed, the headers are <prefix>/include/openpqc/{openpqc,Core,ML,SLH}/...: <prefix>/include for
+# "openpqc/common.h" and the like, <prefix>/include/openpqc for "Core/...", "ML/..." and "SLH/..."
 target_include_directories(openpqc PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-    $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
+    $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(openpqc INTERFACE cxx_std_20)
 if(WIN32)
     target_link_libraries(openpqc PRIVATE bcrypt)
@@ -281,6 +293,21 @@ endif()
 set_target_properties(openpqc PROPERTIES LINKER_LANGUAGE C
                                          VERSION ${PROJECT_VERSION}
                                          SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
+
+# The testing interfaces (openpqc/testing.h; FIPS 203, Section 3.3; FIPS 204, Section 6; FIPS 205, Section 9):
+# randomness that the caller chooses and the internal functions, for known-answer tests and ACVP clients, in a
+# library of their own on the library openpqc (OpenPQC::testing), so that openpqc never contains them (review
+# finding M13; test production_symbols). Defined only in a build with the tests or benchmarks
+# (OPENPQC_TESTING_LIBRARY, above; such a build has every scheme), and never installed. Its objects are compiled
+# as the schemes' library objects are (openpqc_testing_objects, cmake/OpenPQCLibrary.cmake).
+if(OPENPQC_TESTING_LIBRARY)
+    add_library(openpqc_testing STATIC EXCLUDE_FROM_ALL
+                $<TARGET_OBJECTS:openpqc_mlkem_testing_objects> $<TARGET_OBJECTS:openpqc_mldsa_testing_objects>
+                $<TARGET_OBJECTS:openpqc_slhdsa_testing_objects> $<TARGET_OBJECTS:openpqc_testing_api_objects>)
+    add_library(OpenPQC::testing ALIAS openpqc_testing)
+    target_link_libraries(openpqc_testing PUBLIC openpqc)
+    set_target_properties(openpqc_testing PROPERTIES LINKER_LANGUAGE C)
+endif()
 
 # The GPU library: Core's SYCL runtime and the backends of the schemes in openpqc (OpenPQC::sycl after
 # find_package(OpenPQC COMPONENTS sycl)), on the library openpqc. Shared by default: DPC++ then generates the
@@ -330,7 +357,7 @@ target_compile_features(openpqc_learning PUBLIC cxx_std_20)
 target_link_libraries(openpqc_learning PRIVATE openpqc_warnings)
 
 # The reference implementation (mlkem-native, unmodified), for tests and benchmarks
-if(OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHMARKS)
+if(OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHMARKS OR OPENPQC_BUILD_EXAMPLES)
     add_subdirectory(reference)
 endif()
 
@@ -367,6 +394,11 @@ install(EXPORT OpenPQCTargets NAMESPACE OpenPQC:: DESTINATION ${CMAKE_INSTALL_LI
 install(DIRECTORY include/Core/ DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp" PATTERN "sycl" EXCLUDE)
 install(FILES ${PROJECT_BINARY_DIR}/include/Core/openpqc_version.h DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core)
+# The common API (openpqc/*.h, *.hpp), without the testing interfaces (openpqc/testing.h, testing.hpp), whose
+# library is not installed
+install(FILES include/openpqc/common.h include/openpqc/kem.h include/openpqc/sig.h include/openpqc/openpqc.h
+              include/openpqc/common.hpp include/openpqc/openpqc.hpp
+        DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR})
 foreach(_openpqc_scheme IN ITEMS "ML/KEM:mlkem" "ML/DSA:mldsa" "SLH/DSA:slhdsa")
     string(REPLACE ":" ";" _openpqc_parts ${_openpqc_scheme})
     list(GET _openpqc_parts 0 _openpqc_dir)

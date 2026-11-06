@@ -30,7 +30,7 @@ add_test(NAME mldsa_differential COMMAND test_mldsa_differential)
 #                    must fail with OPENPQC_MLDSA_ERR_PCT_FAIL and zeroize both keys. This shows that the
 #                    test is compiled in and that its result is used, which mldsa_pct alone cannot show.
 foreach(variant pct pct_fail)
-    add_library(openpqc_mldsa_${variant}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp)
+    add_library(openpqc_mldsa_${variant}_objects OBJECT ${OPENPQC_MLDSA_SOURCES})
     target_include_directories(openpqc_mldsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
     target_compile_definitions(openpqc_mldsa_${variant}_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
     target_compile_features(openpqc_mldsa_${variant}_objects PRIVATE cxx_std_20)
@@ -229,7 +229,7 @@ endforeach()
 #                NIST's ACVP server, run through acvp_mldsa (downloads them on first use into
 #                the build directory; label "network")
 add_executable(acvp_mldsa acvp/acvp_mldsa.c)
-target_link_libraries(acvp_mldsa PRIVATE openpqc_mldsa openpqc_strict_warnings)
+target_link_libraries(acvp_mldsa PRIVATE OpenPQC::testing openpqc_strict_warnings)   # openpqc/sig.h, openpqc/testing.h
 set_target_properties(acvp_mldsa PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 if(Python3_Interpreter_FOUND)
     add_test(NAME mldsa_acvp
@@ -267,7 +267,7 @@ elseif(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
             set(_name mldsa_${opt}_ct)
             set(_objects openpqc_mldsa_ct_${opt}_objects)
         endif()
-        add_library(${_objects} OBJECT ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp)
+        add_library(${_objects} OBJECT ${OPENPQC_MLDSA_SOURCES})
         target_include_directories(${_objects} PRIVATE ${PROJECT_SOURCE_DIR}/include ${OPENPQC_VALGRIND_INCLUDE_DIR})
         target_compile_definitions(${_objects} PRIVATE OPQC_CT_TESTING)
         target_compile_features(${_objects} PRIVATE cxx_std_20)

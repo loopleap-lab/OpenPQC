@@ -29,6 +29,9 @@
 #include <string.h>
 
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/common.h"
+#include "openpqc/sig.h"
+#include "openpqc/testing.h"
 
 #define MAX_INPUT 70000 /* bytes: messages of the vectors are at most 65536 bits */
 
@@ -73,45 +76,33 @@ static void print_hex(const char *name, const uint8_t *data, size_t len)
 static int prehash_of(const char *name)
 {
     static const struct { const char *name; int ph; } table[] = {
-        {"SHA2-224", OPENPQC_MLDSA_PREHASH_SHA2_224},         {"SHA2-256", OPENPQC_MLDSA_PREHASH_SHA2_256},
-        {"SHA2-384", OPENPQC_MLDSA_PREHASH_SHA2_384},         {"SHA2-512", OPENPQC_MLDSA_PREHASH_SHA2_512},
-        {"SHA2-512/224", OPENPQC_MLDSA_PREHASH_SHA2_512_224}, {"SHA2-512/256", OPENPQC_MLDSA_PREHASH_SHA2_512_256},
-        {"SHA3-224", OPENPQC_MLDSA_PREHASH_SHA3_224},         {"SHA3-256", OPENPQC_MLDSA_PREHASH_SHA3_256},
-        {"SHA3-384", OPENPQC_MLDSA_PREHASH_SHA3_384},         {"SHA3-512", OPENPQC_MLDSA_PREHASH_SHA3_512},
-        {"SHAKE-128", OPENPQC_MLDSA_PREHASH_SHAKE128},        {"SHAKE-256", OPENPQC_MLDSA_PREHASH_SHAKE256},
+        {"SHA2-224", OPENPQC_PREHASH_SHA2_224},         {"SHA2-256", OPENPQC_PREHASH_SHA2_256},
+        {"SHA2-384", OPENPQC_PREHASH_SHA2_384},         {"SHA2-512", OPENPQC_PREHASH_SHA2_512},
+        {"SHA2-512/224", OPENPQC_PREHASH_SHA2_512_224}, {"SHA2-512/256", OPENPQC_PREHASH_SHA2_512_256},
+        {"SHA3-224", OPENPQC_PREHASH_SHA3_224},         {"SHA3-256", OPENPQC_PREHASH_SHA3_256},
+        {"SHA3-384", OPENPQC_PREHASH_SHA3_384},         {"SHA3-512", OPENPQC_PREHASH_SHA3_512},
+        {"SHAKE-128", OPENPQC_PREHASH_SHAKE128},        {"SHAKE-256", OPENPQC_PREHASH_SHAKE256},
     };
     for (size_t i = 0; i < sizeof table / sizeof table[0]; i++)
         if (strcmp(name, table[i].name) == 0) return table[i].ph;
     return 0;
 }
 
-/* The functions of one parameter set */
-typedef struct {
-    size_t pk, sk, sig;
-    int (*keypair_derand)(uint8_t *, uint8_t *, const uint8_t *);
-    int (*sign_derand)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, const uint8_t *);
-    int (*verify)(const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *);
-    int (*prehash_sign_derand)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, int, const uint8_t *,
-                               const uint8_t *);
-    int (*prehash_verify)(const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, size_t, int,
-                          const uint8_t *);
-    int (*sign_mu_derand)(uint8_t *, const uint8_t *, const uint8_t *, const uint8_t *);
-    int (*verify_mu)(const uint8_t *, size_t, const uint8_t *, const uint8_t *);
-    int (*sign_internal)(uint8_t *, const uint8_t *, size_t, const uint8_t *, const uint8_t *);
-    int (*verify_internal)(const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *);
-} api;
-
-#define API(N)                                                                                                \
-    {MLDSA##N##_PUBLICKEYBYTES, MLDSA##N##_SECRETKEYBYTES, MLDSA##N##_BYTES, openpqc_mldsa##N##_keypair_derand, \
-     openpqc_mldsa##N##_sign_derand, openpqc_mldsa##N##_verify, openpqc_mldsa##N##_prehash_sign_derand,       \
-     openpqc_mldsa##N##_prehash_verify, openpqc_mldsa##N##_sign_mu_derand, openpqc_mldsa##N##_verify_mu,      \
-     openpqc_mldsa##N##_sign_internal, openpqc_mldsa##N##_verify_internal}
+/* External mu's verification, which only ML-DSA has (ML/DSA/openpqc_mldsa.h; not in openpqc/sig.h) */
+static int verify_mu(openpqc_alg alg, const uint8_t *sig, size_t siglen, const uint8_t *mu, const uint8_t *pk)
+{
+    switch (alg) {
+    case OPENPQC_ML_DSA_44: return openpqc_mldsa44_verify_mu(sig, siglen, mu, pk);
+    case OPENPQC_ML_DSA_65: return openpqc_mldsa65_verify_mu(sig, siglen, mu, pk);
+    case OPENPQC_ML_DSA_87: return openpqc_mldsa87_verify_mu(sig, siglen, mu, pk);
+    default: return OPENPQC_ERR_UNSUPPORTED;
+    }
+}
 
 static uint8_t buffers[9][MAX_INPUT];
 
 int main(int argc, char **argv)
 {
-    static const api apis[3] = {API(44), API(65), API(87)};
     arg args[] = {{"seed", buffers[0], 0, 0},    {"sk", buffers[1], 0, 0},      {"pk", buffers[2], 0, 0},
                   {"message", buffers[3], 0, 0}, {"mu", buffers[4], 0, 0},      {"context", buffers[5], 0, 0},
                   {"rnd", buffers[6], 0, 0},     {"signature", buffers[7], 0, 0}};
@@ -122,8 +113,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: acvp_mldsa 44|65|87 keyGen|sigGen|sigVer key=value...\n");
         return 2;
     }
-    const int level = atoi(argv[1]);
-    const api *A = level == 44 ? &apis[0] : level == 65 ? &apis[1] : level == 87 ? &apis[2] : NULL;
+    /* the algorithm of the ACVP name ML-DSA-LEVEL, and its sizes (openpqc/common.h) */
+    char name[32];
+    openpqc_alg alg = OPENPQC_ML_DSA_44;
+    const openpqc_alg_info *A = NULL;
+    if (strlen(argv[1]) < 8) {
+        snprintf(name, sizeof name, "ML-DSA-%s", argv[1]);
+        if (openpqc_alg_from_name(name, &alg) == OPENPQC_OK) A = openpqc_alg_info_get(alg);
+    }
     if (!A) {
         fprintf(stderr, "unknown parameter set %s\n", argv[1]);
         return 2;
@@ -159,62 +156,57 @@ int main(int argc, char **argv)
         }
     }
     static uint8_t pk[2592], sk[4896], sig[4627];
-    static const uint8_t zero_rnd[MLDSA_RNDBYTES];
+    static const uint8_t zero_rnd[OPENPQC_MLDSA_RNDBYTES];
     const uint8_t *rnd = args[RND].present ? args[RND].data : zero_rnd;
     const int ph = hash_alg ? prehash_of(hash_alg) : 0;
     if (hash_alg && !ph) {
         fprintf(stderr, "unknown hashAlg %s\n", hash_alg);
         return 2;
     }
-    if (args[RND].present && args[RND].len != MLDSA_RNDBYTES) return 2;
-    if (args[MU].present && args[MU].len != MLDSA_CRHBYTES) return 2;
+    if (args[RND].present && args[RND].len != OPENPQC_MLDSA_RNDBYTES) return 2;
+    if (args[MU].present && args[MU].len != OPENPQC_MLDSA_CRHBYTES) return 2;
     const int internal = strcmp(interface, "internal") == 0;
 
     if (strcmp(argv[2], "keyGen") == 0) {
-        if (!args[SEED].present || args[SEED].len != MLDSA_SEEDBYTES) return 2;
-        if (A->keypair_derand(pk, sk, args[SEED].data) != 0) return 1;
-        print_hex("pk", pk, A->pk);
-        print_hex("sk", sk, A->sk);
+        if (!args[SEED].present || args[SEED].len != OPENPQC_MLDSA_SEEDBYTES) return 2;
+        if (openpqc_sig_keygen_from_seed(alg, pk, sk, args[SEED].data) != 0) return 1;
+        print_hex("pk", pk, A->public_key_bytes);
+        print_hex("sk", sk, A->secret_key_bytes);
         return 0;
     }
     if (strcmp(argv[2], "sigGen") == 0) {
         const uint8_t *key = args[SK].data;
         int rc;
         if (args[SEED].present) { /* keyFormat "seed": expand the private key from its seed */
-            if (args[SEED].len != MLDSA_SEEDBYTES || A->keypair_derand(pk, sk, args[SEED].data) != 0) return 1;
+            if (args[SEED].len != OPENPQC_MLDSA_SEEDBYTES || openpqc_sig_keygen_from_seed(alg, pk, sk, args[SEED].data) != 0) return 1;
             key = sk;
-        } else if (!args[SK].present || args[SK].len != A->sk) {
+        } else if (!args[SK].present || args[SK].len != A->secret_key_bytes) {
             return 2;
         }
         if (internal && args[MU].present) {
-            rc = A->sign_mu_derand(sig, args[MU].data, rnd, key);
+            rc = openpqc_testing_sig_sign_mu_derand(alg, sig, args[MU].data, rnd, key);
         } else if (internal) {
-            rc = A->sign_internal(sig, args[MESSAGE].data, args[MESSAGE].len, rnd, key);
-        } else if (ph) {
-            rc = A->prehash_sign_derand(sig, args[MESSAGE].data, args[MESSAGE].len, args[CONTEXT].data,
-                                        args[CONTEXT].len, ph, rnd, key);
-        } else {
-            rc = A->sign_derand(sig, args[MESSAGE].data, args[MESSAGE].len, args[CONTEXT].data, args[CONTEXT].len,
-                                rnd, key);
+            rc = openpqc_testing_sig_sign_internal(alg, sig, args[MESSAGE].data, args[MESSAGE].len, rnd, key);
+        } else { /* ML-DSA.Sign, or HashML-DSA.Sign with ph (Algorithms 2 and 4), rnd given */
+            const openpqc_sign_opts opts = {args[CONTEXT].data, args[CONTEXT].len, ph, 0};
+            rc = openpqc_testing_sig_sign_derand(alg, sig, args[MESSAGE].data, args[MESSAGE].len, &opts, rnd, key);
         }
         if (rc != 0) return 1;
-        print_hex("signature", sig, A->sig);
+        print_hex("signature", sig, A->signature_bytes);
         return 0;
     }
     if (strcmp(argv[2], "sigVer") == 0) {
         int rc;
-        if (!args[PK].present || args[PK].len != A->pk || !args[SIGNATURE].present) return 2;
+        if (!args[PK].present || args[PK].len != A->public_key_bytes || !args[SIGNATURE].present) return 2;
         if (internal && args[MU].present) {
-            rc = A->verify_mu(args[SIGNATURE].data, args[SIGNATURE].len, args[MU].data, args[PK].data);
+            rc = verify_mu(alg, args[SIGNATURE].data, args[SIGNATURE].len, args[MU].data, args[PK].data);
         } else if (internal) {
-            rc = A->verify_internal(args[SIGNATURE].data, args[SIGNATURE].len, args[MESSAGE].data,
-                                    args[MESSAGE].len, args[PK].data);
-        } else if (ph) {
-            rc = A->prehash_verify(args[SIGNATURE].data, args[SIGNATURE].len, args[MESSAGE].data,
-                                   args[MESSAGE].len, args[CONTEXT].data, args[CONTEXT].len, ph, args[PK].data);
-        } else {
-            rc = A->verify(args[SIGNATURE].data, args[SIGNATURE].len, args[MESSAGE].data, args[MESSAGE].len,
-                           args[CONTEXT].data, args[CONTEXT].len, args[PK].data);
+            rc = openpqc_testing_sig_verify_internal(alg, args[SIGNATURE].data, args[SIGNATURE].len,
+                                                     args[MESSAGE].data, args[MESSAGE].len, args[PK].data);
+        } else { /* ML-DSA.Verify, or HashML-DSA.Verify with ph (Algorithms 3 and 5) */
+            const openpqc_sign_opts opts = {args[CONTEXT].data, args[CONTEXT].len, ph, 0};
+            rc = openpqc_sig_verify(alg, args[SIGNATURE].data, args[SIGNATURE].len, args[MESSAGE].data,
+                                    args[MESSAGE].len, &opts, args[PK].data);
         }
         printf("testPassed=%s\n", rc == 0 ? "true" : "false");
         return 0;

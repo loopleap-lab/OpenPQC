@@ -74,7 +74,7 @@
  *
  * Pre-hash. The prehash functions take PH(M) instead of M: `ph_m` holds n pre-hashes
  * of prehash_bytes(ph) bytes each (28, 32, 48 or 64; Core/prehash.hpp), back to back;
- * ph is an OPENPQC_SLHDSA_PREHASH_* value. The device forms
+ * ph is an OPENPQC_PREHASH_* value. The device forms
  * M' = toByte(1, 1) || toByte(|ctx|, 1) || ctx || OID || PH(M) (Alg. 23, line 24;
  * Alg. 25, line 20) without copying it. Computing PH(M) is the caller's business; the
  * results equal the CPU's prehash_sign_derand and prehash_verify of M.
@@ -82,7 +82,7 @@
  * Randomness. opqc_sycl_slhdsa_keypair, _sign and _prehash_sign (and their _one_key
  * forms) draw the seeds or addrnd from the operating system's RNG on the host (FIPS
  * 205, Section 3.1: the module, not the caller, generates them) and return
- * OPENPQC_SLHDSA_ERR_RNG_FAIL if it fails. They go to the device from page-locked host
+ * OPENPQC_ERR_RNG if it fails. They go to the device from page-locked host
  * memory that the context holds and wipes at once after each launch's copy (a copy from
  * pageable memory would leave them in a staging buffer of the driver); even so, NVIDIA's
  * CUDA driver has been seen to keep copies of such small host-to-device transfers in
@@ -95,14 +95,14 @@
  * launch.
  *
  * Status. Signing cannot fail on the device and has no status buffer. Verification
- * writes 0 (valid) or OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE per operation into `status`
+ * writes 0 (valid) or OPENPQC_ERR_INVALID_SIGNATURE per operation into `status`
  * (device, n int32_t, required). A signature of the wrong length cannot be passed (the
  * sizes are the parameter set's), so Alg. 20, lines 1-3 never apply. Fail closed: a
- * verification call first sets all n entries to OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+ * verification call first sets all n entries to OPENPQC_ERR_INVALID_SIGNATURE,
  * queued before its first kernel, and the kernels then overwrite each entry they
  * decide; when a call is refused (-1: a context string over 255 bytes, a bad ph, an
  * unaligned or missing buffer, msg NULL, a buffer that is not USM memory of the
- * context) or fails (-2), every entry is set to OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE
+ * context) or fails (-2), every entry is set to OPENPQC_ERR_INVALID_SIGNATURE
  * again, and the call waits for that fill (and so for the work queued before it): a
  * refused or failed call leaves no write into status behind it, and status may be read,
  * reused or freed as soon as it returns. So an entry that no kernel decides (a call
@@ -122,8 +122,8 @@
  * functions return 0 on success, -1 for invalid arguments (memcpy: also a NULL dst or
  * src), -2 for an exception of the SYCL runtime, a context that has failed (below) or,
  * for the randomized calls, page-locked host memory that cannot be allocated, or
- * OPENPQC_SLHDSA_ERR_RNG_FAIL. (The GPU's -1 and -2 are not the CPU library's
- * OPENPQC_SLHDSA_ERR_* codes of the same values, as for ML-DSA's backend.) Every function
+ * OPENPQC_ERR_RNG. (The GPU's -1 and -2 are not the CPU library's OPENPQC_ERR_INVALID_SIGNATURE
+ * and OPENPQC_ERR_INVALID_ARGUMENT, of the same values, as for ML-DSA's backend.) Every function
  * that returns a status is declared OPQC_MUST_CHECK (Core/opqc_common.h), as those of the
  * CPU library are: the compiler warns about a call whose result is not used, because the
  * outputs of a call that did not return 0 are not results.
@@ -289,7 +289,7 @@ OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa *ctx);
  * context, or a NULL dst or src with bytes > 0 (nothing is queued; the context stays
  * usable), and -2 once the context has failed: the copy is still made as far as the
  * device allows (the status of a failed verification reaches the host filled with
- * OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE), but what it copies cannot be trusted. */
+ * OPENPQC_ERR_INVALID_SIGNATURE), but what it copies cannot be trusted. */
 OPENPQC_API void *opqc_sycl_slhdsa_malloc(opqc_sycl_slhdsa *ctx, size_t bytes);
 OPENPQC_API void *opqc_sycl_slhdsa_malloc_host(opqc_sycl_slhdsa *ctx, size_t bytes);
 OPENPQC_API void opqc_sycl_slhdsa_free(opqc_sycl_slhdsa *ctx, void *p);

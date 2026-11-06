@@ -90,8 +90,11 @@ SLH-DSA's reference has, is not.
 ## 4. ML-KEM (FIPS 203)
 
 Files: [`include/ML/KEM/math`](../include/ML/KEM/math) (C11 math core), [`include/ML/KEM/scheme`](../include/ML/KEM/scheme)
-(C++20 algorithms). Public C API: [`openpqc_mlkem.h`](../include/ML/KEM/openpqc_mlkem.h) (`openpqc_mlkem{512,768,1024}_*`);
-C++ API: [`mlkem.hpp`](../include/ML/KEM/mlkem.hpp); GPU: [`sycl/openpqc_mlkem_sycl.h`](../include/ML/KEM/sycl/openpqc_mlkem_sycl.h).
+(C++20 algorithms). Public C API: [`openpqc_mlkem.h`](../include/ML/KEM/openpqc_mlkem.h) (`openpqc_mlkem{512,768,1024}_*`),
+and [`openpqc/kem.h`](../include/openpqc/kem.h) for a parameter set chosen at run time; C++ API:
+[`mlkem.hpp`](../include/ML/KEM/mlkem.hpp) (`openpqc::ML_KEM_768`, ... in
+[`openpqc/openpqc.hpp`](../include/openpqc/openpqc.hpp)); GPU:
+[`sycl/openpqc_mlkem_sycl.h`](../include/ML/KEM/sycl/openpqc_mlkem_sycl.h).
 
 ### 4.1 Representation conventions
 
@@ -161,8 +164,10 @@ code, the design and the measurements: [include/ML/DSA/README.md](../include/ML/
 
 Files: [`include/SLH/DSA/math`](../include/SLH/DSA/math) (C11 math core),
 [`include/SLH/DSA/scheme`](../include/SLH/DSA/scheme) (C++20 algorithms). Public C API:
-[`openpqc_slhdsa.h`](../include/SLH/DSA/openpqc_slhdsa.h) (`openpqc_slhdsa_<set>_*` for the twelve sets of Table 2);
-C++ API: [`slhdsa.hpp`](../include/SLH/DSA/slhdsa.hpp); GPU:
+[`openpqc_slhdsa.h`](../include/SLH/DSA/openpqc_slhdsa.h) (`openpqc_slhdsa_<set>_*` for the twelve sets of Table 2),
+and [`openpqc/sig.h`](../include/openpqc/sig.h) for a parameter set chosen at run time; C++ API:
+[`slhdsa.hpp`](../include/SLH/DSA/slhdsa.hpp) (`openpqc::SLH_DSA_SHA2_128f`, ... in
+[`openpqc/openpqc.hpp`](../include/openpqc/openpqc.hpp)); GPU:
 [`sycl/openpqc_slhdsa_sycl.h`](../include/SLH/DSA/sycl/openpqc_slhdsa_sycl.h). The FIPS 205 to code map, the tests and
 the measurements are in [include/SLH/DSA/README.md](../include/SLH/DSA/README.md); the catalog written before the
 implementation is [catalog/SLH-DSA.md](catalog/SLH-DSA.md).

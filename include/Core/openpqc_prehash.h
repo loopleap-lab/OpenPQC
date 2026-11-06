@@ -10,8 +10,8 @@
  * The value ph that the prehash_* functions of the C APIs take. It is the last
  * component of the function's OID 2.16.840.1.101.3.4.2.x, and the value of the
  * C++ enumerator openpqc::PreHash (Core/prehash.hpp, which also has the OIDs,
- * the digest lengths and the reasons). The scheme headers define their own
- * names as aliases of these (OPENPQC_MLDSA_PREHASH_* in ML/DSA/openpqc_mldsa.h).
+ * the digest lengths and the reasons). The C APIs of HashML-DSA and
+ * HashSLH-DSA take these values; openpqc/common.h includes this header.
  */
 
 #ifndef OPENPQC_PREHASH_H

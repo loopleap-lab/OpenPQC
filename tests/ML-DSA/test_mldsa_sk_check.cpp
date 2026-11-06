@@ -7,7 +7,7 @@
 // eta = 2, 9..15 for eta = 4) give coefficients outside [-eta, eta] ("this may lie outside [-eta, eta] if
 // input is malformed", Algorithm 25, lines 3 and 6), and FIPS 204 runs skDecode only on input from a
 // trusted source (Section 7.2). The library refuses to sign with such a key: every signing function
-// returns OPENPQC_MLDSA_ERR_INVALID_KEY and an all-zero signature. check_sk, which regenerates the key
+// returns OPENPQC_ERR_INVALID_SECRET_KEY and an all-zero signature. check_sk, which regenerates the key
 // from its rho, s1 and s2, also finds keys that are in range but not what KeyGen computes, and
 // check_keypair besides a public key that is not the one regenerated from sk. The keys are made from a
 // fixed seed; check_sk and check_keypair (with the key's original pk) are called through the C and the
@@ -35,6 +35,7 @@
 #include "check.hpp"
 #include "ML/DSA/mldsa.hpp"
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/testing.h"
 #include "ML/DSA/scheme/ml_dsa.hpp"
 
 #include <algorithm>
@@ -56,17 +57,17 @@ template <int Level> struct CApi;
     template <> struct CApi<N> {                                                                   \
         using P = dsa::params::ML_DSA_##N;                                                         \
         using Cxx = dsa::MLDSA##N;                                                                 \
-        static constexpr auto keypair_derand = openpqc_mldsa##N##_keypair_derand;                   \
+        static constexpr auto keypair_derand = openpqc_mldsa##N##_keygen_from_seed;                   \
         static constexpr auto check_sk = openpqc_mldsa##N##_check_sk;                               \
         static constexpr auto check_keypair = openpqc_mldsa##N##_check_keypair;                     \
         static constexpr auto sign = openpqc_mldsa##N##_sign;                                       \
-        static constexpr auto sign_derand = openpqc_mldsa##N##_sign_derand;                         \
+        static constexpr auto sign_derand = openpqc_testing_mldsa##N##_sign_derand;                         \
         static constexpr auto verify = openpqc_mldsa##N##_verify;                                   \
         static constexpr auto prehash_sign = openpqc_mldsa##N##_prehash_sign;                       \
-        static constexpr auto prehash_sign_derand = openpqc_mldsa##N##_prehash_sign_derand;         \
+        static constexpr auto prehash_sign_derand = openpqc_testing_mldsa##N##_prehash_sign_derand;         \
         static constexpr auto sign_mu = openpqc_mldsa##N##_sign_mu;                                 \
-        static constexpr auto sign_mu_derand = openpqc_mldsa##N##_sign_mu_derand;                   \
-        static constexpr auto sign_internal = openpqc_mldsa##N##_sign_internal;                     \
+        static constexpr auto sign_mu_derand = openpqc_testing_mldsa##N##_sign_mu_derand;                   \
+        static constexpr auto sign_internal = openpqc_testing_mldsa##N##_sign_internal;                     \
     };
 OPENPQC_TEST_CAPI(44)
 OPENPQC_TEST_CAPI(65)
@@ -136,9 +137,9 @@ struct Keys {
         switch (which) {
         case 0: return C::sign(sig, message, sizeof message, ctx, 1, sk.data());
         case 1: return C::sign_derand(sig, message, sizeof message, ctx, 1, rnd.data(), sk.data());
-        case 2: return C::prehash_sign(sig, message, sizeof message, ctx, 1, OPENPQC_MLDSA_PREHASH_SHA2_256, sk.data());
+        case 2: return C::prehash_sign(sig, message, sizeof message, ctx, 1, OPENPQC_PREHASH_SHA2_256, sk.data());
         case 3:
-            return C::prehash_sign_derand(sig, message, sizeof message, ctx, 1, OPENPQC_MLDSA_PREHASH_SHA3_256,
+            return C::prehash_sign_derand(sig, message, sizeof message, ctx, 1, OPENPQC_PREHASH_SHA3_256,
                                           rnd.data(), sk.data());
         case 4: return C::sign_mu(sig, mu.data(), sk.data());
         case 5: return C::sign_mu_derand(sig, mu.data(), rnd.data(), sk.data());
@@ -146,11 +147,11 @@ struct Keys {
         }
     }
 
-    // Every signing function with sk: all must return OPENPQC_MLDSA_ERR_INVALID_KEY and leave an all-zero
+    // Every signing function with sk: all must return OPENPQC_ERR_INVALID_SECRET_KEY and leave an all-zero
     // signature (refused = true), or all must return 0 (refused = false); returns the signature of
     // sign_derand (of the message with the context string "c", rnd given)
     static Bytes sign_all(const std::string& what, const Bytes& sk, bool refused) {
-        const int expected = refused ? OPENPQC_MLDSA_ERR_INVALID_KEY : 0;
+        const int expected = refused ? OPENPQC_ERR_INVALID_SECRET_KEY : 0;
         Bytes deterministic;
         for (unsigned which = 0; which < 7; which++) {
             Bytes sig(S::sig, 0x55);
@@ -177,7 +178,7 @@ struct Keys {
         const int r = C::check_sk(sk.data());
         typename C::Cxx::secret_key key{};
         std::copy(sk.begin(), sk.end(), key.begin());
-        const int r_cxx = C::Cxx::check_sk(key);
+        const int r_cxx = static_cast<int>(C::Cxx::check_sk(key));
         if (r != expected || r_cxx != expected) {
             std::cerr << "ML-DSA-" << Level << ", " << what << ": check_sk returned " << r << " (C++: " << r_cxx
                       << "), expected " << expected << "\n";
@@ -186,7 +187,7 @@ struct Keys {
         const int p = C::check_keypair(pk.data(), sk.data());
         typename C::Cxx::public_key public_key_array{};
         std::copy(pk.begin(), pk.end(), public_key_array.begin());
-        const int p_cxx = C::Cxx::check_keypair(public_key_array, key);
+        const int p_cxx = static_cast<int>(C::Cxx::check_keypair(public_key_array, key));
         if (p != expected_pair || p_cxx != expected_pair) {
             std::cerr << "ML-DSA-" << Level << ", " << what << ": check_keypair returned " << p << " (C++: " << p_cxx
                       << "), expected " << expected_pair << "\n";
@@ -205,7 +206,7 @@ struct Keys {
         regenerate(pk2, sk2, false);
         const std::string consistent = what + ", consistent pair (t0, tr, pk recomputed)";
         sign_all(consistent, sk2, true);
-        expect_check(consistent, sk2, OPENPQC_MLDSA_ERR_INVALID_KEY, pk2);
+        expect_check(consistent, sk2, OPENPQC_ERR_INVALID_SECRET_KEY, pk2);
     }
 
     static void test() {
@@ -227,7 +228,7 @@ struct Keys {
                 set_code(bad, poly, i, v);
                 const std::string what = std::string("code ") + std::to_string(v) + " at " + where;
                 sign_all(what, bad, true);
-                expect_check(what, bad, OPENPQC_MLDSA_ERR_INVALID_KEY, pk);
+                expect_check(what, bad, OPENPQC_ERR_INVALID_SECRET_KEY, pk);
                 expect_consistent_refused(what, bad);
             }
             Bytes edge = sk;
@@ -238,7 +239,7 @@ struct Keys {
             // a changed s1 gives signatures that do not verify; a changed s2 only moves r0 and the hint
             // a little, and its signatures often still verify (with all of s2 changed, most of them do)
             if (poly == s1_poly(0)) CHECK(!verifies(sig, pk));
-            expect_check(what, edge, OPENPQC_MLDSA_ERR_INVALID_KEY, pk);
+            expect_check(what, edge, OPENPQC_ERR_INVALID_SECRET_KEY, pk);
         }
 
         // all of s1, all of s2, both out of range (the code 2^c - 1: the coefficient eta + 1 - 2^c)
@@ -255,7 +256,7 @@ struct Keys {
                                             std::pair{"all of s2 out of range", &s2_all},
                                             std::pair{"all of s1 and s2 out of range", &both}}) {
                 sign_all(what, *key, true);
-                expect_check(what, *key, OPENPQC_MLDSA_ERR_INVALID_KEY, pk);
+                expect_check(what, *key, OPENPQC_ERR_INVALID_SECRET_KEY, pk);
                 expect_consistent_refused(what, *key);
             }
         }
@@ -267,14 +268,14 @@ struct Keys {
             set_code(tampered, s1_poly(0), 7, v == 0 ? 1 : v - 1);
             const Bytes sig = sign_all("in-range tamper, tr and t0 kept", tampered, false);
             CHECK(!verifies(sig, pk));
-            expect_check("in-range tamper, tr and t0 kept", tampered, OPENPQC_MLDSA_ERR_INVALID_KEY, pk);
+            expect_check("in-range tamper, tr and t0 kept", tampered, OPENPQC_ERR_INVALID_SECRET_KEY, pk);
             // ... and the same s1 with pk, tr and t0 recomputed: a valid key, of another public key
             Bytes pk2, sk2 = tampered;
             regenerate(pk2, sk2);
             CHECK(pk2 != pk);
             expect_check("in-range tamper, recomputed, with its own pk", sk2, 0, pk2);
-            expect_check("in-range tamper, recomputed, with the original pk", sk2, 0, pk, OPENPQC_MLDSA_ERR_INVALID_KEY);
-            expect_check("the original sk with the recomputed key's pk", sk, 0, pk2, OPENPQC_MLDSA_ERR_INVALID_KEY);
+            expect_check("in-range tamper, recomputed, with the original pk", sk2, 0, pk, OPENPQC_ERR_INVALID_SECRET_KEY);
+            expect_check("the original sk with the recomputed key's pk", sk, 0, pk2, OPENPQC_ERR_INVALID_SECRET_KEY);
             const Bytes sig2 = sign_all("in-range tamper, recomputed", sk2, false);
             CHECK(verifies(sig2, pk2));
             CHECK(!verifies(sig2, pk));
@@ -287,7 +288,7 @@ struct Keys {
             Bytes changed = sk;
             changed[offset] ^= 0x10;
             sign_all(what, changed, false);   // FIPS 204: signing does not check these
-            expect_check(what, changed, OPENPQC_MLDSA_ERR_INVALID_KEY, pk);
+            expect_check(what, changed, OPENPQC_ERR_INVALID_SECRET_KEY, pk);
         }
         {
             Bytes changed = sk;
@@ -301,7 +302,7 @@ struct Keys {
                                            std::pair{"pk: t1 changed", std::size_t{32 + 77}}}) {
             Bytes changed = pk;
             changed[offset] ^= 0x04;
-            expect_check(what, sk, 0, changed, OPENPQC_MLDSA_ERR_INVALID_KEY);
+            expect_check(what, sk, 0, changed, OPENPQC_ERR_INVALID_SECRET_KEY);
         }
     }
 };

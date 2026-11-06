@@ -40,8 +40,8 @@
  * means that the call did not do its work; whatever the arguments, the
  * functions access no memory outside the state and the caller's buffers.
  * Unlike the functions of the schemes' C APIs (openpqc_mlkem.h,
- * openpqc_mldsa.h, openpqc_slhdsa.h), these are not declared OPQC_MUST_CHECK
- * (Core/opqc_common.h): OpenPQC's own code calls them in an order that the
+ * openpqc_mldsa.h, openpqc_slhdsa.h), these are not declared OPENPQC_MUST_CHECK
+ * (openpqc/common.h): OpenPQC's own code calls them in an order that the
  * standards fix and does not look at the status. A caller with an order of
  * its own checks it, as the example in Core/README.md does.
  *

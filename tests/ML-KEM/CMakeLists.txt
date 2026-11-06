@@ -204,7 +204,7 @@ if(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
             set(_lib openpqc_mlkem_ct_${opt})
             set(_suffix _${opt}_ct)
         endif()
-        add_library(${_lib}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
+        add_library(${_lib}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
         target_include_directories(${_lib}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include
                                    ${OPENPQC_VALGRIND_INCLUDE_DIR})
         target_compile_definitions(${_lib}_objects PRIVATE OPQC_CT_TESTING)
@@ -275,7 +275,7 @@ add_test(NAME mlkem_differential COMMAND test_mlkem_differential)
 #                    must fail with OPENPQC_MLKEM_ERR_PCT_FAIL and zeroize both keys. This shows that the
 #                    check is compiled in and that its result is used, which mlkem_pct alone cannot show.
 foreach(variant pct pct_fail)
-    add_library(openpqc_mlkem_${variant}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
+    add_library(openpqc_mlkem_${variant}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
     target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
     target_compile_definitions(openpqc_mlkem_${variant}_objects PRIVATE OPENPQC_MLKEM_KEYGEN_PCT)
     target_compile_features(openpqc_mlkem_${variant}_objects PRIVATE cxx_std_20)
@@ -377,7 +377,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
     target_compile_features(test_mlkem_stack_objects PRIVATE cxx_std_20)
     foreach(opt O0 O1 O2 Os)
         # a target's options come after those of the build type, so -${opt} wins
-        add_library(openpqc_mlkem_${opt}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
+        add_library(openpqc_mlkem_${opt}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
         target_include_directories(openpqc_mlkem_${opt}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
         target_compile_options(openpqc_mlkem_${opt}_objects PRIVATE -${opt})
         target_compile_features(openpqc_mlkem_${opt}_objects PRIVATE cxx_std_20)
@@ -398,7 +398,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
     #                 burn removes. As a control, no call may leave a byte that is not zero as deep as the burn
     #                 would reach, so that the test cannot pass against a library that burns the stack after all.
     foreach(variant noburn noburn_pct)
-        add_library(openpqc_mlkem_${variant}_objects OBJECT ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp)
+        add_library(openpqc_mlkem_${variant}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
         target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
         target_compile_definitions(openpqc_mlkem_${variant}_objects PRIVATE OPENPQC_MLKEM_TEST_NO_STACK_BURN)
         target_compile_features(openpqc_mlkem_${variant}_objects PRIVATE cxx_std_20)

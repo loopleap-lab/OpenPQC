@@ -41,6 +41,7 @@
 // forks, and lays the canary, the guard page and the stack out in one mapping).
 #include "check.hpp"
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/testing.h"
 
 #include <pthread.h>
 #include <sys/mman.h>
@@ -113,64 +114,84 @@ struct Inputs {
 
 std::array<std::uint8_t, 64> message{};
 const std::uint8_t ctx[] = {'s', 't', 'a', 'c', 'k'};
-const std::array<std::uint8_t, MLDSA_SEEDBYTES> seed = {1, 2, 3, 4, 5, 6, 7, 8};
-const std::array<std::uint8_t, MLDSA_RNDBYTES> rnd = {9, 8, 7, 6, 5, 4, 3, 2};
+const std::array<std::uint8_t, OPENPQC_MLDSA_SEEDBYTES> seed = {1, 2, 3, 4, 5, 6, 7, 8};
+const std::array<std::uint8_t, OPENPQC_MLDSA_RNDBYTES> rnd = {9, 8, 7, 6, 5, 4, 3, 2};
 
 struct Api {
     const char* name;
     int level;
     std::size_t stack_bytes;   // OPENPQC_MLDSAnn_STACK_BYTES
     std::size_t pk_bytes, sk_bytes, sig_bytes;
-    int (*keypair)(std::uint8_t*, std::uint8_t*);
-    int (*keypair_derand)(std::uint8_t*, std::uint8_t*, const std::uint8_t*);
-    int (*check_sk)(const std::uint8_t*);
-    int (*check_keypair)(const std::uint8_t*, const std::uint8_t*);
-    int (*sign)(std::uint8_t*, const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t, const std::uint8_t*);
-    int (*sign_derand)(std::uint8_t*, const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t,
-                       const std::uint8_t*, const std::uint8_t*);
-    int (*verify)(const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t,
-                  const std::uint8_t*);
-    int (*prehash_sign)(std::uint8_t*, const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t, int,
-                        const std::uint8_t*);
-    int (*prehash_sign_derand)(std::uint8_t*, const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t, int,
-                               const std::uint8_t*, const std::uint8_t*);
-    int (*prehash_verify)(const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t, const std::uint8_t*,
-                          std::size_t, int, const std::uint8_t*);
-    int (*external_mu)(std::uint8_t*, const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t,
-                       const std::uint8_t*);
-    int (*sign_mu)(std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
-    int (*sign_mu_derand)(std::uint8_t*, const std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
-    int (*verify_mu)(const std::uint8_t*, std::size_t, const std::uint8_t*, const std::uint8_t*);
-    int (*sign_internal)(std::uint8_t*, const std::uint8_t*, std::size_t, const std::uint8_t*, const std::uint8_t*);
-    int (*verify_internal)(const std::uint8_t*, std::size_t, const std::uint8_t*, std::size_t, const std::uint8_t*);
+    using u8 = std::uint8_t;
+    using size = std::size_t;
+    openpqc_status (*keygen)(u8*, u8*);
+    openpqc_status (*keygen_from_seed)(u8*, u8*, const u8*);
+    openpqc_status (*check_sk)(const u8*);
+    openpqc_status (*check_keypair)(const u8*, const u8*);
+    openpqc_status (*sign)(u8*, const u8*, size, const u8*, size, const u8*);
+    openpqc_status (*sign_derand)(u8*, const u8*, size, const u8*, size, const u8*, const u8*);
+    openpqc_status (*sign_deterministic)(u8*, const u8*, size, const u8*, size, const u8*);
+    openpqc_status (*verify)(const u8*, size, const u8*, size, const u8*, size, const u8*);
+    openpqc_status (*prehash_sign)(u8*, const u8*, size, const u8*, size, int, const u8*);
+    openpqc_status (*prehash_sign_derand)(u8*, const u8*, size, const u8*, size, int, const u8*, const u8*);
+    openpqc_status (*prehash_sign_deterministic)(u8*, const u8*, size, const u8*, size, int, const u8*);
+    openpqc_status (*prehash_verify)(const u8*, size, const u8*, size, const u8*, size, int, const u8*);
+    openpqc_status (*external_mu)(u8*, const u8*, size, const u8*, size, const u8*);
+    openpqc_status (*sign_mu)(u8*, const u8*, const u8*);
+    openpqc_status (*sign_mu_derand)(u8*, const u8*, const u8*, const u8*);
+    openpqc_status (*sign_mu_deterministic)(u8*, const u8*, const u8*);
+    openpqc_status (*verify_mu)(const u8*, size, const u8*, const u8*);
+    openpqc_status (*sign_internal)(u8*, const u8*, size, const u8*, const u8*);
+    openpqc_status (*verify_internal)(const u8*, size, const u8*, size, const u8*);
 };
 
-#define OPENPQC_TEST_API(N)                                                                                         \
-    Api{"ML-DSA-" #N, N, OPENPQC_MLDSA##N##_STACK_BYTES, MLDSA##N##_PUBLICKEYBYTES, MLDSA##N##_SECRETKEYBYTES,      \
-        MLDSA##N##_BYTES, openpqc_mldsa##N##_keypair, openpqc_mldsa##N##_keypair_derand,                            \
-        openpqc_mldsa##N##_check_sk, openpqc_mldsa##N##_check_keypair, openpqc_mldsa##N##_sign,                     \
-        openpqc_mldsa##N##_sign_derand,                                                                             \
-        openpqc_mldsa##N##_verify, openpqc_mldsa##N##_prehash_sign, openpqc_mldsa##N##_prehash_sign_derand,         \
-        openpqc_mldsa##N##_prehash_verify, openpqc_mldsa##N##_external_mu, openpqc_mldsa##N##_sign_mu,              \
-        openpqc_mldsa##N##_sign_mu_derand, openpqc_mldsa##N##_verify_mu, openpqc_mldsa##N##_sign_internal,          \
-        openpqc_mldsa##N##_verify_internal}
+#define OPENPQC_TEST_API(N)                                                                                     \
+    Api{"ML-DSA-" #N,                                                                                           \
+        N,                                                                                                      \
+        OPENPQC_MLDSA##N##_STACK_BYTES,                                                                         \
+        OPENPQC_MLDSA##N##_PUBLICKEYBYTES,                                                                      \
+        OPENPQC_MLDSA##N##_SECRETKEYBYTES,                                                                      \
+        OPENPQC_MLDSA##N##_BYTES,                                                                               \
+        openpqc_mldsa##N##_keygen,                                                                              \
+        openpqc_mldsa##N##_keygen_from_seed,                                                                    \
+        openpqc_mldsa##N##_check_sk,                                                                            \
+        openpqc_mldsa##N##_check_keypair,                                                                       \
+        openpqc_mldsa##N##_sign,                                                                                \
+        openpqc_testing_mldsa##N##_sign_derand,                                                                 \
+        openpqc_mldsa##N##_sign_deterministic,                                                                  \
+        openpqc_mldsa##N##_verify,                                                                              \
+        openpqc_mldsa##N##_prehash_sign,                                                                        \
+        openpqc_testing_mldsa##N##_prehash_sign_derand,                                                         \
+        openpqc_mldsa##N##_prehash_sign_deterministic,                                                          \
+        openpqc_mldsa##N##_prehash_verify,                                                                      \
+        openpqc_mldsa##N##_external_mu,                                                                         \
+        openpqc_mldsa##N##_sign_mu,                                                                             \
+        openpqc_testing_mldsa##N##_sign_mu_derand,                                                              \
+        openpqc_mldsa##N##_sign_mu_deterministic,                                                               \
+        openpqc_mldsa##N##_verify_mu,                                                                           \
+        openpqc_testing_mldsa##N##_sign_internal,                                                               \
+        openpqc_testing_mldsa##N##_verify_internal}
 const Api apis[] = {OPENPQC_TEST_API(44), OPENPQC_TEST_API(65), OPENPQC_TEST_API(87)};
 #undef OPENPQC_TEST_API
 
 const Api* api = nullptr;
 Inputs* in = nullptr;
 
-constexpr int ph = OPENPQC_MLDSA_PREHASH_SHA2_512;
+constexpr int ph = OPENPQC_PREHASH_SHA2_512;
 
 // The functions under test, each a call with valid inputs whose result must be 0
-int op_keypair() { return api->keypair(in->out_pk.data(), in->out_sk.data()); }
-int op_keypair_derand() { return api->keypair_derand(in->out_pk.data(), in->out_sk.data(), seed.data()); }
+int op_keygen() { return api->keygen(in->out_pk.data(), in->out_sk.data()); }
+int op_keygen_from_seed() { return api->keygen_from_seed(in->out_pk.data(), in->out_sk.data(), seed.data()); }
 int op_check_sk() { return api->check_sk(in->sk.data()); }
 int op_check_keypair() { return api->check_keypair(in->pk.data(), in->sk.data()); }
 int op_sign() { return api->sign(in->out_sig.data(), message.data(), message.size(), ctx, sizeof ctx, in->sk.data()); }
 int op_sign_derand() {
     return api->sign_derand(in->out_sig.data(), message.data(), message.size(), ctx, sizeof ctx, rnd.data(),
                             in->sk.data());
+}
+int op_sign_deterministic() {
+    return api->sign_deterministic(in->out_sig.data(), message.data(), message.size(), ctx, sizeof ctx,
+                                   in->sk.data());
 }
 int op_verify() {
     return api->verify(in->sig.data(), in->sig.size(), message.data(), message.size(), ctx, sizeof ctx, in->pk.data());
@@ -182,6 +203,10 @@ int op_prehash_sign_derand() {
     return api->prehash_sign_derand(in->out_sig.data(), message.data(), message.size(), ctx, sizeof ctx, ph,
                                     rnd.data(), in->sk.data());
 }
+int op_prehash_sign_deterministic() {
+    return api->prehash_sign_deterministic(in->out_sig.data(), message.data(), message.size(), ctx, sizeof ctx, ph,
+                                           in->sk.data());
+}
 int op_prehash_verify() {
     return api->prehash_verify(in->sig_ph.data(), in->sig_ph.size(), message.data(), message.size(), ctx, sizeof ctx,
                                ph, in->pk.data());
@@ -192,6 +217,9 @@ int op_external_mu() {
 }
 int op_sign_mu() { return api->sign_mu(in->out_sig.data(), in->mu.data(), in->sk.data()); }
 int op_sign_mu_derand() { return api->sign_mu_derand(in->out_sig.data(), in->mu.data(), rnd.data(), in->sk.data()); }
+int op_sign_mu_deterministic() {
+    return api->sign_mu_deterministic(in->out_sig.data(), in->mu.data(), in->sk.data());
+}
 int op_verify_mu() { return api->verify_mu(in->sig_mu.data(), in->sig_mu.size(), in->mu.data(), in->pk.data()); }
 int op_sign_internal() {
     return api->sign_internal(in->out_sig.data(), in->mprime.data(), in->mprime.size(), rnd.data(), in->sk.data());
@@ -208,19 +236,22 @@ struct Op {
     Kind kind;   // its row of the table
 };
 const Op ops[] = {
-    {"keypair", op_keypair, keygen},
-    {"keypair_derand", op_keypair_derand, keygen},
+    {"keygen", op_keygen, keygen},
+    {"keygen_from_seed", op_keygen_from_seed, keygen},
     {"check_sk", op_check_sk, key_check},
     {"check_keypair", op_check_keypair, key_check},
     {"sign", op_sign, signing},
     {"sign_derand", op_sign_derand, signing},
+    {"sign_deterministic", op_sign_deterministic, signing},
     {"verify", op_verify, verification},
     {"prehash_sign", op_prehash_sign, signing},
     {"prehash_sign_derand", op_prehash_sign_derand, signing},
+    {"prehash_sign_deterministic", op_prehash_sign_deterministic, signing},
     {"prehash_verify", op_prehash_verify, verification},
     {"external_mu", op_external_mu, mu_only},
     {"sign_mu", op_sign_mu, signing},
     {"sign_mu_derand", op_sign_mu_derand, signing},
+    {"sign_mu_deterministic", op_sign_mu_deterministic, signing},
     {"verify_mu", op_verify_mu, verification},
     {"sign_internal", op_sign_internal, signing},
     {"verify_internal", op_verify_internal, verification},
@@ -238,11 +269,11 @@ void prepare(const Api& a, Inputs& x) {
     x.out_pk.assign(a.pk_bytes, 0);
     x.out_sk.assign(a.sk_bytes, 0);
     x.out_sig.assign(a.sig_bytes, 0);
-    x.mu.assign(MLDSA_CRHBYTES, 0);
+    x.mu.assign(OPENPQC_MLDSA_CRHBYTES, 0);
     x.mprime = {0, sizeof ctx};   // M' = 0 || |ctx| || ctx || M, the formatted message of sign
     x.mprime.insert(x.mprime.end(), ctx, ctx + sizeof ctx);
     x.mprime.insert(x.mprime.end(), message.begin(), message.end());
-    CHECK_EQ(a.keypair_derand(x.pk.data(), x.sk.data(), seed.data()), 0);
+    CHECK_EQ(a.keygen_from_seed(x.pk.data(), x.sk.data(), seed.data()), 0);
     CHECK_EQ(a.sign_derand(x.sig.data(), message.data(), message.size(), ctx, sizeof ctx, rnd.data(), x.sk.data()), 0);
     CHECK_EQ(a.prehash_sign_derand(x.sig_ph.data(), message.data(), message.size(), ctx, sizeof ctx, ph, rnd.data(),
                                    x.sk.data()),
@@ -430,7 +461,7 @@ int main() {
         in = &x;
         prepare(apis[2], x);
         for (const Op& o : {Op{"sign_derand", op_sign_derand, signing}, Op{"verify", op_verify, verification},
-                            Op{"keypair_derand", op_keypair_derand, keygen}}) {
+                            Op{"keygen_from_seed", op_keygen_from_seed, keygen}}) {
             const int outcome = on_short_stack(o.fn, 64 * KiB);
             std::printf("ML-DSA-87 %s on a stack of 64 KiB above a guard page: %s\n", o.name,
                         short_stack_outcome(outcome));

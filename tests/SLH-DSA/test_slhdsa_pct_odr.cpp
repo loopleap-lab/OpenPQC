@@ -8,7 +8,7 @@
 // and instantiates keygen_derand, keygen and check_pair_wise_consistency for the six f sets. The test links it
 // first, ahead of test_slhdsa_pct.c (built with OPENPQC_TEST_EXPECT_PCT_FAIL) and of the library built with the
 // pair-wise consistency test and OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST, whose test always fails: KeyGen
-// through the C API must still fail with OPENPQC_SLHDSA_ERR_PCT_FAIL and zeroize both keys. Of two copies of
+// through the C API must still fail with OPENPQC_ERR_PCT and zeroize both keys. Of two copies of
 // a template instantiation with the same name, the linker keeps the first; had this file's copies the names of
 // the library's, it would keep these, and KeyGen would return keys without a test (keygen_derand, which Clang
 // calls out of line from the C API) or with one that passes (check_pair_wise_consistency, out of line with

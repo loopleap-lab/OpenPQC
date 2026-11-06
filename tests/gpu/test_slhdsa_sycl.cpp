@@ -11,7 +11,8 @@
 //
 //   keypair_derand        pk and sk identical to keypair_derand
 //   sign_derand           signatures identical to sign_derand with addrnd (every third addrnd is PK.seed,
-//                         the deterministic signature), and with addrnd = NULL (the deterministic variant)
+//                         the deterministic signature), and with addrnd = NULL (the deterministic variant;
+//                         on the CPU, sign_derand with addrnd = PK.seed)
 //   prehash_sign_derand   identical to prehash_sign_derand of M, given PH(M) (the pre-hash function changes
 //                         with the set and the configuration: over the twelve sets, all twelve of them)
 //   sign_internal_derand  identical to sign_internal on random M'
@@ -35,7 +36,7 @@
 //                         key, seed, signature and message buffers, a context string of 256 bytes (and one of
 //                         1 byte at NULL), unknown pre-hash functions and parameter sets, and a max_batch of 0
 //                         or above the launch limit are refused with -1; a refused verification call sets
-//                         every status entry to OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE (fail closed), and one
+//                         every status entry to OPENPQC_ERR_INVALID_SIGNATURE (fail closed), and one
 //                         refused for its unusable status buffer writes nothing
 //   memory                memory that is not USM memory of the context's SYCL context: pageable host memory
 //                         (a std::vector) in place of every kind of buffer, in every function, and the
@@ -87,6 +88,7 @@
 
 #include "Core/prehash.hpp"
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/testing.h"
 #include "SLH/DSA/scheme/parameter_sets.hpp"
 #include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"
 
@@ -112,15 +114,15 @@ struct CpuApi {
     std::size_t n, pk, sk, sig, seed;
     std::size_t sig_fors, sig_ht, wots_sig, xmss_sig;   // offsets in SIG, and the parts of an XMSS signature
     unsigned a, k, d;
-    int (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
-    int (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
-    int (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
-    int (*prehash_sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*,
+    openpqc_status (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
+    openpqc_status (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*prehash_sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*,
                                const uint8_t*);
-    int (*prehash_verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, int,
+    openpqc_status (*prehash_verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, int,
                           const uint8_t*);
-    int (*sign_internal)(uint8_t*, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
-    int (*verify_internal)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*sign_internal)(uint8_t*, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*verify_internal)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
     bool small;   // an "s" set: signing costs 0.2-1.6 s on one core, so fewer operations
 };
 
@@ -130,10 +132,10 @@ struct CpuApi {
                 slh::Sizes<slh::params::T>::sig, slh::Sizes<slh::params::T>::seed,                           \
                 slh::Layout<slh::params::T>::sig_fors, slh::Layout<slh::params::T>::sig_ht,                  \
                 slh::Sizes<slh::params::T>::wots_sig, slh::Sizes<slh::params::T>::xmss_sig, slh::params::T::a, \
-                slh::params::T::k, slh::params::T::d, openpqc_slhdsa_##S##_keypair_derand,                   \
-                openpqc_slhdsa_##S##_sign_derand, openpqc_slhdsa_##S##_verify,                               \
-                openpqc_slhdsa_##S##_prehash_sign_derand, openpqc_slhdsa_##S##_prehash_verify,               \
-                openpqc_slhdsa_##S##_sign_internal, openpqc_slhdsa_##S##_verify_internal, SMALL              \
+                slh::params::T::k, slh::params::T::d, openpqc_testing_slhdsa_##S##_keygen_derand,                   \
+                openpqc_testing_slhdsa_##S##_sign_derand, openpqc_slhdsa_##S##_verify,                               \
+                openpqc_testing_slhdsa_##S##_prehash_sign_derand, openpqc_slhdsa_##S##_prehash_verify,               \
+                openpqc_testing_slhdsa_##S##_sign_internal, openpqc_testing_slhdsa_##S##_verify_internal, SMALL              \
     }
 
 const CpuApi apis[] = {
@@ -281,7 +283,7 @@ Oracle make_oracle(const CpuApi& api, std::size_t n, std::size_t max_batch, std:
         const std::uint8_t* sk = &o.sk[i * api.sk];
         const std::uint8_t* rnd = &o.addrnd[i * N];
         CHECK(api.sign_derand(&o.sig_hedged[i * S], m, mlen, o.ctx.data(), ctxlen, rnd, sk) == 0);
-        CHECK(api.sign_derand(&o.sig_det[i * S], m, mlen, o.ctx.data(), ctxlen, nullptr, sk) == 0);
+        CHECK(api.sign_derand(&o.sig_det[i * S], m, mlen, o.ctx.data(), ctxlen, sk + 2 * N, sk) == 0);   // PK.seed
         CHECK(api.prehash_sign_derand(&o.sig_ph[i * S], m, mlen, o.ctx.data(), ctxlen, phv, rnd, sk) == 0);
         CHECK(api.sign_internal(&o.sig_int[i * S], o.mprimes.at(i), o.mprimes.length(i), rnd, sk) == 0);
         CHECK(api.sign_derand(&o.sig1[i * S], m, mlen, o.ctx.data(), ctxlen, rnd, &o.sk[0]) == 0);
@@ -368,7 +370,8 @@ Oracle make_oracle(const CpuApi& api, std::size_t n, std::size_t max_batch, std:
     CHECK(o.valid >= (n + KINDS - 1) / KINDS);   // at least the unchanged ones
 
     // fresh randomness: R = SIG[0 : n] (Algorithm 19, line 4) of M and of PH(M) under key 0, for addrnd = 0^n and
-    // for the deterministic variant (addrnd = NULL: opt_rand = PK.seed, line 2); and KeyGen of the all-zero seeds
+    // for the deterministic variant (opt_rand = PK.seed, line 2: on the CPU addrnd = PK.seed, on the GPU addrnd =
+    // NULL); and KeyGen of the all-zero seeds
     o.one_msg = random_bytes(33);
     {
         std::array<std::uint8_t, openpqc::max_prehash_bytes> d{};
@@ -383,7 +386,7 @@ Oracle make_oracle(const CpuApi& api, std::size_t n, std::size_t max_batch, std:
         const std::uint8_t* m = o.one_msg.data();
         const std::size_t mlen = o.one_msg.size();
         parallel_for(5, [&](std::size_t i) {
-            const std::uint8_t* rnd = i % 2 == 0 ? zero_rnd.data() : nullptr;
+            const std::uint8_t* rnd = i % 2 == 0 ? zero_rnd.data() : &o.sk[2 * N];   // PK.seed: deterministic
             if (i < 2) CHECK(api.sign_derand(o.fixed_r[i].data(), m, mlen, o.ctx.data(), ctxlen, rnd, &o.sk[0]) == 0);
             else if (i < 4)
                 CHECK(api.prehash_sign_derand(o.fixed_r[i].data(), m, mlen, o.ctx.data(), ctxlen, phv, rnd,
@@ -566,7 +569,7 @@ void test_device(int device, const Oracle& o) {
         std::size_t bad_args = 0;
         {
             const Bytes long_ctx(256, 1);
-            const std::vector<std::int32_t> invalid(n, OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE);
+            const std::vector<std::int32_t> invalid(n, OPENPQC_ERR_INVALID_SIGNATURE);
             const auto refused = [&](int rc) {
                 bad_args += rc != -1;
                 CHECK(rc == -1);
@@ -728,7 +731,7 @@ void test_device(int device, const Oracle& o) {
                 d_status.get(status);
                 bool closed_ok = true, cpu_ok = rc == 0;
                 for (std::size_t i = 0; i < n; i++) {
-                    closed_ok &= status[i] == (!host_st && i < ops ? OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE : UNSET);
+                    closed_ok &= status[i] == (!host_st && i < ops ? OPENPQC_ERR_INVALID_SIGNATURE : UNSET);
                     if (host_st) closed_ok &= host_st[i] == UNSET;
                 }
                 for (std::size_t i = 0; i < ops; i++) cpu_ok &= (host_st ? host_st[i] : status[i]) == want_status[i];

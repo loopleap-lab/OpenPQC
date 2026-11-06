@@ -18,9 +18,9 @@
  * device fault, or, as on Intel GPUs under Level Zero, be read as zeros). The
  * results are byte-identical to the CPU library:
  *
- *   opqc_sycl_mldsa_keypair_derand   = openpqc_mldsaNN_keypair_derand, seeds xi (32 B/op)
- *   opqc_sycl_mldsa_sign_derand      = openpqc_mldsaNN_sign_derand, rnd (32 B/op)
- *   opqc_sycl_mldsa_sign_mu_derand   = openpqc_mldsaNN_sign_mu_derand (64-byte mu per op)
+ *   opqc_sycl_mldsa_keypair_derand   = openpqc_mldsaNN_keygen_from_seed, seeds xi (32 B/op)
+ *   opqc_sycl_mldsa_sign_derand      = openpqc_testing_mldsaNN_sign_derand, rnd (32 B/op)
+ *   opqc_sycl_mldsa_sign_mu_derand   = openpqc_testing_mldsaNN_sign_mu_derand (64-byte mu per op)
  *   opqc_sycl_mldsa_verify           = openpqc_mldsaNN_verify
  *   opqc_sycl_mldsa_verify_mu        = openpqc_mldsaNN_verify_mu
  *
@@ -80,17 +80,17 @@
  * Status. `status` is a device buffer of n int32_t, 4-byte aligned (as the
  * buffers of opqc_sycl_mldsa_malloc are; a misaligned one returns -1). It receives
  * per operation 0 or an OPENPQC_MLDSA_ERR_* code of openpqc_mldsa.h:
- *   signing (status optional, may be NULL): OPENPQC_MLDSA_ERR_SIGNING_LIMIT if no
+ *   signing (status optional, may be NULL): OPENPQC_ERR_SIGNING_LIMIT if no
  *     attempt succeeded within 821 (the signature is then zero). A signing call
- *     without a status buffer returns OPENPQC_MLDSA_ERR_SIGNING_LIMIT itself if
+ *     without a status buffer returns OPENPQC_ERR_SIGNING_LIMIT itself if
  *     any of its signatures reached the limit (FIPS 204, Appendix C: an error, and
  *     no other output).
  *   verification (status required: NULL returns -1): 0 for a valid signature and
- *     OPENPQC_MLDSA_ERR_INVALID_SIGNATURE otherwise. The verdicts exist only
+ *     OPENPQC_ERR_INVALID_SIGNATURE otherwise. The verdicts exist only
  *     here: the result of a verification call is never one (the call is
  *     asynchronous), and 0 means only that the work was queued.
  * Verification fails closed: it sets every entry to
- * OPENPQC_MLDSA_ERR_INVALID_SIGNATURE before its first kernel, so that an entry
+ * OPENPQC_ERR_INVALID_SIGNATURE before its first kernel, so that an entry
  * that no kernel reaches (a call that fails part way, a device fault) never reads
  * as valid; a call that is refused (-1; status itself usable: not NULL, aligned,
  * memory of the context) or fails (-2) sets every entry to it again, and returns
@@ -109,17 +109,17 @@
  *       sign, sign_one_key), page-locked host memory that their random coins
  *       pass through cannot be allocated; or the context has failed (Device
  *       failures, below)
- *   OPENPQC_MLDSA_ERR_RNG_FAIL       randomized calls: the RNG failed
- *   OPENPQC_MLDSA_ERR_SIGNING_LIMIT  signing without a status buffer (above)
- *   OPENPQC_MLDSA_ERR_PCT_FAIL       KeyGen built with OPENPQC_MLDSA_KEYGEN_PCT: a
+ *   OPENPQC_ERR_RNG       randomized calls: the RNG failed
+ *   OPENPQC_ERR_SIGNING_LIMIT  signing without a status buffer (above)
+ *   OPENPQC_ERR_PCT       KeyGen built with OPENPQC_MLDSA_KEYGEN_PCT: a
  *                                    key pair failed the pair-wise consistency
  *                                    test (below)
  *   OPQC_SYCL_MLDSA_SELF_TEST_FAIL   create: the device computed a wrong result
  *                                    in the self-test, and no context was created
  * The GPU's -1 and -2 are not the CPU library's codes of the same values
- * (OPENPQC_MLDSA_ERR_INVALID_SIGNATURE, OPENPQC_MLDSA_ERR_INVALID_ARGUMENT). A
+ * (OPENPQC_ERR_INVALID_SIGNATURE, OPENPQC_ERR_INVALID_ARGUMENT). A
  * KeyGen call (keypair, keypair_derand) that fails with any code but
- * OPENPQC_MLDSA_ERR_PCT_FAIL sets pk and sk of all n operations to zero before it
+ * OPENPQC_ERR_PCT sets pk and sk of all n operations to zero before it
  * returns (as far as the device still accepts work), so that no key pair of the
  * call, whole or partial, is left behind. After another error, the outputs of the
  * operations of launches that completed before it (max_batch operations each) may
@@ -187,7 +187,7 @@
  * each key pair it makes (deterministically, with an empty context string) and
  * verifies the signature under its public key, all on the device. The pk and sk
  * of a pair that fails are overwritten with zeros, and the call returns
- * OPENPQC_MLDSA_ERR_PCT_FAIL (the randomized call after computing all its pairs).
+ * OPENPQC_ERR_PCT (the randomized call after computing all its pairs).
  * KeyGen then costs about as much as KeyGen, Sign and Verify together. Without it,
  * KeyGen tests nothing, as the CPU library without the option.
  *

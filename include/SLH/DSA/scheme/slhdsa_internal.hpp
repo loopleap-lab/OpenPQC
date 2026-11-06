@@ -94,7 +94,10 @@ enum class Status : int {
     invalid_argument = -2,   // signing with a context string longer than 255 bytes (Algorithms 22 and 23, lines
                              // 1-3: ⊥); an unknown pre-hash function
     rng_failure = -3,        // no randomness available: Algorithm 21, lines 4-6; Algorithms 22 and 23, lines 5-7
-    pct_failure = -4,        // the pair-wise consistency test after KeyGen failed (slh_dsa.hpp)
+    invalid_secret_key = -5, // check_secret_key or check_key_pair failed (slh_dsa.hpp; the C API's check_sk and
+                             // check_keypair)
+    pct_failure = -6,        // the pair-wise consistency test after KeyGen failed (slh_dsa.hpp); the values are
+                             // those of openpqc_status (openpqc/common.h)
 };
 
 // The bytes that burn_stack overwrites: more than four times what the deepest of slh_keygen_internal,

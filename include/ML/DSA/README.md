@@ -8,7 +8,7 @@ comments that cite FIPS 204 section, algorithm and line numbers, and a GPU backe
 |---|---|---|---|
 | math core | `math/mldsa_field.h`, `mldsa_ntt.h`, `mldsa_rounding.h`, `mldsa_encode.h`, `mldsa_sample.h` | C11, header-only | arithmetic in Z_q, NTT, Power2Round/Decompose and the hints, bit packing and hint packing, SampleInBall and the rejection samplers (FIPS 204 §7.1–§7.5, Algorithms 14–21, 29–31, 35–45) |
 | scheme layer | `scheme/parameter_sets.hpp`, `polynomials.hpp`, `crypto_functions.hpp`, `sampling.hpp`, `encoding.hpp`, `mldsa_internal.hpp`, `ml_dsa.hpp` | C++20, header-only templates | the parameter sets (§4), H and G (§3.7), ExpandA/S/Mask (§7.3), the encodings of keys and signatures (§7.2), the internal algorithms (§6, Algorithms 6–8), ML-DSA and HashML-DSA (§5, Algorithms 1–5) |
-| interfaces | `openpqc_mldsa.h` (C API), `mldsa.cpp` (its implementation), `mldsa.hpp` (C++ API) | C / C++20 | the functions applications call, for the three parameter sets |
+| interfaces | `openpqc_mldsa.h` (C API), `mldsa.cpp` (its implementation), `mldsa.hpp` (C++ API); `mldsa_testing.cpp` (the testing interfaces of `openpqc/testing.h`) | C / C++20 | the functions applications call, for the three parameter sets |
 | GPU backend | `sycl/openpqc_mldsa_sycl.h`, `sycl/mldsa_sycl.cpp` | SYCL 2020 | batched KeyGen, Sign and Verify on GPUs and other SYCL devices, from the same math core |
 
 The bit packing that FIPS 203 and FIPS 204 share is in `../math/ml_bitpack.h`; SHAKE, SHA-2, the pre-hash functions
@@ -54,12 +54,12 @@ allowed bound on the signing loop (Appendix C, Table 3) from 814 to 821, which `
 | §3.7 H, G | `H<L>`, `H_init` (`scheme/crypto_functions.hpp`) over `openpqc::sponge` and `openpqc::Xof` (`Core/xof.hpp`); G inside `mldsa_rej_ntt_poly` |
 | Algorithms 6–8 KeyGen_internal, Sign_internal, Verify_internal | `internal::keygen`, `internal::sign` / `sign_mu`, `internal::verify` / `verify_mu` (`scheme/mldsa_internal.hpp`) |
 | Algorithms 1–3 ML-DSA.KeyGen, Sign, Verify | `keygen`, `sign`, `verify` and the `_derand` variants (`scheme/ml_dsa.hpp`) |
-| Algorithms 4, 5 HashML-DSA.Sign, Verify | `hash_sign`, `hash_verify`; the twelve pre-hash functions and their OIDs: `PreHash`, `prehash`, `prehash_oid` (`Core/prehash.hpp`, shared with HashSLH-DSA; also reachable as `openpqc::mldsa::PreHash` etc.), the C values `OPENPQC_MLDSA_PREHASH_*` = `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`); §5.4 asks for a pre-hash function with at least λ bits of collision and second preimage strength (λ = 128, 192 and 256 for ML-DSA-44, -65 and -87, Table 1), which is not enforced: every function is accepted with every set, as in NIST's ACVP vectors |
+| Algorithms 4, 5 HashML-DSA.Sign, Verify | `hash_sign`, `hash_verify`; the twelve pre-hash functions and their OIDs: `PreHash`, `prehash`, `prehash_oid` (`Core/prehash.hpp`, shared with HashSLH-DSA; also reachable as `openpqc::mldsa::PreHash` etc.), the C values `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`, through `openpqc/common.h`); §5.4 asks for a pre-hash function with at least λ bits of collision and second preimage strength (λ = 128, 192 and 256 for ML-DSA-44, -65 and -87, Table 1), which is not enforced: every function is accepted with every set, as in NIST's ACVP vectors |
 | Algorithm 7 line 6, Algorithm 8 line 7: external μ | `external_mu`, `sign_mu`, `verify_mu` |
 | §3.6.1 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which asks the operating system and fails closed. FIPS 204 requires ξ to come from an approved RBG (SP 800-90A/B/C) of at least 192 bits of strength for ML-DSA-65 and 256 for ML-DSA-87 (ML-DSA-44: at least 128, and 192 to keep category 2), and recommends one for rnd; the operating system's generator is not one within a module boundary, so the integrator supplies it (top-level README, [Security notes](../../../README.md#security-notes)) |
-| §6 testing interfaces | `keypair_derand`, the `_derand` signing functions with rnd ≠ 0³², `sign_internal` and `verify_internal` take values that the module would otherwise generate or format itself ([Usage](#usage)) |
+| §6 testing interfaces | signing with rnd given (`openpqc_testing_mldsaNN_sign_derand`, `_prehash_sign_derand`, `_sign_mu_derand`) and `openpqc_testing_mldsaNN_sign_internal` and `_verify_internal` take values that the module would otherwise generate or format itself: they are in `OpenPQC::testing` (`openpqc/testing.h`), not in the library `openpqc`, which has `keygen_from_seed` for a stored ξ (§3.6.3) and the deterministic variant, rnd = 0³², as `*_deterministic` ([Usage](#usage)) |
 | §3.6.3 destruction of intermediate values | every `Poly` zeroizes itself when its lifetime ends, unnamed temporaries included (`scheme/polynomials.hpp`), and `ZeroizeOnExit` (`Core/zeroize.hpp`) destroys the secret byte strings, μ and the byte strings of verification; `mldsa_stack` checks that KeyGen, the key checks, Sign and Verify leave none of them on the stack, nor a lane of the last Keccak-f of a sponge that absorbs a secret |
-| §7.2 skDecode only on trusted input (a key check is not part of FIPS 204) | every signing function refuses s1 or s2 outside [−η, η] (`internal::sign_mu`, `OPENPQC_MLDSA_ERR_INVALID_KEY`); `check_secret_key` and `check_key_pair` (`scheme/ml_dsa.hpp`), `openpqc_mldsaNN_check_sk` and `openpqc_mldsaNN_check_keypair`: the whole key regenerated and compared (Private keys, below) |
+| §7.2 skDecode only on trusted input (a key check is not part of FIPS 204) | every signing function refuses s1 or s2 outside [−η, η] (`internal::sign_mu`, `OPENPQC_ERR_INVALID_SECRET_KEY`); `check_secret_key` and `check_key_pair` (`scheme/ml_dsa.hpp`), `openpqc_mldsaNN_check_sk` and `openpqc_mldsaNN_check_keypair`: the whole key regenerated and compared (Private keys, below) |
 | Appendix C bound on the signing loop | `max_signing_attempts` = 821, the smallest that NIST's errata allow (Table 3 itself says 814); then `Status::signing_limit` and the signature all zeros |
 | pair-wise consistency test (FIPS 140-3) | `check_pair_wise_consistency`, run by KeyGen when built with `OPENPQC_MLDSA_KEYGEN_PCT` (the CMake option of that name gives it to the CPU library) |
 | Table 1, Table 2 | `params::ML_DSA_44/65/87`, `Sizes<P>` (`scheme/parameter_sets.hpp`) |
@@ -104,7 +104,7 @@ the CRYSTALS-Dilithium reference (`reference/dilithium`, both its C and its AVX2
 
   | | ML-DSA-44 | ML-DSA-65 | ML-DSA-87 |
   |---|---|---|---|
-  | KeyGen (`keypair`, `keypair_derand`) | 52 KiB | 80 KiB | 122 KiB |
+  | KeyGen (`keygen`, `keygen_from_seed`) | 52 KiB | 80 KiB | 122 KiB |
   | KeyGen with the pair-wise consistency test (`OPENPQC_MLDSA_KEYGEN_PCT`) | 87 KiB | 130 KiB | 190 KiB |
   | the key checks (`check_sk`, `check_keypair`) | 56 KiB | 86 KiB | 129 KiB |
   | Sign (every signing function) | 85 KiB | 127 KiB | 186 KiB |
@@ -154,7 +154,7 @@ the CRYSTALS-Dilithium reference (`reference/dilithium`, both its C and its AVX2
 - **Private keys.** FIPS 204 decodes sk without checking it and runs skDecode only on input from a trusted source
   (§7.2); a malformed sk can give coefficients of s1 and s2 outside [−η, η] (Algorithm 25, lines 3 and 6: a 3-bit code
   above 4 gives −3 to −5, a 4-bit code above 8 gives −5 to −11). The reference signs with such a key. The signing
-  functions of the C and C++ APIs refuse it with `OPENPQC_MLDSA_ERR_INVALID_KEY` and an all-zero signature: with
+  functions of the C and C++ APIs refuse it with `OPENPQC_ERR_INVALID_SECRET_KEY` and an all-zero signature: with
   ‖c s1‖∞ above β the rejection test no longer makes z independent of s1 (the GPU backend's signer, `sycl/`, does not
   check sk yet and signs with such a key). The check examines every coefficient without a branch
   on it, and only the one bit of its outcome is public (it is the same for every key that KeyGen outputs). Other
@@ -173,59 +173,76 @@ C (link `OpenPQC::openpqc`):
 ```c
 #include "ML/DSA/openpqc_mldsa.h"
 
-uint8_t pk[MLDSA65_PUBLICKEYBYTES], sk[MLDSA65_SECRETKEYBYTES], sig[MLDSA65_BYTES];
+uint8_t pk[OPENPQC_MLDSA65_PUBLICKEYBYTES], sk[OPENPQC_MLDSA65_SECRETKEYBYTES], sig[OPENPQC_MLDSA65_BYTES];
 static const uint8_t ctx[] = "example";          /* context string, at most 255 bytes; may be NULL, 0 */
-if (openpqc_mldsa65_keypair(pk, sk) != 0 ||      /* randomness from the operating system */
-    openpqc_mldsa65_sign(sig, msg, msglen, ctx, sizeof ctx - 1, sk) != 0)       /* hedged signing */
-    return -1;                                   /* OPENPQC_MLDSA_ERR_*: no key pair or no signature */
-int valid = openpqc_mldsa65_verify(sig, sizeof sig, msg, msglen, ctx, sizeof ctx - 1, pk) == 0;
+if (openpqc_mldsa65_keygen(pk, sk) != OPENPQC_OK ||                                     /* randomness from the OS */
+    openpqc_mldsa65_sign(sig, msg, msglen, ctx, sizeof ctx - 1, sk) != OPENPQC_OK)      /* hedged signing */
+    return -1;                                   /* an OPENPQC_ERR_* code: no key pair or no signature */
+int valid = openpqc_mldsa65_verify(sig, sizeof sig, msg, msglen, ctx, sizeof ctx - 1, pk) == OPENPQC_OK;
 
 /* HashML-DSA: the message is hashed first, here with SHA-512 */
-if (openpqc_mldsa65_prehash_sign(sig, msg, msglen, ctx, sizeof ctx - 1, OPENPQC_MLDSA_PREHASH_SHA2_512, sk) != 0)
+if (openpqc_mldsa65_prehash_sign(sig, msg, msglen, ctx, sizeof ctx - 1, OPENPQC_PREHASH_SHA2_512, sk) != OPENPQC_OK)
     return -1;                                   /* no signature */
 
 /* a key pair read from storage or received from elsewhere: check it once (see Private keys above);
    openpqc_mldsa65_check_sk(sk) checks a private key without its public key */
-if (openpqc_mldsa65_check_keypair(pk, sk) != 0)
-    return -1;                                   /* OPENPQC_MLDSA_ERR_INVALID_KEY: not a key pair that KeyGen gives */
+if (openpqc_mldsa65_check_keypair(pk, sk) != OPENPQC_OK)
+    return -1;                                   /* OPENPQC_ERR_INVALID_SECRET_KEY: not a key pair that KeyGen gives */
 
 /* a thread that signs: give it the documented stack (see Memory above) */
 if (pthread_attr_setstacksize(&attr, OPENPQC_MLDSA65_STACK_BYTES) != 0)
     return -1;
 ```
 
-C++ (`ML/DSA/mldsa.hpp`; sizes are part of the types):
+The same with the parameter set chosen at run time is in `openpqc/sig.h`: `openpqc_sig_keygen`, `openpqc_sig_sign`,
+`openpqc_sig_verify`, ... with an `openpqc_alg` such as `OPENPQC_ML_DSA_65`, and an `openpqc_sign_opts` that gives the
+context string, the pre-hash function and the flag `OPENPQC_SIGN_DETERMINISTIC` (NULL: pure, hedged, empty context
+string); external μ is in `openpqc_mldsa.h` only. `openpqc/openpqc.h` includes every C header of the library.
+
+C++ (`openpqc/openpqc.hpp`, or `ML/DSA/mldsa.hpp` alone; sizes are part of the types):
 
 ```cpp
-using DSA = openpqc::mldsa::MLDSA65;
-DSA::public_key pk; DSA::secret_key sk; DSA::signature sig;
-if (DSA::keypair(pk, sk) != 0 || DSA::sign(sig, message, sk) != 0)   // optional context string last
-    return -1;                                                         // no key pair or no signature
-bool valid = DSA::verify(sig, message, pk) == 0;
+#include "openpqc/openpqc.hpp"
+
+using DSA = openpqc::ML_DSA_65;                  // = openpqc::mldsa::MLDSA65
+using openpqc::status;
+DSA::public_key pk; DSA::secret_key sk; DSA::signature sig;   // secret_key: openpqc::secret<4032>, zeroized
+if (DSA::keygen(pk, sk) != status::ok || DSA::sign(sig, message, sk) != status::ok)   // optional context string last
+    return -1;                                                                       // no key pair or no signature
+bool valid = DSA::verify(sig, message, pk) == status::ok;
 ```
 
 To experiment with the algorithms themselves, include `ML/DSA/scheme/ml_dsa.hpp` and call the templates, e.g.
 `openpqc::mldsa::internal::sign_mu<openpqc::mldsa::params::ML_DSA_65>(sigma, sk, mu, rnd)`.
 
-The `_derand` functions take ξ (KeyGen) or rnd (Sign) as arguments, and the `_internal` functions the formatted
-message M′ (§6). FIPS 204 §6: "Other than for testing purposes, the interfaces for key generation and signature
-generation specified in this section should not be made available to applications, as any random values required
-for key generation and signature generation shall be generated by the cryptographic module." Their permitted uses
-besides testing: `keypair_derand` expands a seed ξ stored in place of sk (§3.6.3, item 1; the seed needs the
-protection of sk); `sign_derand`, `prehash_sign_derand` and `sign_mu_derand` with rnd = 0³² are the deterministic
-variant (§3.4, §5.2), which "should not be used on platforms where side-channel attacks are a concern and where they
-cannot be otherwise mitigated" (§3.4). With any other rnd they are for testing only: in the hedged variant "rnd shall
-be generated by the cryptographic module that generates the signature" (§5.4), as `sign`, `prehash_sign` and
-`sign_mu` do. `sign_internal` and `verify_internal` are for testing only (ACVP): they sign and accept any M′, without
-the prefix that separates ML-DSA from HashML-DSA and binds the context string. All of them are always in the library.
+`keygen_from_seed` expands a seed ξ stored in place of sk (§3.6.3, item 1; the seed needs the protection of sk).
+`sign_deterministic`, `prehash_sign_deterministic` and `sign_mu_deterministic` sign with rnd = 0³², the
+deterministic variant (§3.4, §5.2), which "should not be used on platforms where side-channel attacks are a concern
+and where they cannot be otherwise mitigated" (§3.4). Signing with an rnd that the caller chooses, and the internal
+functions on a formatted message M′, are testing interfaces (§6): "Other than for testing purposes, the interfaces for
+key generation and signature generation specified in this section should not be made available to applications, as
+any random values required for key generation and signature generation shall be generated by the cryptographic
+module." In the hedged variant "rnd shall be generated by the cryptographic module that generates the signature"
+(§5.4), as `sign`, `prehash_sign` and `sign_mu` do. These interfaces are therefore not in the library `openpqc` but in
+`OpenPQC::testing` (`openpqc/testing.h`, the CMake target `openpqc_testing`, built only with the tests, benchmarks or
+examples and never installed): `openpqc_testing_mldsaNN_sign_derand`, `_prehash_sign_derand` and `_sign_mu_derand`
+take rnd, and `openpqc_testing_mldsaNN_sign_internal` and `_verify_internal` (ACVP among their uses) sign and accept
+any M′, without the prefix that separates ML-DSA from HashML-DSA and binds the context string. A NULL rnd is refused
+with `OPENPQC_ERR_INVALID_ARGUMENT`. `openpqc/testing.hpp` offers them for the C++ types
+(`openpqc::testing::sign_derand<DSA>(sig, message, rnd, sk)`, ...).
 
-A call that fails produces no output: `keypair` leaves pk and sk unchanged when there is no randomness (and zeroes
-them after a failed pair-wise consistency test); the signing functions leave sig unchanged for a context string over
-255 bytes, an unknown pre-hash function or no randomness, and zero it when Sign_internal fails (a malformed sk,
-`OPENPQC_MLDSA_ERR_INVALID_KEY`; the bound on its attempts, `OPENPQC_MLDSA_ERR_SIGNING_LIMIT`); `external_mu` leaves
-mu unchanged. Every function is declared `OPQC_MUST_CHECK` (`openpqc_mldsa.h`, Results); a dropped result of a
-verification would accept every signature. The library is C++ inside: a C program links it with the C++ compiler
-driver or adds `-lstdc++` (`openpqc_mldsa.h`, Linking).
+Every function returns an `openpqc_status` (`openpqc/common.h`): `OPENPQC_OK` (0) or a negative `OPENPQC_ERR_*` code,
+the same values in every scheme (earlier versions of this library had codes of their own for ML-DSA: -4 for the
+signing limit, now `OPENPQC_ERR_SIGNING_LIMIT` = -8; -5 for the pair-wise consistency test, now `OPENPQC_ERR_PCT` = -6;
+-6 for a malformed private key, now `OPENPQC_ERR_INVALID_SECRET_KEY` = -5). A call that fails produces no output:
+`keygen` leaves pk and sk unchanged when there is no randomness (and zeroes them after a failed pair-wise consistency
+test); the signing functions leave sig unchanged for a context string over 255 bytes, an unknown pre-hash function or
+no randomness, and zero it when Sign_internal fails (a malformed sk, `OPENPQC_ERR_INVALID_SECRET_KEY`; the bound on its
+attempts, `OPENPQC_ERR_SIGNING_LIMIT`); `external_mu` leaves mu unchanged. Every function is declared
+`OPENPQC_MUST_CHECK` (`openpqc_mldsa.h`, Results); a dropped result of a verification would accept every signature.
+The library needs nothing of the C++ runtime: a C program links it with the C compiler alone (`openpqc_mldsa.h`,
+Linking; test `c_link`). In C++ every function returns an `openpqc::status` and is `[[nodiscard]]`, and `secret_key`
+and `seed` are `openpqc::secret<N>` (`openpqc/common.hpp`), zeroized when destroyed or moved from.
 
 ## GPU backend (`sycl/`)
 
@@ -233,13 +250,13 @@ driver or adds `-lstdc++` (`openpqc_mldsa.h`, Linking).
 byte-identical to the CPU library:
 
 ```c
-#include "ML/DSA/openpqc_mldsa.h"             /* the sizes MLDSA65_* */
+#include "ML/DSA/openpqc_mldsa.h"             /* the sizes OPENPQC_MLDSA65_* */
 #include "ML/DSA/sycl/openpqc_mldsa_sycl.h"   /* link OpenPQC::sycl */
 
 opqc_sycl_mldsa *ctx;
 if (opqc_sycl_mldsa_create(&ctx, 65, max_batch, -1) != 0)       /* -1: default device (or OPENPQC_SYCL_DEVICE) */
     return -1;
-uint8_t *pk = opqc_sycl_mldsa_malloc(ctx, n * MLDSA65_PUBLICKEYBYTES);   /* likewise sk, sig, msg, offsets, status */
+uint8_t *pk = opqc_sycl_mldsa_malloc(ctx, n * OPENPQC_MLDSA65_PUBLICKEYBYTES);  /* also sk, sig, msg, offsets, status */
 /* message i is msg[offsets[i] .. offsets[i + 1]); one context string for all, in host memory */
 int rc = opqc_sycl_mldsa_keypair(ctx, pk, sk, n);
 if (rc == 0) rc = opqc_sycl_mldsa_sign(ctx, sig, msg, offsets, ctxstr, ctxlen, sk, NULL, n);      /* hedged */
@@ -254,7 +271,7 @@ if (rc != 0)
 /* signature i is valid only if host_status[i] == 0 */
 ```
 
-Signing passes no status buffer here, so that the call itself returns `OPENPQC_MLDSA_ERR_SIGNING_LIMIT` when a
+Signing passes no status buffer here, so that the call itself returns `OPENPQC_ERR_SIGNING_LIMIT` when a
 signature reaches the bound on its attempts (with one, that result is per operation, in the buffer); verification
 requires one, and its verdicts exist only there. Every buffer of a call with n > 0 must be memory of the context
 (`opqc_sycl_mldsa_malloc` or `_malloc_host`): NULL, misaligned and pageable host memory are refused with -1. The
@@ -265,10 +282,15 @@ SLH-DSA's backends, a call with another GPU's device memory then ended the proce
 device memory of the other platform of the same Intel GPU (Level Zero or OpenCL) for this context's (seen with
 SLH-DSA's backend, which asks the same question; AdaptiveCpp with a Level Zero context and OpenCL memory). Pass only
 buffers of the context that are still allocated (the header, "What the buffer check cannot see"). Also: the `_derand`
-variants, testing interfaces as on the CPU (rnd = 0³²: the deterministic variant), signing and verifying with external
-μ (`_sign_mu_derand`, `_verify_mu`; HashML-DSA through a μ computed on the host), and batches under one key
+variants, which take ξ or rnd from the caller as the CPU's `keygen_from_seed` and testing interfaces
+(`openpqc_testing_mldsaNN_sign_derand`, ...) do, and are for the same uses (rnd = 0³²: the deterministic variant, which
+the CPU library has as `*_deterministic`; the GPU library still contains these functions), signing and verifying with
+external μ (`_sign_mu_derand`, `_verify_mu`; HashML-DSA through a μ computed on the host), and batches under one key
 (`_sign_one_key`, `_verify_one_key`), which compute Â once per call. Every function that returns a status is declared
-`OPQC_MUST_CHECK`.
+`OPQC_MUST_CHECK`. The results other than -1 and -2, which are the backend's own and not `OPENPQC_ERR_INVALID_SIGNATURE`
+and `OPENPQC_ERR_INVALID_ARGUMENT`, are the CPU library's codes of `openpqc/common.h` (`OPENPQC_ERR_RNG`,
+`OPENPQC_ERR_SIGNING_LIMIT`, `OPENPQC_ERR_PCT`), and `OPQC_SYCL_MLDSA_SELF_TEST_FAIL` (-7, `OPENPQC_ERR_SELF_TEST`) from
+create.
 
 ### Design
 
@@ -300,7 +322,7 @@ The kernels are a staged pipeline, like ML-KEM's:
   small transfers in memory of its own, also after destroy. What verification computes (w1′, c̃′ and the values before
   them) is not wiped from the workspace, unlike the CPU's Verify (§3.6.3 counts verification data as sensitive in some
   applications), and `opqc_sycl_mldsa_free` frees without wiping.
-- **The signing limit** (Appendix C, 821 attempts) gives an all-zero signature and `OPENPQC_MLDSA_ERR_SIGNING_LIMIT`,
+- **The signing limit** (Appendix C, 821 attempts) gives an all-zero signature and `OPENPQC_ERR_SIGNING_LIMIT`,
   in `status` or, for a call without a status buffer, as the result of the call.
 - **Device failures.** A device error found by a call, sync or memcpy, and every exception of the SYCL runtime, fail
   the context for good (`Core/sycl/opqc_sycl_context.hpp`): every later call, sync and memcpy returns -2 and runs no
@@ -314,7 +336,7 @@ The kernels are a staged pipeline, like ML-KEM's:
   the context failed, or whose counters are not those of a complete round (a stage that did not run): under
   AdaptiveCpp a copy that fails leaves the host's counters as they were, and a loop that trusted them would never end.
 - **Verification fails closed.** `status` is required (NULL: -1): the verdicts exist only there. Every entry is set to
-  `OPENPQC_MLDSA_ERR_INVALID_SIGNATURE` before the first kernel, and again when a call is refused or fails, so that an
+  `OPENPQC_ERR_INVALID_SIGNATURE` before the first kernel, and again when a call is refused or fails, so that an
   entry no kernel reached never reads as valid; take the verdicts only when the call, sync and the copy of status
   returned 0.
 - **Self-test.** `opqc_sycl_mldsa_create` runs a KeyGen, a deterministic signature and two verifications of fixed
@@ -322,7 +344,7 @@ The kernels are a staged pipeline, like ML-KEM's:
   that computes a wrong result gets no context (`OPQC_SYCL_MLDSA_SELF_TEST_FAIL`). Built with the definition
   `OPENPQC_MLDSA_KEYGEN_PCT` (which the CMake option of that name gives to the CPU library only), KeyGen also signs
   and verifies with every key pair it makes (the pair-wise consistency test of FIPS 140-3); a pair that fails is
-  zeroed and the call returns `OPENPQC_MLDSA_ERR_PCT_FAIL`.
+  zeroed and the call returns `OPENPQC_ERR_PCT`.
 - **Threads.** A context is locked while a call queues or runs its work, so several host threads can share it; their
   calls take turns (`memcpy` does not take the lock, and `destroy` must not run while another thread uses the
   context). A shared context gives one call's throughput at a time: on the RTX 3050, four contexts signed about
@@ -532,7 +554,9 @@ arithmetic weighs more: 41–46 % of Sign in the attempts' z, r0, c·t0 and hint
 
 ## Build
 
-`include/ML/DSA/CMakeLists.txt` compiles `mldsa.cpp` once. The objects go into the library `openpqc`
+`include/ML/DSA/CMakeLists.txt` compiles `mldsa.cpp` once, and in a build with the tests, benchmarks or examples also
+`mldsa_testing.cpp`, the testing interfaces, whose objects go into `OpenPQC::testing` and the two libraries for the
+tests below, never into `openpqc`. The objects of `mldsa.cpp` go into the library `openpqc`
 (`OpenPQC::openpqc`, which applications link; see the top-level README) and into two libraries for the tests and
 benchmarks, built only when they need them and never installed: `openpqc_mldsa` takes its
 randomness from the operating system, `openpqc_mldsa_testrng` calls the application's `randombytes()` (tests only;
@@ -565,15 +589,20 @@ The reference's own test programs run against this library and against the unmod
 | `mldsa_O1_ct`, `_O2_ct`, `_O3_ct`, `_Os_ct` | the same with the library compiled at -O1, -O2, -O3 and -Os whatever the build type, so that a Debug build checks optimized code too |
 | `mldsa_math` | the math core against direct transcriptions of FIPS 204, exhaustively where feasible (mod q for all 2³² inputs, Decompose and UseHint for every element of Z_q, CoeffFromThreeBytes for all 2²⁴ inputs), and every kind of malformed hint encoding of Algorithm 21 |
 | `mldsa_differential` | this library against the reference (C and AVX2), byte for byte: keys, deterministic and hedged signatures with context strings up to 255 bytes, the internal functions, and verification of tampered signatures, malformed hints (equal and decreasing indices included) and out-of-range z, and of signatures with a coefficient of z exactly at γ₁ − β (rejected) and one below (valid); also a failing RNG and the end of the signing loop (Appendix C) |
-| `test_mldsa_cxx` | the C++ API; HashML-DSA against Algorithm 4 written out (the twelve OIDs and pre-hash functions), signatures of the wrong length at every verification function, context strings of 255 and 256 bytes everywhere, the key checks of every key pair it generates |
-| `mldsa_pct`, `mldsa_pct_fail`, `mldsa_pct_odr` | the library built with the pair-wise consistency test after KeyGen (`OPENPQC_MLDSA_KEYGEN_PCT`); and built so that the test fails (`OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_MLDSA_ERR_PCT_FAIL` with both keys zeroized, which shows that the test is compiled in and its result used; `mldsa_pct_odr`: the same with an application's own copies of the KeyGen templates, compiled without the test and linked first, which must not take the place of the library's (key generation lives in an inline namespace named after its configuration, `scheme/ml_dsa.hpp`) |
+| `test_mldsa_cxx` | the C++ API (`openpqc/openpqc.hpp`); HashML-DSA against Algorithm 4 written out (the twelve OIDs and pre-hash functions), signatures of the wrong length at every verification function, context strings of 255 and 256 bytes everywhere, the key checks of every key pair it generates; the three `_deterministic` functions against the testing interfaces of `openpqc/testing.hpp` with rnd = 0³², and the refusal of a NULL rnd |
+| `mldsa_pct`, `mldsa_pct_fail`, `mldsa_pct_odr` | the library built with the pair-wise consistency test after KeyGen (`OPENPQC_MLDSA_KEYGEN_PCT`); and built so that the test fails (`OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_ERR_PCT` with both keys zeroized, which shows that the test is compiled in and its result used; `mldsa_pct_odr`: the same with an application's own copies of the KeyGen templates, compiled without the test and linked first, which must not take the place of the library's (key generation lives in an inline namespace named after its configuration, `scheme/ml_dsa.hpp`) |
 | `mldsa_pct_library` | only with the CMake option `OPENPQC_MLDSA_KEYGEN_PCT`: the test of `mldsa_pct` against the library as built (KeyGen of every set through the test; the keys sign and verify), and `mldsa_thread_stack` then compares KeyGen with the documented size of KeyGen with the test, an upper bound. The ML-DSA test draws no randomness, so no call of the C API shows whether it is compiled in: both pass against a library without it |
-| `mldsa_sk_check` | private keys with each out-of-range code of s1 and s2 (FIPS 204, Algorithm 25), all of s1 or s2 out of range, changes within the range, and changed ρ, K, tr or t0, all made from a fixed seed, and consistent malformed key pairs (t0, tr and pk recomputed from out-of-range s1 and s2, which only the range check can refuse): every signing function refuses the malformed ones (`OPENPQC_MLDSA_ERR_INVALID_KEY`, an all-zero signature) and `check_sk` and `check_keypair` find every change except of K; `check_keypair` also finds a changed ρ or t1 of pk, and a valid sk with the pk of another key |
+| `mldsa_sk_check` | private keys with each out-of-range code of s1 and s2 (FIPS 204, Algorithm 25), all of s1 or s2 out of range, changes within the range, and changed ρ, K, tr or t0, all made from a fixed seed, and consistent malformed key pairs (t0, tr and pk recomputed from out-of-range s1 and s2, which only the range check can refuse): every signing function refuses the malformed ones (`OPENPQC_ERR_INVALID_SECRET_KEY`, an all-zero signature) and `check_sk` and `check_keypair` find every change except of K; `check_keypair` also finds a changed ρ or t1 of pk, and a valid sk with the pk of another key |
 | `mldsa_stack` | no secret intermediate value on the stack (FIPS 204 §3.6.3) after KeyGen (from a seed, and randomized), the key checks, Sign (deterministic; hedged, HashML-DSA and external μ with rnd from the test's `randombytes()`; at the bound of Appendix C), ExpandMask on its own, external μ and Verify (also HashML-DSA): the stack is copied after each call and searched at every byte offset for ξ, rnd, ρ′, K, ρ″, μ, PH(M), s1 and s2 (also as sk packs them), the values of every attempt (y, ExpandMask's output v, w, c ∘ s1, c ∘ s2, w − cs2, r0, and z and w1 of the rejected ones), Verify's values (w1Encode(w1′) and c̃′ among them), the final states of the sponges that absorb secrets or μ, and, lane by lane, the last two rounds and the output of the last Keccak-f of each of those sponges; with positive controls (Linux; under AddressSanitizer the test turns the fake stack off for itself, reports itself skipped if frames are not on the stack all the same, and reports Keccak lanes it finds without counting them, as the sanitizer instruments Core's clearing too) |
-| `mldsa_thread_stack`, `mldsa_thread_stack_pct` | every function of the C API, for each parameter set, on a thread with the stack that `openpqc_mldsa.h` documents (`OPENPQC_MLDSAnn_STACK_BYTES`), and the stack it uses: below its caller's frame, which must not exceed the function's entry in the table of Memory (above) and of the header, and in all, which must leave a margin of 16 KiB to the documented size (optimized builds); on a stack that is too small, KeyGen, Sign and Verify of ML-DSA-87 must end in a fault at the guard page and write nothing below it (`-fstack-clash-protection`); on 128 KiB, musl's default, Sign of ML-DSA-44 must succeed and that of ML-DSA-65 and -87 may only fault at the guard page; `_pct` for the library with the pair-wise consistency test (Linux; skipped under AddressSanitizer) |
+| `mldsa_thread_stack`, `mldsa_thread_stack_pct` | every function of the C API (the three `_deterministic` functions and the testing interfaces of `openpqc/testing.h` included), for each parameter set, on a thread with the stack that `openpqc_mldsa.h` documents (`OPENPQC_MLDSAnn_STACK_BYTES`), and the stack it uses: below its caller's frame, which must not exceed the function's entry in the table of Memory (above) and of the header, and in all, which must leave a margin of 16 KiB to the documented size (optimized builds); on a stack that is too small, KeyGen, Sign and Verify of ML-DSA-87 must end in a fault at the guard page and write nothing below it (`-fstack-clash-protection`); on 128 KiB, musl's default, Sign of ML-DSA-44 must succeed and that of ML-DSA-65 and -87 may only fault at the guard page; `_pct` for the library with the pair-wise consistency test (Linux; skipped under AddressSanitizer) |
 | `mldsa_sycl` | the SYCL backend against this library on every SYCL device: byte identity, fresh randomness across operations, launches and calls, the status and error contract, the self-test's answers, two host threads on one context (label `gpu`) |
 | `mldsa_sycl_sticky` | a real device fault inside the signing loop on an NVIDIA GPU, in a process of its own: -2 in the round of the fault, no endless loop (a watchdog fails the test after 60 s), no process termination; then every call, sync and copy returns -2, refused arguments still -1, the other context on the device fails too, and a new create fails. The fault comes from a signature placed 8 bytes before the end of a 64 MiB device allocation, which passes every check of the C API; it relies on the CUDA driver mapping nothing after that allocation, and if a driver does, the test fails ("no fault"), it never passes without a fault (label `gpu`; skipped without an NVIDIA device) |
 | `mldsa_sycl_faults` | white-box fault injection: fail-closed verification status, the failed context, the signing loop stopping at a fault or an incomplete round, an RNG failure, workspace zeroization, the end of the signing loop (bound lowered), KeyGen's pair-wise consistency test and create's self-test. The test always compiles the backend with `OPENPQC_MLDSA_KEYGEN_PCT`, so the wipes of KeyGen and of an RNG failure are tested in that build only, not in the default one (label `gpu`) |
+
+The tests of the C APIs of all three schemes in `tests/` (`c_api_errors`, which also takes the error paths of the
+`_deterministic` functions and checks that every testing interface that takes rnd refuses a NULL one,
+`c_api_must_check`, `runtime_api` and `production_symbols`) are described in
+[ML-KEM's README](../KEM/README.md#tests).
 
 The tests were checked by mutation: changing the sign in SampleInBall, the norm bound of Verify, the signature-length
 check, a declassification of the constant-time test, or planting a branch on a secret coefficient each makes at

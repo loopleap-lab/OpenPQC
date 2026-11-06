@@ -13,7 +13,7 @@
  *
  * Built with OPENPQC_TEST_EXPECT_PCT_FAIL (slhdsa_pct_fail), against the library built with
  * OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST as well, which flips a bit of the test's signature:
- * then KeyGen, randomized and from a seed, must return OPENPQC_SLHDSA_ERR_PCT_FAIL and leave
+ * then KeyGen, randomized and from a seed, must return OPENPQC_ERR_PCT and leave
  * both keys zeroized, for the six f sets. This fails if the test is not compiled in or its
  * result is not used, which the checks above cannot see.
  */
@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/testing.h"
 
 static int failures = 0;
 
@@ -35,19 +36,19 @@ static int failures = 0;
 
 #define TEST_SET(S, M)                                                                                       \
     do {                                                                                                     \
-        static uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES], sk[SLHDSA_##M##_SECRETKEYBYTES];                     \
-        static uint8_t pk2[SLHDSA_##M##_PUBLICKEYBYTES], sk2[SLHDSA_##M##_SECRETKEYBYTES];                   \
-        static uint8_t sig[SLHDSA_##M##_BYTES];                                                              \
+        static uint8_t pk[OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES], sk[OPENPQC_SLHDSA_##M##_SECRETKEYBYTES];                     \
+        static uint8_t pk2[OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES], sk2[OPENPQC_SLHDSA_##M##_SECRETKEYBYTES];                   \
+        static uint8_t sig[OPENPQC_SLHDSA_##M##_BYTES];                                                              \
         static const uint8_t msg[] = "pair-wise consistency";                                                \
-        uint8_t seed[SLHDSA_##M##_SEEDBYTES];                                                                \
-        for (unsigned i = 0; i < sizeof seed; i++) seed[i] = (uint8_t)(i * 13 + SLHDSA_##M##_N);            \
-        CHECK(openpqc_slhdsa_##S##_keypair(pk, sk) == OPENPQC_SLHDSA_OK);                                    \
-        CHECK(openpqc_slhdsa_##S##_sign(sig, msg, sizeof msg, NULL, 0, sk) == OPENPQC_SLHDSA_OK);            \
-        CHECK(openpqc_slhdsa_##S##_verify(sig, sizeof sig, msg, sizeof msg, NULL, 0, pk) == OPENPQC_SLHDSA_OK); \
-        CHECK(openpqc_slhdsa_##S##_keypair_derand(pk, sk, seed) == OPENPQC_SLHDSA_OK);                       \
-        CHECK(openpqc_slhdsa_##S##_keypair_derand(pk2, sk2, seed) == OPENPQC_SLHDSA_OK);                     \
+        uint8_t seed[OPENPQC_SLHDSA_##M##_SEEDBYTES];                                                                \
+        for (unsigned i = 0; i < sizeof seed; i++) seed[i] = (uint8_t)(i * 13 + OPENPQC_SLHDSA_##M##_N);            \
+        CHECK(openpqc_slhdsa_##S##_keygen(pk, sk) == OPENPQC_OK);                                    \
+        CHECK(openpqc_slhdsa_##S##_sign(sig, msg, sizeof msg, NULL, 0, sk) == OPENPQC_OK);            \
+        CHECK(openpqc_slhdsa_##S##_verify(sig, sizeof sig, msg, sizeof msg, NULL, 0, pk) == OPENPQC_OK); \
+        CHECK(openpqc_testing_slhdsa_##S##_keygen_derand(pk, sk, seed) == OPENPQC_OK);                       \
+        CHECK(openpqc_testing_slhdsa_##S##_keygen_derand(pk2, sk2, seed) == OPENPQC_OK);                     \
         CHECK(memcmp(pk, pk2, sizeof pk) == 0 && memcmp(sk, sk2, sizeof sk) == 0);                           \
-        CHECK(memcmp(sk, seed, sizeof seed) == 0 && memcmp(pk, sk + 2 * SLHDSA_##M##_N, sizeof pk) == 0);    \
+        CHECK(memcmp(sk, seed, sizeof seed) == 0 && memcmp(pk, sk + 2 * OPENPQC_SLHDSA_##M##_N, sizeof pk) == 0);    \
         printf("%s: done\n", #S);                                                                            \
         fflush(stdout);                                                                                      \
     } while (0)
@@ -55,17 +56,17 @@ static int failures = 0;
 /* KeyGen with a pair-wise consistency test that fails: an error, and both keys zeroized */
 #define TEST_PCT_FAIL(S, M)                                                                                  \
     do {                                                                                                     \
-        static uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES], sk[SLHDSA_##M##_SECRETKEYBYTES];                     \
-        static const uint8_t zero_pk[SLHDSA_##M##_PUBLICKEYBYTES], zero_sk[SLHDSA_##M##_SECRETKEYBYTES];     \
-        uint8_t seed[SLHDSA_##M##_SEEDBYTES];                                                                \
-        for (unsigned i = 0; i < sizeof seed; i++) seed[i] = (uint8_t)(i * 13 + SLHDSA_##M##_N);            \
+        static uint8_t pk[OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES], sk[OPENPQC_SLHDSA_##M##_SECRETKEYBYTES];                     \
+        static const uint8_t zero_pk[OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES], zero_sk[OPENPQC_SLHDSA_##M##_SECRETKEYBYTES];     \
+        uint8_t seed[OPENPQC_SLHDSA_##M##_SEEDBYTES];                                                                \
+        for (unsigned i = 0; i < sizeof seed; i++) seed[i] = (uint8_t)(i * 13 + OPENPQC_SLHDSA_##M##_N);            \
         memset(pk, 0xAA, sizeof pk);                                                                         \
         memset(sk, 0xAA, sizeof sk);                                                                         \
-        CHECK(openpqc_slhdsa_##S##_keypair(pk, sk) == OPENPQC_SLHDSA_ERR_PCT_FAIL);                          \
+        CHECK(openpqc_slhdsa_##S##_keygen(pk, sk) == OPENPQC_ERR_PCT);                          \
         CHECK(memcmp(pk, zero_pk, sizeof pk) == 0 && memcmp(sk, zero_sk, sizeof sk) == 0);                   \
         memset(pk, 0xAA, sizeof pk);                                                                         \
         memset(sk, 0xAA, sizeof sk);                                                                         \
-        CHECK(openpqc_slhdsa_##S##_keypair_derand(pk, sk, seed) == OPENPQC_SLHDSA_ERR_PCT_FAIL);             \
+        CHECK(openpqc_testing_slhdsa_##S##_keygen_derand(pk, sk, seed) == OPENPQC_ERR_PCT);             \
         CHECK(memcmp(pk, zero_pk, sizeof pk) == 0 && memcmp(sk, zero_sk, sizeof sk) == 0);                   \
         printf("%s: done\n", #S);                                                                            \
         fflush(stdout);                                                                                      \

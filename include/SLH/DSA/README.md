@@ -9,7 +9,7 @@ section, algorithm and line numbers, and a GPU backend built from the same math 
 |---|---|---|---|
 | math core | `math/slhdsa_encode.h`, `slhdsa_address.h`, `slhdsa_sha2.h` | C11, header-only | gen_len2, toInt, toByte, base_2b (Algorithms 1–4) and x mod 2^b; the address ADRS with the member functions of Table 1 (§4.2, §4.3), its compressed form ADRSᶜ (§11.2, Table 3) and, for the GPU kernels, the address as eight integers; HMAC (FIPS 198-1) and MGF1 (RFC 8017, B.2.1) over Core's SHA-256 and SHA-512 |
 | scheme layer | `scheme/parameter_sets.hpp`, `address.hpp`, `crypto_functions.hpp`, `wots.hpp`, `xmss.hpp`, `hypertree.hpp`, `fors.hpp`, `slhdsa_internal.hpp`, `slh_dsa.hpp` | C++20, header-only templates | the parameter sets (§11, Table 2), the hash functions (§4.1, §11.1, §11.2), WOTS+ (§5, Algorithms 5–8), XMSS (§6, Algorithms 9–11), the hypertree (§7, Algorithms 12–13), FORS (§8, Algorithms 14–17), the internal functions (§9, Algorithms 18–20), SLH-DSA and HashSLH-DSA (§10, Algorithms 21–25) |
-| interfaces | `openpqc_slhdsa.h` (C API), `slhdsa.cpp` (its implementation, the only compiled file), `slhdsa.hpp` (C++ API) | C / C++20 | the functions applications call, for the twelve parameter sets |
+| interfaces | `openpqc_slhdsa.h` (C API), `slhdsa.cpp` (its implementation), `slhdsa.hpp` (C++ API); `slhdsa_testing.cpp` (the testing interfaces of `openpqc/testing.h`) | C / C++20 | the functions applications call, for the twelve parameter sets |
 | GPU backend | `sycl/openpqc_slhdsa_sycl.h`, `sycl/slhdsa_sycl.cpp` | SYCL 2020 | batched KeyGen, Sign and Verify on GPUs and other SYCL devices, for all twelve sets, from the same math core |
 
 SHA-256 and SHA-512 (with the word-level compression that the CPU code and the GPU kernels share), SHAKE256, the
@@ -52,15 +52,15 @@ and the spreadsheet address that NIST uses for FIPS 203 and FIPS 204 returns 404
 | Algorithms 12, 13 ht_sign, ht_verify | `ht_sign`, `ht_verify` (`scheme/hypertree.hpp`) |
 | Algorithms 14–17 fors_skGen, fors_node, fors_sign, fors_pkFromSig | `fors_sk_gen`, `fors_node` (recursive, as Algorithm 15 writes it), `fors_sign`, `fors_pk_from_sig` (`scheme/fors.hpp`) |
 | Algorithms 18–20 slh_keygen_internal, slh_sign_internal, slh_verify_internal | `internal::keygen`, `internal::sign` (with addrnd, and without it: the deterministic variant), `internal::verify` (`scheme/slhdsa_internal.hpp`); each runs the algorithm (`slh_keygen_internal`, `slh_sign_internal`, `slh_verify_internal`) in a frame of its own and then overwrites the stack below (`burn_stack`) |
-| Algorithm 21 slh_keygen | `keygen`; with the seeds given (Algorithm 18 for stored seeds): `keygen_derand` (`scheme/slh_dsa.hpp`) |
+| Algorithm 21 slh_keygen | `keygen`; with the seeds given (Algorithm 18; in the C API a testing interface, see [Usage](#usage)): `keygen_derand` (`scheme/slh_dsa.hpp`) |
 | Algorithm 22 slh_sign | `sign` (hedged), `sign_deterministic` (lines 4–7 skipped, opt_rand = PK.seed), `sign_derand` (addrnd given) |
-| Algorithm 23 hash_slh_sign | `hash_sign`, `hash_sign_deterministic`, `hash_sign_derand`; the twelve pre-hash functions, their OIDs and digest lengths: `PreHash`, `prehash`, `prehash_oid`, `prehash_bytes` (`Core/prehash.hpp`, shared with HashML-DSA); the C values `OPENPQC_SLHDSA_PREHASH_*` = `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`) |
+| Algorithm 23 hash_slh_sign | `hash_sign`, `hash_sign_deterministic`, `hash_sign_derand`; the twelve pre-hash functions, their OIDs and digest lengths: `PreHash`, `prehash`, `prehash_oid`, `prehash_bytes` (`Core/prehash.hpp`, shared with HashML-DSA); the C values `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`, through `openpqc/common.h`) |
 | Algorithms 24, 25 slh_verify, hash_slh_verify | `verify`, `hash_verify` |
 | §10.2 the formatted message M′ | the two bytes before ctx (domain separator, \|ctx\|) are written at each call site, next to its line of the standard; M′ is passed as a list of byte strings and never copied |
 | §3.1 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which asks the operating system and fails closed; KeyGen draws SK.seed, SK.prf and PK.seed in one call of 3n bytes, in that order, as the reference does; hedged signing draws addrnd (n bytes) after the context string has been checked. FIPS 205 requires the three seeds to come from an approved RBG (SP 800-90A/B/C) of at least 8n bits of strength, and recommends one for addrnd; the operating system's generator is not one within a module boundary, so the integrator supplies it (top-level README, [Security notes](../../../README.md#security-notes)) |
-| §9 testing interfaces | `keypair_derand`, `sign_derand` and `prehash_sign_derand` with addrnd given, and the internal functions of the C API, take values that the module would otherwise generate or format itself ([Usage](#usage)) |
+| §9 testing interfaces | `openpqc_testing_slhdsa_<set>_keygen_derand`, `_sign_derand` and `_prehash_sign_derand` (addrnd given), and `_sign_internal` and `_verify_internal`, take values that the module would otherwise generate or format itself: they are in `OpenPQC::testing` (`openpqc/testing.h`), not in the library `openpqc`, which has the deterministic variant as `*_deterministic` ([Usage](#usage)) |
 | §3.1 destruction of sensitive data | every n-byte value is a `Value<n>`, which zeroizes itself, unnamed temporaries included; every hash state that saw a secret is zeroized after its last use; `ZeroizeOnExit` (`Core/zeroize.hpp`) for named byte strings; `burn_stack` for what the compression functions leave in their dead frames (see below); `slhdsa_stack` checks the result |
-| §3.1 key checks | `check_secret_key` ("assurance of private key possession via regeneration": PK.root recomputed from SK.seed and PK.seed); the lengths are fixed by the types (C++) and by the array sizes of the C prototypes, which C does not check |
+| §3.1 key checks | `check_secret_key` ("assurance of private key possession via regeneration": PK.root recomputed from SK.seed and PK.seed) and `check_key_pair` (also pk against the PK.seed ‖ PK.root that sk holds), in the C API `openpqc_slhdsa_<set>_check_sk` and `_check_keypair`; neither can check SK.prf, which takes no part in PK; the lengths are fixed by the types (C++) and by the array sizes of the C prototypes, which C does not check |
 | §3.1 floating point | none |
 | §3.2 component interfaces | not offered: neither the C, the C++ nor the GPU API exposes WOTS+, XMSS, FORS or the hypertree |
 | pair-wise consistency test (FIPS 140-3) | `check_pair_wise_consistency`, run by KeyGen when `slhdsa.cpp` is compiled with `OPENPQC_SLHDSA_KEYGEN_PCT` (CPU library only) |
@@ -128,8 +128,8 @@ reference's NIST KAT generator gives upstream's SHA-256 for all twelve sets thro
 - **Buffers.** The signing functions read the message, the context string and addrnd (M′ and addrnd for `sign_internal`)
   before they write the signature, so the signature may overlap them, e.g. to sign in place over the message:
   `slh_sign_internal` computes R into a local value and runs H_msg before it writes SIG[0 : n]. The signature must not
-  overlap the secret key, which is read until the signature is complete. The outputs of `keypair` and `keypair_derand`
-  must not overlap each other or the seed.
+  overlap the secret key, which is read until the signature is complete. The outputs of `keygen` and of the testing
+  interface `keygen_derand` must not overlap each other or the seed.
 - **Pre-hash strength.** As for HashML-DSA, the requirement of §10.2 that PH be as strong as the parameter set (and that
   SHA-256 and SHAKE128 be used only with category 1 sets) is not enforced: NIST's ACVP vectors combine every pre-hash
   function with every set.
@@ -141,62 +141,90 @@ C (link `OpenPQC::openpqc`):
 ```c
 #include "SLH/DSA/openpqc_slhdsa.h"
 
-uint8_t pk[SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[SLHDSA_SHA2_128F_SECRETKEYBYTES];
-static uint8_t sig[SLHDSA_SHA2_128F_BYTES];               /* 17,088 bytes */
+uint8_t pk[OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES];
+static uint8_t sig[OPENPQC_SLHDSA_SHA2_128F_BYTES];               /* 17,088 bytes */
 static const uint8_t ctx[] = "example";                   /* context string, at most 255 bytes; may be NULL, 0 */
-if (openpqc_slhdsa_sha2_128f_keypair(pk, sk) != 0 ||      /* randomness from the operating system */
-    openpqc_slhdsa_sha2_128f_sign(sig, msg, msglen, ctx, sizeof ctx - 1, sk) != 0)   /* hedged signing */
-    return -1;                                            /* OPENPQC_SLHDSA_ERR_*: no key pair or no signature */
-int valid = openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, msglen, ctx, sizeof ctx - 1, pk) == 0;
+if (openpqc_slhdsa_sha2_128f_keygen(pk, sk) != OPENPQC_OK ||                         /* randomness from the OS */
+    openpqc_slhdsa_sha2_128f_sign(sig, msg, msglen, ctx, sizeof ctx - 1, sk) != OPENPQC_OK)   /* hedged signing */
+    return -1;                                            /* an OPENPQC_ERR_* code: no key pair or no signature */
+int valid = openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, msglen, ctx, sizeof ctx - 1, pk) == OPENPQC_OK;
 
-/* the deterministic variant (addrnd = NULL), for platforms without a random bit generator (FIPS 205, Section 9.2) */
-if (openpqc_slhdsa_sha2_128f_sign_derand(sig, msg, msglen, ctx, sizeof ctx - 1, NULL, sk) != 0)
+/* the deterministic variant, for platforms without a random bit generator (FIPS 205, Section 9.2) */
+if (openpqc_slhdsa_sha2_128f_sign_deterministic(sig, msg, msglen, ctx, sizeof ctx - 1, sk) != OPENPQC_OK)
     return -1;
 /* HashSLH-DSA: the message is hashed first, here with SHA-256 */
-if (openpqc_slhdsa_sha2_128f_prehash_sign(sig, msg, msglen, ctx, sizeof ctx - 1, OPENPQC_SLHDSA_PREHASH_SHA2_256,
-                                          sk) != 0)
+if (openpqc_slhdsa_sha2_128f_prehash_sign(sig, msg, msglen, ctx, sizeof ctx - 1, OPENPQC_PREHASH_SHA2_256,
+                                          sk) != OPENPQC_OK)
     return -1;
+
+/* a key pair read from storage or received from elsewhere: the regeneration check of FIPS 205, Section 3.1;
+   openpqc_slhdsa_sha2_128f_check_sk(sk) checks a private key without its public key */
+if (openpqc_slhdsa_sha2_128f_check_keypair(pk, sk) != OPENPQC_OK)
+    return -1;                                            /* OPENPQC_ERR_INVALID_SECRET_KEY */
 ```
 
-C++ (`SLH/DSA/slhdsa.hpp`; sizes are part of the types):
+The same with the parameter set chosen at run time is in `openpqc/sig.h`: `openpqc_sig_keygen`, `openpqc_sig_sign`,
+`openpqc_sig_verify`, ... with an `openpqc_alg` such as `OPENPQC_SLH_DSA_SHA2_128F`, and an `openpqc_sign_opts` that
+gives the context string, the pre-hash function and the flag `OPENPQC_SIGN_DETERMINISTIC` (NULL: pure, hedged, empty
+context string); `openpqc_sig_keygen_from_seed` returns `OPENPQC_ERR_UNSUPPORTED` for SLH-DSA. `openpqc/openpqc.h`
+includes every C header of the library.
+
+C++ (`openpqc/openpqc.hpp`, or `SLH/DSA/slhdsa.hpp` alone; sizes are part of the types):
 
 ```cpp
-using DSA = openpqc::slhdsa::SLHDSA_SHAKE_128f;
-DSA::public_key pk; DSA::secret_key sk; DSA::signature sig;
-if (DSA::keypair(pk, sk) != 0 || DSA::sign(sig, message, sk) != 0)   // optional context string last
-    return -1;                                                         // no key pair or no signature
-bool valid = DSA::verify(sig, message, pk) == 0;
-if (DSA::sign_deterministic(sig, message, sk) != 0 ||
-    DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk) != 0)              // HashSLH-DSA
+#include "openpqc/openpqc.hpp"
+
+using DSA = openpqc::SLH_DSA_SHAKE_128f;         // = openpqc::slhdsa::SLHDSA_SHAKE_128f
+using openpqc::status;
+DSA::public_key pk; DSA::secret_key sk; DSA::signature sig;   // secret_key: openpqc::secret<64>, zeroized
+if (DSA::keygen(pk, sk) != status::ok || DSA::sign(sig, message, sk) != status::ok)   // optional context string last
+    return -1;                                                                       // no key pair or no signature
+bool valid = DSA::verify(sig, message, pk) == status::ok;
+if (DSA::sign_deterministic(sig, message, sk) != status::ok ||
+    DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk) != status::ok)   // HashSLH-DSA
     return -1;
 ```
 
 To experiment with the algorithms themselves, include `SLH/DSA/scheme/slh_dsa.hpp` and call the templates, e.g.
 `openpqc::slhdsa::internal::sign<openpqc::slhdsa::params::SLH_DSA_SHA2_128s>(SIG, SK, {M}, addrnd)`.
 
-The `_derand` functions take the seeds SK.seed ‖ SK.prf ‖ PK.seed (KeyGen, 3n bytes) or addrnd (Sign, n bytes) as
-arguments; addrnd = NULL is the deterministic variant (opt_rand = PK.seed, Algorithm 19, line 2). FIPS 205 (§9) says
-that interfaces taking them should be offered to applications only for testing, as the module must generate the
-randomness itself. So addrnd given (not NULL) is for testing only: `sign` and `prehash_sign` draw it from the
-operating system. The deterministic variant (NULL) is "available for platforms where a random bit generator is not
-available" (§9.2), while the hedged variant "should be used on platforms where side-channel attacks are a concern".
-`keypair_derand` serves testing, the regeneration check of §3.1 (`check_secret_key`; §9 names it), and, as OpenPQC's
-own use, the expansion of seeds stored in place of sk (FIPS 205 has no explicit exception for that; the seeds need the
-protection of sk and must come from an approved random bit generator). The `_internal` functions of the C API take
-the formatted message M′ (§9) and are for tests, ACVP among them; the C++ API leaves them out. Every function returns
-0 or an `OPENPQC_SLHDSA_ERR_*` code and is declared `OPQC_MUST_CHECK` (`openpqc_slhdsa.h`, Results). A signing call
-that fails (a context string longer than 255 bytes or an unknown pre-hash function,
-`OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT`; no randomness, `OPENPQC_SLHDSA_ERR_RNG_FAIL`) writes nothing, `keypair` leaves
-pk and sk unchanged when there is no randomness and zeroes them after a failed pair-wise consistency test, and
-verifying with a context string over 255 bytes, or with a signature of the wrong length, returns
-`OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE`. The library is C++ inside: a C program links it with the C++ compiler driver
-or adds `-lstdc++` (`openpqc_slhdsa.h`, Linking).
+`sign_deterministic` and `prehash_sign_deterministic` are the deterministic variant: they leave out lines 4–7 of
+Algorithms 22 and 23, so that opt_rand = PK.seed (Algorithm 19, line 2). The deterministic variant is "available for
+platforms where a random bit generator is not available" (§9.2), while the hedged variant (`sign` and `prehash_sign`,
+which draw addrnd from the operating system) "should be used on platforms where side-channel attacks are a concern".
+FIPS 205 (§9) says that interfaces taking the seeds of KeyGen or addrnd from the caller should be offered to
+applications only for testing, as the module must generate the randomness itself, and the internal functions take
+the formatted message M′ (§9) and are for tests, ACVP among them. They are therefore not in the library `openpqc` but
+in `OpenPQC::testing` (`openpqc/testing.h`, the CMake target `openpqc_testing`, built only with the tests, benchmarks
+or examples and never installed): `openpqc_testing_slhdsa_<set>_keygen_derand` takes the seeds SK.seed ‖ SK.prf ‖
+PK.seed (3n bytes), `_sign_derand` and `_prehash_sign_derand` take addrnd (n bytes), and `_sign_internal` and
+`_verify_internal` take M′; `openpqc/testing.hpp` offers them for the C++ types. They refuse a NULL seed or addrnd with
+`OPENPQC_ERR_INVALID_ARGUMENT`: the deterministic variant is `*_deterministic`, no longer a NULL addrnd (the GPU
+backend's `_derand` functions still take NULL for it). FIPS 205 has no counterpart of the provisions of FIPS 203
+(§3.3) and FIPS 204 (§3.6.3) for a seed stored in place of the private key, so the library has no `keygen_from_seed`
+for SLH-DSA: store sk, whose PK.root also saves the computation of the top XMSS tree. `check_sk` is the assurance of
+private-key possession via regeneration of §3.1: it recomputes PK.root from SK.seed and PK.seed, at about the cost of
+KeyGen and in constant time, and returns `OPENPQC_ERR_INVALID_SECRET_KEY` unless it equals the PK.root that sk holds;
+`check_keypair` also checks a pk kept apart from sk. Neither can check SK.prf, which takes no part in PK: a changed
+SK.prf goes unnoticed, and the signatures made with it, which use a different randomizer R (Algorithm 19, line 3),
+still verify.
+
+Every function returns an `openpqc_status` (`openpqc/common.h`): `OPENPQC_OK` (0) or a negative `OPENPQC_ERR_*` code,
+the same values in every scheme (a failed pair-wise consistency test, `OPENPQC_ERR_PCT`, was -4 in earlier versions of
+this library and is now -6), and is declared `OPENPQC_MUST_CHECK` (`openpqc_slhdsa.h`, Results). A signing call that
+fails (a context string longer than 255 bytes or an unknown pre-hash function, `OPENPQC_ERR_INVALID_ARGUMENT`; no
+randomness, `OPENPQC_ERR_RNG`) writes nothing, `keygen` leaves pk and sk unchanged when there is no randomness and
+zeroes them after a failed pair-wise consistency test, and verifying with a context string over 255 bytes, or with a
+signature of the wrong length, returns `OPENPQC_ERR_INVALID_SIGNATURE`. The library needs nothing of the C++ runtime:
+a C program links it with the C compiler alone (`openpqc_slhdsa.h`, Linking; test `c_link`). In C++ every function
+returns an `openpqc::status` and is `[[nodiscard]]`, and `secret_key` and `seed` are `openpqc::secret<N>`
+(`openpqc/common.hpp`), zeroized when destroyed or moved from.
 
 The pair-wise consistency test that FIPS 140-3 asks of validated modules is compiled into KeyGen when `slhdsa.cpp` is
 built with the definition `OPENPQC_SLHDSA_KEYGEN_PCT` (as `OPENPQC_MLDSA_KEYGEN_PCT` for ML-DSA, which has a CMake
 option of that name; SLH-DSA has none yet, and the tests compile their own object library with the definition). It
 costs one signature and one verification per key pair, 0.6–1.6 s for the s sets on one core. A failing test returns
-`OPENPQC_SLHDSA_ERR_PCT_FAIL` and zeroizes both keys. The GPU backend's KeyGen has no such test.
+`OPENPQC_ERR_PCT` and zeroizes both keys. The GPU backend's KeyGen has no such test.
 
 ## GPU backend (`sycl/`)
 
@@ -210,7 +238,7 @@ byte-identical to the CPU library:
 opqc_sycl_slhdsa *ctx;
 if (opqc_sycl_slhdsa_create(&ctx, OPENPQC_SLHDSA_SHA2_128F, max_batch, -1) != 0)  /* -1: default device */
     return -1;                                        /* no such device, or the set is not in this build */
-uint8_t *pk = opqc_sycl_slhdsa_malloc(ctx, n * SLHDSA_SHA2_128F_PUBLICKEYBYTES);  /* likewise sk, sig, msg, ... */
+uint8_t *pk = opqc_sycl_slhdsa_malloc(ctx, n * OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES);  /* also sk, sig, msg, ... */
 /* message i is msg[offsets[i] .. offsets[i + 1]); one context string for all, in host memory */
 int rc = opqc_sycl_slhdsa_keypair(ctx, pk, sk, n);
 if (rc == 0) rc = opqc_sycl_slhdsa_sign(ctx, sig, msg, offsets, ctxstr, ctxlen, sk, n);          /* hedged; no status */
@@ -250,9 +278,11 @@ device error found by a call, `sync` or `memcpy`, or an earlier exception, after
 `memcpy` returns −2, a call with a buffer that is not USM memory included, and the calls run no more kernels (a NULL
 or unaligned buffer still gives −1); destroy the context and create a new one, and after a sticky CUDA fault, which
 leaves the device unusable for the rest of the process, start a new process; a device error found through the
-context's queue does not end the process) or `OPENPQC_SLHDSA_ERR_RNG_FAIL`. Every function that returns a status is
-declared `OPQC_MUST_CHECK`. The `_derand` and internal functions are testing interfaces as on the CPU (addrnd = NULL:
-the deterministic variant). The calls are asynchronous, except that the randomized calls wait for the copy of each
+context's queue does not end the process) or `OPENPQC_ERR_RNG`. Every function that returns a status is
+declared `OPQC_MUST_CHECK`. The `_derand` and internal functions are testing interfaces, as their CPU counterparts in
+`OpenPQC::testing` are, but are still in the GPU library; on the GPU, addrnd = NULL still gives the deterministic
+variant, which the CPU library has as `*_sign_deterministic` and `*_prehash_sign_deterministic`. The calls are
+asynchronous, except that the randomized calls wait for the copy of each
 launch's coins, and that a refused or failed verification waits for its fail-closed fill.
 
 ### Design
@@ -294,7 +324,7 @@ the copy of each launch's coins in the randomized calls:
   launch's copy: a copy from pageable memory would leave them in a staging buffer of the driver, which the library
   cannot wipe. NVIDIA's driver has nevertheless been seen to keep copies of such small transfers in memory of its own,
   also after `destroy`. `opqc_sycl_slhdsa_free` frees without wiping.
-- **Fail closed.** A verification call first sets every entry of `status` to `OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE`,
+- **Fail closed.** A verification call first sets every entry of `status` to `OPENPQC_ERR_INVALID_SIGNATURE`,
   before its first kernel, and the kernels overwrite each entry they decide, so that an entry no kernel decides (a call
   that fails part way, a device fault that only a later `sync` or `memcpy` reports, a dropped launch) reads as invalid,
   never as a stale 0 of an earlier call. When a call is refused (−1: a context string over 255 bytes, a bad pre-hash
@@ -623,7 +653,9 @@ work.
 
 ## Build
 
-`include/SLH/DSA/CMakeLists.txt` compiles `slhdsa.cpp` once. The objects go into the library `openpqc`
+`include/SLH/DSA/CMakeLists.txt` compiles `slhdsa.cpp` once, and in a build with the tests, benchmarks or examples also
+`slhdsa_testing.cpp`, the testing interfaces, whose objects go into `OpenPQC::testing` and the two libraries for the
+tests below, never into `openpqc`. The objects of `slhdsa.cpp` go into the library `openpqc`
 (`OpenPQC::openpqc`, which applications link; see the top-level README) and into two libraries for the tests and
 benchmarks, built only when they need them and never installed: `openpqc_slhdsa` takes its
 randomness from the operating system, `openpqc_slhdsa_testrng` calls the application's `randombytes()` (tests only;
@@ -646,8 +678,8 @@ The reference's own test programs run against this library and against the unmod
 | `slhdsa_acvp` | NIST ACVP vectors (ACVP-Server v1.1.0.43): keyGen, sigGen (pure and pre-hash with all twelve functions, internal, deterministic and hedged, context strings up to 255 bytes) and sigVer for the twelve sets, 1248 test cases, downloaded on first use into the build directory and pinned by SHA-256 and count; `reference_slhdsa_acvp` and `reference_slhdsa_avx2_acvp` run the same vectors through the reference's C and AVX2 code. Labels `network` and, for the first two, `slow` |
 | `slhdsa_math` | the math core against direct transcriptions of FIPS 205, FIPS 198-1 and RFC 8017: gen_len2, toInt, toByte and base_2b for every length and width used (base_2b for every b = 1 … 25), x mod 2^b for every b = 0 … 64, every member function of Table 1 and ADRSᶜ (Table 3) on random addresses, the integer address of the GPU kernels, HMAC (RFC 4231's test cases and random keys of 0 … 200 bytes) and MGF1 (also against Python's hashlib) |
 | `slhdsa_differential` | this library against the reference (C and AVX2), byte for byte, on all twelve sets: KeyGen from seeds and randomized, deterministic, given-addrnd and hedged signing with messages of 0 … 2999 bytes and context strings of 0 … 255 bytes, HashSLH-DSA with each of the twelve pre-hash functions, the internal functions, and the rejection of tampered signatures (R, SIG_FORS, SIG_HT, message, context, PK.seed, PK.root, lengths, pure against pre-hash), of a flipped bit in each byte of the public key and in each n-byte block of an f-set signature, and of a 256-byte context string; a failing RNG and unknown pre-hash functions. 10,836 checks in 6–7 minutes (label `slow`) |
-| `test_slhdsa_cxx` | the C++ API: round trips, determinism, the domains of SLH-DSA and HashSLH-DSA against Algorithms 22 and 23 written out (the twelve OIDs typed in), 255- and 256-byte context strings and wrong signature lengths at every entry point, the context check of Verify, signing in place, the root comparison of `ht_verify` byte by byte, the key check, and the `ParameterSet` concept |
-| `slhdsa_pct`, `slhdsa_pct_fail` | the library built with the pair-wise consistency test (`OPENPQC_SLHDSA_KEYGEN_PCT`); and built so that the test fails (`OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_SLHDSA_ERR_PCT_FAIL` with both keys zeroized, which shows that the test is compiled in and its result used |
+| `test_slhdsa_cxx` | the C++ API (`openpqc/openpqc.hpp`, and `openpqc/testing.hpp` for the testing interfaces): round trips, determinism, `sign_deterministic` and `prehash_sign_deterministic` against signing with addrnd = PK.seed given, the domains of SLH-DSA and HashSLH-DSA against Algorithms 22 and 23 written out (the twelve OIDs typed in), 255- and 256-byte context strings and wrong signature lengths at every entry point, the context check of Verify, signing in place, the root comparison of `ht_verify` byte by byte, the key checks of §3.1 (`check_sk` and `check_keypair`: a changed byte of SK.seed, PK.seed or PK.root fails them, one of SK.prf does not), and the `ParameterSet` concept |
+| `slhdsa_pct`, `slhdsa_pct_fail` | the library built with the pair-wise consistency test (`OPENPQC_SLHDSA_KEYGEN_PCT`); and built so that the test fails (`OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_ERR_PCT` with both keys zeroized, which shows that the test is compiled in and its result used |
 | `slhdsa_pct_odr` | an application's own KeyGen, compiled without the pair-wise consistency test and linked first, must not take the place of the library's (key generation lives in an inline namespace named after its configuration) |
 | `slhdsa_stack` | no secret intermediate value on the stack after KeyGen, Sign, HashSLH-DSA and Verify (FIPS 205 §3.1): the stack is copied after each call and searched, also in the byte-swapped views of SHA-2's message schedule and for the 4-byte words that SHA-256's and SHA-512's compressions leave (of HMAC and of the pre-hash functions too), for SK.seed, SK.prf, HMAC's key blocks, opt_rand, every unrevealed WOTS+ and FORS value and tree node, the message, its digest and PH(M) (for all twelve pre-hash functions, and the compression words of Core's pre-hash for the six SHA-2 ones); positive controls on the library's own compression path and without the burn (a library built without the burn fails it for every SHA2 set, GCC 16 and Clang 23); the scheme layer's own destruction without the burn; and a fault, not a write beyond the guard page, on thread stacks that are too short (Linux, GCC or Clang; also under AddressSanitizer, with its fake stacks turned off) |
 | `slhdsa_stack_pct` | the same for the library with the pair-wise consistency test, built without `-fstack-clash-protection`: KeyGen's residue and the test's signature for all twelve sets, short stacks for KeyGen, Sign and Verify of SHA2-256f, and in optimized x86-64 builds the compiler's report of the library's frames checked against the header (every frame over a page touched first, every other frame under 3.5 KiB) |
@@ -656,6 +688,11 @@ The reference's own test programs run against this library and against the unmod
 | `core_sha2` | Core's SHA-2, including the word-level compression against the FIPS 180-4 examples and a transcription with the full schedule |
 | `slhdsa_sycl` | the SYCL backend against this library on every SYCL device (labels `gpu` and `slow`, below) |
 | `slhdsa_sycl_faults`, `slhdsa_sycl_faults_sticky` | the SYCL backend when its work fails, by fault injection (white-box: the test compiles the backend's source for SHA2-128f and SHAKE-128f): the fail-closed status after a refusal, a failure part way and launches that never ran, the failed context (also with pageable buffers, which then give −2; a pageable status buffer may afterwards hold only its old entries or invalid ones), the zeroization of the whole workspace after a failure and of verification's sections after a call; `_sticky` with a real CUDA illegal-address fault in a process of its own (label `gpu`; skipped without an NVIDIA device) |
+
+The tests of the C APIs of all three schemes in `tests/` (`c_api_errors`, which also takes the error paths of the
+`_deterministic` functions and of `check_sk` and `check_keypair` and checks that the testing interfaces refuse a NULL
+seed or addrnd, `c_api_must_check`, `runtime_api` and `production_symbols`) are described in
+[ML-KEM's README](../../ML/KEM/README.md#tests).
 
 Running them:
 
@@ -686,7 +723,8 @@ status, memory that is not the context's (pageable host memory for every kind of
 verification and KeyGen function, and the host and device memory of a context on a GPU of another name) refused with
 −1 everywhere but on the OpenMP host device, which uses host memory, and buffers that start inside an allocation
 accepted, the randomized calls checked by the CPU, and two host threads on one context. It also checks that the
-randomized calls draw fresh coins (line `coins` of its output): the keys equal `keypair_derand` of their seeds, the
+randomized calls draw fresh coins (line `coins` of its output): the keys equal those that the CPU's testing interface
+`keygen_derand` (`openpqc/testing.h`) gives for their seeds, the
 seeds are nonzero and pairwise distinct over two calls, no key is the key of all-zero seeds, and the R of hedged
 signatures of one message under one key are pairwise distinct over the four randomized forms and never the R of
 addrnd = 0ⁿ or of the deterministic variant. Usage: `test_slhdsa_sycl [sets:

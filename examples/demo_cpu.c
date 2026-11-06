@@ -20,11 +20,12 @@
  * zero (each header says which, under Results), and must not be used as a key,
  * a shared secret or a signature. So every result is checked, and a section
  * stops at the first call that fails; the headers declare the functions
- * OPQC_MUST_CHECK, and the compiler warns about a call whose result is not
- * used. The functions without _derand take their randomness from the
- * operating system; the only _derand call here is SLH-DSA's deterministic
- * variant (addrnd = NULL), which FIPS 205 permits. The other _derand and
- * _internal functions are for testing (see the headers, Testing interfaces).
+ * OPENPQC_MUST_CHECK, and the compiler warns about a call whose result is not
+ * used. The functions take their randomness from the operating system, except
+ * SLH-DSA's sign_deterministic, the deterministic variant that FIPS 205
+ * permits. The functions that take the randomness from the caller, and the
+ * internal functions, are for testing: they are in another library
+ * (openpqc/testing.h), which this program does not use.
  */
 
 #define _POSIX_C_SOURCE 199309L /* clock_gettime */
@@ -87,42 +88,42 @@ static double now(void) {
     } while (0)
 
 static void demo_mlkem(void) {
-    static uint8_t pk[MLKEM768_PUBLICKEYBYTES], sk[MLKEM768_SECRETKEYBYTES], ct[MLKEM768_CIPHERTEXTBYTES];
-    uint8_t ss_bob[MLKEM_BYTES], ss_alice[MLKEM_BYTES];
+    static uint8_t pk[OPENPQC_MLKEM768_PUBLICKEYBYTES], sk[OPENPQC_MLKEM768_SECRETKEYBYTES], ct[OPENPQC_MLKEM768_CIPHERTEXTBYTES];
+    uint8_t ss_bob[OPENPQC_MLKEM_BYTES], ss_alice[OPENPQC_MLKEM_BYTES];
 
     printf("\n== ML-KEM-768 (FIPS 203): key encapsulation\n");
     printf("  public key %d B, secret key %d B, ciphertext %d B, shared secret %d B\n\n",
-           MLKEM768_PUBLICKEYBYTES, MLKEM768_SECRETKEYBYTES, MLKEM768_CIPHERTEXTBYTES, MLKEM_BYTES);
+           OPENPQC_MLKEM768_PUBLICKEYBYTES, OPENPQC_MLKEM768_SECRETKEYBYTES, OPENPQC_MLKEM768_CIPHERTEXTBYTES, OPENPQC_MLKEM_BYTES);
 
     /* Alice makes a key pair and sends pk to Bob */
-    if (!call_ok(openpqc_mlkem768_keypair(pk, sk), "Alice: keypair(pk, sk)")) return;
+    if (!call_ok(openpqc_mlkem768_keygen(pk, sk), "Alice: keypair(pk, sk)")) return;
     /* Bob encapsulates: a ciphertext for Alice and his copy of a fresh shared secret.
      * enc checks pk first (FIPS 203, Section 7.2): a pk that fails the check gives
-     * OPENPQC_MLKEM_ERR_INVALID_PK, and then ct and ss are not written */
-    if (!call_ok(openpqc_mlkem768_enc(ct, ss_bob, pk), "Bob:   enc(ct, ss, pk), sends ct to Alice")) return;
+     * OPENPQC_ERR_INVALID_PUBLIC_KEY, and then ct and ss are not written */
+    if (!call_ok(openpqc_mlkem768_encaps(ct, ss_bob, pk), "Bob:   enc(ct, ss, pk), sends ct to Alice")) return;
     /* Alice decapsulates the ciphertext with her secret key: her copy of the secret */
-    if (!call_ok(openpqc_mlkem768_dec(ss_alice, ct, sk), "Alice: dec(ss, ct, sk)")) return;
+    if (!call_ok(openpqc_mlkem768_decaps(ss_alice, ct, sk), "Alice: dec(ss, ct, sk)")) return;
     print_hex("Bob's ss", ss_bob, sizeof ss_bob);
     print_hex("Alice's ss", ss_alice, sizeof ss_alice);
-    expect(memcmp(ss_bob, ss_alice, MLKEM_BYTES) == 0, "both have the same shared secret");
+    expect(memcmp(ss_bob, ss_alice, OPENPQC_MLKEM_BYTES) == 0, "both have the same shared secret");
 
     /* A changed ciphertext is not an error: dec returns 0 and an unrelated secret
      * (implicit rejection, FIPS 203, Algorithm 18, lines 7 and 10), so Alice and Bob
      * simply disagree */
     ct[0] ^= 1;
-    if (call_ok(openpqc_mlkem768_dec(ss_alice, ct, sk), "Alice: dec of a changed ciphertext returns 0"))
-        expect(memcmp(ss_bob, ss_alice, MLKEM_BYTES) != 0, "a changed ciphertext gives a different secret");
+    if (call_ok(openpqc_mlkem768_decaps(ss_alice, ct, sk), "Alice: dec of a changed ciphertext returns 0"))
+        expect(memcmp(ss_bob, ss_alice, OPENPQC_MLKEM_BYTES) != 0, "a changed ciphertext gives a different secret");
     ct[0] ^= 1;
 
     printf("\n  speed on one core:\n");
-    SPEED("keygen", openpqc_mlkem768_keypair(pk, sk));
-    SPEED("encaps", openpqc_mlkem768_enc(ct, ss_bob, pk));
-    SPEED("decaps", openpqc_mlkem768_dec(ss_alice, ct, sk));
+    SPEED("keygen", openpqc_mlkem768_keygen(pk, sk));
+    SPEED("encaps", openpqc_mlkem768_encaps(ct, ss_bob, pk));
+    SPEED("decaps", openpqc_mlkem768_decaps(ss_alice, ct, sk));
 }
 
 static void demo_mldsa(void) {
-    static uint8_t pk[MLDSA65_PUBLICKEYBYTES], sk[MLDSA65_SECRETKEYBYTES];
-    static uint8_t sig[MLDSA65_BYTES], sig2[MLDSA65_BYTES];
+    static uint8_t pk[OPENPQC_MLDSA65_PUBLICKEYBYTES], sk[OPENPQC_MLDSA65_SECRETKEYBYTES];
+    static uint8_t sig[OPENPQC_MLDSA65_BYTES], sig2[OPENPQC_MLDSA65_BYTES];
     const uint8_t msg[] = "Pay 100 coins to Bob";
     uint8_t forged[sizeof msg];
     /* The context string (up to 255 bytes, may be empty) separates the uses of one key:
@@ -131,10 +132,10 @@ static void demo_mldsa(void) {
     const size_t mlen = sizeof msg - 1, ctxlen = sizeof ctx - 1;
 
     printf("\n== ML-DSA-65 (FIPS 204): signatures\n");
-    printf("  public key %d B, secret key %d B, signature %d B\n\n", MLDSA65_PUBLICKEYBYTES,
-           MLDSA65_SECRETKEYBYTES, MLDSA65_BYTES);
+    printf("  public key %d B, secret key %d B, signature %d B\n\n", OPENPQC_MLDSA65_PUBLICKEYBYTES,
+           OPENPQC_MLDSA65_SECRETKEYBYTES, OPENPQC_MLDSA65_BYTES);
 
-    if (!call_ok(openpqc_mldsa65_keypair(pk, sk), "keypair(pk, sk)")) return;
+    if (!call_ok(openpqc_mldsa65_keygen(pk, sk), "keypair(pk, sk)")) return;
     if (!call_ok(openpqc_mldsa65_sign(sig, msg, mlen, ctx, ctxlen, sk), "sign(sig, msg, ctx, sk)")) return;
     print_hex("signature", sig, sizeof sig);
     /* 0 is the only result that means "valid" */
@@ -142,10 +143,10 @@ static void demo_mldsa(void) {
 
     memcpy(forged, msg, sizeof msg);
     forged[4] = '9'; /* "Pay 900 coins to Bob" */
-    expect(openpqc_mldsa65_verify(sig, sizeof sig, forged, mlen, ctx, ctxlen, pk) == OPENPQC_MLDSA_ERR_INVALID_SIGNATURE,
+    expect(openpqc_mldsa65_verify(sig, sizeof sig, forged, mlen, ctx, ctxlen, pk) == OPENPQC_ERR_INVALID_SIGNATURE,
            "rejected for a changed message");
     expect(openpqc_mldsa65_verify(sig, sizeof sig, msg, mlen, (const uint8_t *)"other", 5, pk) ==
-               OPENPQC_MLDSA_ERR_INVALID_SIGNATURE,
+               OPENPQC_ERR_INVALID_SIGNATURE,
            "rejected under another context string");
 
     /* sign is hedged: it mixes fresh randomness into each signature, so signing the
@@ -156,14 +157,14 @@ static void demo_mldsa(void) {
                "a second signature differs and is valid too");
 
     printf("\n  speed on one core:\n");
-    SPEED("keygen", openpqc_mldsa65_keypair(pk, sk));
+    SPEED("keygen", openpqc_mldsa65_keygen(pk, sk));
     SPEED("sign", openpqc_mldsa65_sign(sig, msg, mlen, ctx, ctxlen, sk));
     SPEED("verify", openpqc_mldsa65_verify(sig, sizeof sig, msg, mlen, ctx, ctxlen, pk));
 }
 
 static void demo_slhdsa(void) {
-    static uint8_t pk[SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[SLHDSA_SHA2_128F_SECRETKEYBYTES];
-    static uint8_t sig[SLHDSA_SHA2_128F_BYTES], sig2[SLHDSA_SHA2_128F_BYTES];
+    static uint8_t pk[OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES];
+    static uint8_t sig[OPENPQC_SLHDSA_SHA2_128F_BYTES], sig2[OPENPQC_SLHDSA_SHA2_128F_BYTES];
     const uint8_t msg[] = "Pay 100 coins to Bob";
     uint8_t forged[sizeof msg];
     const uint8_t ctx[] = "demo-payments-v1";
@@ -172,10 +173,10 @@ static void demo_slhdsa(void) {
     /* Twelve parameter sets: SHA2 or SHAKE, security 128/192/256, and s (small
      * signatures, slow signing) or f (fast signing, larger signatures) */
     printf("\n== SLH-DSA-SHA2-128f (FIPS 205): signatures from hash functions only\n");
-    printf("  public key %d B, secret key %d B, signature %d B\n\n", SLHDSA_SHA2_128F_PUBLICKEYBYTES,
-           SLHDSA_SHA2_128F_SECRETKEYBYTES, SLHDSA_SHA2_128F_BYTES);
+    printf("  public key %d B, secret key %d B, signature %d B\n\n", OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES,
+           OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES, OPENPQC_SLHDSA_SHA2_128F_BYTES);
 
-    if (!call_ok(openpqc_slhdsa_sha2_128f_keypair(pk, sk), "keypair(pk, sk)")) return;
+    if (!call_ok(openpqc_slhdsa_sha2_128f_keygen(pk, sk), "keypair(pk, sk)")) return;
     if (!call_ok(openpqc_slhdsa_sha2_128f_sign(sig, msg, mlen, ctx, ctxlen, sk), "sign(sig, msg, ctx, sk)")) return;
     print_hex("signature", sig, sizeof sig);
     expect(openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, mlen, ctx, ctxlen, pk) == 0,
@@ -184,24 +185,24 @@ static void demo_slhdsa(void) {
     memcpy(forged, msg, sizeof msg);
     forged[4] = '9';
     expect(openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, forged, mlen, ctx, ctxlen, pk) ==
-               OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+               OPENPQC_ERR_INVALID_SIGNATURE,
            "rejected for a changed message");
     sig[100] ^= 1;
     expect(openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, mlen, ctx, ctxlen, pk) ==
-               OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+               OPENPQC_ERR_INVALID_SIGNATURE,
            "rejected for a changed signature");
     sig[100] ^= 1;
 
-    /* The deterministic variant (addrnd = NULL, for platforms without a random bit
+    /* The deterministic variant (opt_rand = PK.seed, for platforms without a random bit
      * generator, FIPS 205, Section 9.2): the same message gives the same signature */
-    if (call_ok(openpqc_slhdsa_sha2_128f_sign_derand(sig, msg, mlen, ctx, ctxlen, NULL, sk),
-                "sign_derand(sig, msg, ctx, NULL, sk): deterministic") &&
-        call_ok(openpqc_slhdsa_sha2_128f_sign_derand(sig2, msg, mlen, ctx, ctxlen, NULL, sk),
+    if (call_ok(openpqc_slhdsa_sha2_128f_sign_deterministic(sig, msg, mlen, ctx, ctxlen, sk),
+                "sign_deterministic(sig, msg, ctx, sk)") &&
+        call_ok(openpqc_slhdsa_sha2_128f_sign_deterministic(sig2, msg, mlen, ctx, ctxlen, sk),
                 "the same again"))
         expect(memcmp(sig, sig2, sizeof sig) == 0, "deterministic signing repeats itself");
 
     printf("\n  speed on one core:\n");
-    SPEED("keygen", openpqc_slhdsa_sha2_128f_keypair(pk, sk));
+    SPEED("keygen", openpqc_slhdsa_sha2_128f_keygen(pk, sk));
     SPEED("sign", openpqc_slhdsa_sha2_128f_sign(sig, msg, mlen, ctx, ctxlen, sk));
     SPEED("verify", openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, mlen, ctx, ctxlen, pk));
 }

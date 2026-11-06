@@ -64,6 +64,9 @@ foreach(name IN LISTS OPENPQC_TESTS)
     if(name MATCHES "^test_(reduce|mlkem_ntt)$")
         target_link_libraries(${name} PRIVATE openpqc_learning)
     endif()
+    if(name MATCHES "^test_(mlkem|mldsa|slhdsa)_cxx$")   # openpqc/testing.hpp
+        target_link_libraries(${name} PRIVATE OpenPQC::testing)
+    endif()
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     # keep library asserts active even in Release builds
     target_compile_options(${name} PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-UNDEBUG>)
@@ -142,11 +145,25 @@ target_link_libraries(test_c_api_errors PRIVATE openpqc_mlkem_testrng openpqc_ml
 set_target_properties(test_c_api_errors PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
                                                    LINKER_LANGUAGE CXX)
 add_test(NAME c_api_errors COMMAND test_c_api_errors)
+
+# The common API (openpqc/common.h, kem.h, sig.h) and the testing interfaces (openpqc/testing.h):
+#   runtime_api          the algorithm table, and every function that chooses the parameter set at run time
+#                        against the per-set function it stands for (bytes, results, refusals)
+#   production_symbols   the library openpqc contains no testing interface (review finding M13), which
+#                        OpenPQC::testing does (the control)
+add_executable(test_runtime_api test_runtime_api.c)
+target_link_libraries(test_runtime_api PRIVATE OpenPQC::testing openpqc_strict_warnings)
+set_target_properties(test_runtime_api PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                                  LINKER_LANGUAGE C)
+add_test(NAME runtime_api COMMAND test_runtime_api)
+add_test(NAME production_symbols
+         COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DLIBRARY=$<TARGET_FILE:openpqc>
+                 -DTESTING=$<TARGET_FILE:openpqc_testing> -P ${CMAKE_CURRENT_SOURCE_DIR}/production_symbols.cmake)
 if(Python3_Interpreter_FOUND)
     add_test(NAME c_api_must_check
              COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_must_check.py
                      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/must_check
-                     $<TARGET_FILE:openpqc>)
+                     $<TARGET_FILE:openpqc> $<TARGET_FILE:openpqc_testing>)
     set_tests_properties(c_api_must_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
 
@@ -203,6 +220,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/consumer.cmake)
     set_tests_properties(install_consumer PROPERTIES LABELS install TIMEOUT 900 RUN_SERIAL TRUE)
 endif()
+
+# The compiled files of each scheme, the C API and its testing interfaces (openpqc/testing.h), for the tests that
+# compile them with definitions or options of their own (pair-wise consistency test, constant time, stack depth)
+set(OPENPQC_MLKEM_SOURCES ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp
+                          ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem_testing.cpp)
+set(OPENPQC_MLDSA_SOURCES ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp
+                          ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa_testing.cpp)
+set(OPENPQC_SLHDSA_SOURCES ${PROJECT_SOURCE_DIR}/include/SLH/DSA/slhdsa.cpp
+                           ${PROJECT_SOURCE_DIR}/include/SLH/DSA/slhdsa_testing.cpp)
 
 # ML-KEM (OpenPQC and the reference) and Core
 add_subdirectory(ML-KEM)

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "ML/KEM/openpqc_mlkem.h"
+#include "openpqc/testing.h"
 
 extern "C" {
 // the reference's API (reference/mlkem-native, namespace prefix ref_mlkem)
@@ -52,16 +53,31 @@ struct Api {
     int (*dec)(uint8_t*, const uint8_t*, const uint8_t*);
 };
 
-#define API(impl, prefix, N)                                                                         \
-    Api {                                                                                            \
-        impl, N, MLKEM##N##_PUBLICKEYBYTES, MLKEM##N##_SECRETKEYBYTES, MLKEM##N##_CIPHERTEXTBYTES, \
-                prefix##N##_keypair_derand, prefix##N##_enc_derand, prefix##N##_dec              \
+// KeyGen from the seed d || z, Encaps with m given (a testing interface, OpenPQC::testing) and Decaps: the same
+// inputs for both implementations, without the cost of the operating system's RNG
+#define OPENPQC(N)                                                                                        \
+    Api {                                                                                                 \
+        "openpqc", N, OPENPQC_MLKEM##N##_PUBLICKEYBYTES, OPENPQC_MLKEM##N##_SECRETKEYBYTES,               \
+                OPENPQC_MLKEM##N##_CIPHERTEXTBYTES,                                                       \
+                [](uint8_t* pk, uint8_t* sk, const uint8_t* coins) {                                      \
+                    return static_cast<int>(openpqc_mlkem##N##_keygen_from_seed(pk, sk, coins));          \
+                },                                                                                        \
+                [](uint8_t* ct, uint8_t* ss, const uint8_t* pk, const uint8_t* coins) {                   \
+                    return static_cast<int>(openpqc_testing_mlkem##N##_encaps_derand(ct, ss, pk, coins)); \
+                },                                                                                        \
+                [](uint8_t* ss, const uint8_t* ct, const uint8_t* sk) {                                   \
+                    return static_cast<int>(openpqc_mlkem##N##_decaps(ss, ct, sk));                       \
+                }                                                                                         \
+    }
+#define REFERENCE(N)                                                                                      \
+    Api {                                                                                                 \
+        "reference", N, OPENPQC_MLKEM##N##_PUBLICKEYBYTES, OPENPQC_MLKEM##N##_SECRETKEYBYTES,             \
+                OPENPQC_MLKEM##N##_CIPHERTEXTBYTES, ref_mlkem##N##_keypair_derand,                        \
+                ref_mlkem##N##_enc_derand, ref_mlkem##N##_dec                                             \
     }
 
 const Api apis[] = {
-        API("openpqc", openpqc_mlkem, 512),   API("openpqc", openpqc_mlkem, 768),
-        API("openpqc", openpqc_mlkem, 1024),  API("reference", ref_mlkem, 512),
-        API("reference", ref_mlkem, 768),     API("reference", ref_mlkem, 1024),
+        OPENPQC(512), OPENPQC(768), OPENPQC(1024), REFERENCE(512), REFERENCE(768), REFERENCE(1024),
 };
 
 // Run op() on `threads` threads for `seconds`; returns the total number of operations.

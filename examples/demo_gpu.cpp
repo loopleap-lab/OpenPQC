@@ -48,6 +48,7 @@
 #include "Core/opqc_platform.h"
 #include "Core/sycl/openpqc_sycl.h"
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/testing.h"
 #include "ML/DSA/sycl/openpqc_mldsa_sycl.h"
 #include "ML/KEM/openpqc_mlkem.h"
 #include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
@@ -198,8 +199,8 @@ void compare(const std::string& name, std::size_t n, const CpuOp& cpu_op, const 
 // ---- ML-KEM-768 ----------------------------------------------------------------------------------------------
 
 void demo_mlkem(int device) {
-    constexpr std::size_t n = mlkem_batch, PK = MLKEM768_PUBLICKEYBYTES, SK = MLKEM768_SECRETKEYBYTES,
-                          CT = MLKEM768_CIPHERTEXTBYTES, SS = MLKEM_BYTES;
+    constexpr std::size_t n = mlkem_batch, PK = OPENPQC_MLKEM768_PUBLICKEYBYTES, SK = OPENPQC_MLKEM768_SECRETKEYBYTES,
+                          CT = OPENPQC_MLKEM768_CIPHERTEXTBYTES, SS = OPENPQC_MLKEM_BYTES;
 
     // A context: the parameter set (512, 768, 1024), the largest batch per call, the device
     opqc_sycl_mlkem* raw = nullptr;
@@ -209,8 +210,8 @@ void demo_mlkem(int device) {
     std::printf("\n== ML-KEM-768 on %s: batches of %zu\n", opqc_sycl_mlkem_device_name(gpu), n);
 
     // Host buffers: the n operations back to back, in the byte formats of FIPS 203
-    const Bytes coins_kg = random_bytes(2 * MLKEM_SYMBYTES * n);  // d || z of each key pair
-    const Bytes coins_enc = random_bytes(MLKEM_SYMBYTES * n);     // m of each encapsulation
+    const Bytes coins_kg = random_bytes(2 * OPENPQC_MLKEM_SYMBYTES * n);  // d || z of each key pair
+    const Bytes coins_enc = random_bytes(OPENPQC_MLKEM_SYMBYTES * n);     // m of each encapsulation
     Bytes pk(PK * n), sk(SK * n), ct(CT * n), ss_enc(SS * n), ss_dec(SS * n);
     std::vector<std::int32_t> status(n);
 
@@ -225,14 +226,14 @@ void demo_mlkem(int device) {
     // made: the _async copies and the operations are queued, and a plain memcpy waits for
     // everything before it.
     const auto keygen = [&](std::size_t m) {
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_coins_kg, coins_kg.data(), 2 * MLKEM_SYMBYTES * m), "copy");
+        check(opqc_sycl_mlkem_memcpy_async(gpu, d_coins_kg, coins_kg.data(), 2 * OPENPQC_MLKEM_SYMBYTES * m), "copy");
         check(opqc_sycl_mlkem_keypair_derand(gpu, d_pk, d_sk, d_coins_kg, m), "keypair");
         check(opqc_sycl_mlkem_memcpy_async(gpu, pk.data(), d_pk, PK * m), "copy");
         check(opqc_sycl_mlkem_memcpy(gpu, sk.data(), d_sk, SK * m), "copy");
     };
     const auto encaps = [&](std::size_t m) {
         check(opqc_sycl_mlkem_memcpy_async(gpu, d_pk, pk.data(), PK * m), "copy");
-        check(opqc_sycl_mlkem_memcpy_async(gpu, d_coins_enc, coins_enc.data(), MLKEM_SYMBYTES * m), "copy");
+        check(opqc_sycl_mlkem_memcpy_async(gpu, d_coins_enc, coins_enc.data(), OPENPQC_MLKEM_SYMBYTES * m), "copy");
         check(opqc_sycl_mlkem_enc_derand(gpu, d_ct, d_ss_enc, d_pk, d_coins_enc, d_status, m), "enc");
         check(opqc_sycl_mlkem_memcpy_async(gpu, ct.data(), d_ct, CT * m), "copy");
         check(opqc_sycl_mlkem_memcpy(gpu, ss_enc.data(), d_ss_enc, SS * m), "copy");
@@ -257,8 +258,8 @@ void demo_mlkem(int device) {
     bool identical = true;
     for (const std::size_t i : sample(n)) {
         std::uint8_t cpk[PK], csk[SK], cct[CT], css[SS];
-        check(openpqc_mlkem768_keypair_derand(cpk, csk, &coins_kg[2 * MLKEM_SYMBYTES * i]), "keypair_derand");
-        check(openpqc_mlkem768_enc_derand(cct, css, cpk, &coins_enc[MLKEM_SYMBYTES * i]), "enc_derand");
+        check(openpqc_mlkem768_keygen_from_seed(cpk, csk, &coins_kg[2 * OPENPQC_MLKEM_SYMBYTES * i]), "keypair_derand");
+        check(openpqc_testing_mlkem768_encaps_derand(cct, css, cpk, &coins_enc[OPENPQC_MLKEM_SYMBYTES * i]), "enc_derand");
         identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
                     same(cct, &ct[CT * i], CT) && same(css, &ss_enc[SS * i], SS);
     }
@@ -267,21 +268,21 @@ void demo_mlkem(int device) {
     // The same operations on the CPU, for the comparison
     std::printf("  measuring the speed on the CPU and the GPU...\n");
     compare("ML-KEM-768 keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_mlkem768_keypair_derand(out, out + PK, &coins_kg[2 * MLKEM_SYMBYTES * i]);
+        return openpqc_mlkem768_keygen_from_seed(out, out + PK, &coins_kg[2 * OPENPQC_MLKEM_SYMBYTES * i]);
     }, keygen);
     compare("ML-KEM-768 encaps", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_mlkem768_enc_derand(out, out + CT, &pk[PK * i], &coins_enc[MLKEM_SYMBYTES * i]);
+        return openpqc_testing_mlkem768_encaps_derand(out, out + CT, &pk[PK * i], &coins_enc[OPENPQC_MLKEM_SYMBYTES * i]);
     }, encaps);
     compare("ML-KEM-768 decaps", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_mlkem768_dec(out, &ct[CT * i], &sk[SK * i]);
+        return openpqc_mlkem768_decaps(out, &ct[CT * i], &sk[SK * i]);
     }, decaps);
 }
 
 // ---- ML-DSA-65 -----------------------------------------------------------------------------------------------
 
 void demo_mldsa(int device) {
-    constexpr std::size_t n = mldsa_batch, PK = MLDSA65_PUBLICKEYBYTES, SK = MLDSA65_SECRETKEYBYTES,
-                          SIG = MLDSA65_BYTES;
+    constexpr std::size_t n = mldsa_batch, PK = OPENPQC_MLDSA65_PUBLICKEYBYTES, SK = OPENPQC_MLDSA65_SECRETKEYBYTES,
+                          SIG = OPENPQC_MLDSA65_BYTES;
 
     opqc_sycl_mldsa* raw = nullptr;
     check(opqc_sycl_mldsa_create(&raw, 65, n, device), "opqc_sycl_mldsa_create");
@@ -289,8 +290,8 @@ void demo_mldsa(int device) {
     opqc_sycl_mldsa* gpu = context.get();
     std::printf("\n== ML-DSA-65 on %s: batches of %zu\n", opqc_sycl_mldsa_device_name(gpu), n);
 
-    const Bytes seeds = random_bytes(MLDSA_SEEDBYTES * n);  // xi of each key pair
-    const Bytes rnd = random_bytes(MLDSA_RNDBYTES * n);     // the randomness of each signature
+    const Bytes seeds = random_bytes(OPENPQC_MLDSA_SEEDBYTES * n);  // xi of each key pair
+    const Bytes rnd = random_bytes(OPENPQC_MLDSA_RNDBYTES * n);     // the randomness of each signature
     const Bytes msg = random_bytes(msg_bytes * n);          // n messages of 32 bytes, signer i signs message i
     const std::vector<std::uint64_t> offsets = message_offsets(n);
     Bytes pk(PK * n), sk(SK * n), sig(SIG * n);
@@ -303,7 +304,7 @@ void demo_mldsa(int device) {
     auto* d_status = reinterpret_cast<std::int32_t*>(dev.get(4 * n));
 
     const auto keygen = [&](std::size_t m) {
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_seeds, seeds.data(), MLDSA_SEEDBYTES * m), "copy");
+        check(opqc_sycl_mldsa_memcpy_async(gpu, d_seeds, seeds.data(), OPENPQC_MLDSA_SEEDBYTES * m), "copy");
         check(opqc_sycl_mldsa_keypair_derand(gpu, d_pk, d_sk, d_seeds, m), "keypair");
         check(opqc_sycl_mldsa_memcpy_async(gpu, pk.data(), d_pk, PK * m), "copy");
         check(opqc_sycl_mldsa_memcpy(gpu, sk.data(), d_sk, SK * m), "copy");
@@ -312,7 +313,7 @@ void demo_mldsa(int device) {
     const auto sign = [&](std::size_t m) {
         check(opqc_sycl_mldsa_memcpy_async(gpu, d_msg, msg.data(), msg_bytes * m), "copy");
         check(opqc_sycl_mldsa_memcpy_async(gpu, d_offsets, offsets.data(), 8 * (m + 1)), "copy");
-        check(opqc_sycl_mldsa_memcpy_async(gpu, d_rnd, rnd.data(), MLDSA_RNDBYTES * m), "copy");
+        check(opqc_sycl_mldsa_memcpy_async(gpu, d_rnd, rnd.data(), OPENPQC_MLDSA_RNDBYTES * m), "copy");
         check(opqc_sycl_mldsa_memcpy_async(gpu, d_sk, sk.data(), SK * m), "copy");
         check(opqc_sycl_mldsa_sign_derand(gpu, d_sig, d_msg, d_offsets, ctxstr, ctxlen, d_rnd, d_sk, nullptr, m),
               "sign");
@@ -335,9 +336,9 @@ void demo_mldsa(int device) {
     bool identical = true, valid = true;
     for (const std::size_t i : sample(n)) {
         std::uint8_t cpk[PK], csk[SK], csig[SIG];
-        check(openpqc_mldsa65_keypair_derand(cpk, csk, &seeds[MLDSA_SEEDBYTES * i]), "keypair_derand");
-        check(openpqc_mldsa65_sign_derand(csig, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                          &rnd[MLDSA_RNDBYTES * i], csk),
+        check(openpqc_mldsa65_keygen_from_seed(cpk, csk, &seeds[OPENPQC_MLDSA_SEEDBYTES * i]), "keypair_derand");
+        check(openpqc_testing_mldsa65_sign_derand(csig, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+                                          &rnd[OPENPQC_MLDSA_RNDBYTES * i], csk),
               "sign_derand");
         identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
                     same(csig, &sig[SIG * i], SIG);
@@ -349,11 +350,11 @@ void demo_mldsa(int device) {
 
     std::printf("  measuring the speed on the CPU and the GPU...\n");
     compare("ML-DSA-65 keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_mldsa65_keypair_derand(out, out + PK, &seeds[MLDSA_SEEDBYTES * i]);
+        return openpqc_mldsa65_keygen_from_seed(out, out + PK, &seeds[OPENPQC_MLDSA_SEEDBYTES * i]);
     }, keygen);
     compare("ML-DSA-65 sign", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_mldsa65_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
-                                           &rnd[MLDSA_RNDBYTES * i], &sk[SK * i]);
+        return openpqc_testing_mldsa65_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+                                           &rnd[OPENPQC_MLDSA_RNDBYTES * i], &sk[SK * i]);
     }, sign);
     compare("ML-DSA-65 verify", n, [&](std::size_t i, std::uint8_t*) {
         return openpqc_mldsa65_verify(&sig[SIG * i], SIG, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
@@ -364,9 +365,9 @@ void demo_mldsa(int device) {
 // ---- SLH-DSA-SHA2-128f ---------------------------------------------------------------------------------------
 
 void demo_slhdsa(int device) {
-    constexpr std::size_t n = slhdsa_batch, PK = SLHDSA_SHA2_128F_PUBLICKEYBYTES,
-                          SK = SLHDSA_SHA2_128F_SECRETKEYBYTES, SIG = SLHDSA_SHA2_128F_BYTES,
-                          SEED = SLHDSA_SHA2_128F_SEEDBYTES, RND = SLHDSA_SHA2_128F_RNDBYTES;
+    constexpr std::size_t n = slhdsa_batch, PK = OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES,
+                          SK = OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES, SIG = OPENPQC_SLHDSA_SHA2_128F_BYTES,
+                          SEED = OPENPQC_SLHDSA_SHA2_128F_SEEDBYTES, RND = OPENPQC_SLHDSA_SHA2_128F_RNDBYTES;
 
     // The parameter set is an OPENPQC_SLHDSA_* id. A build may leave sets out of the GPU
     // backend (OPENPQC_SLHDSA_SYCL_SETS); creating a context for one of those fails.
@@ -425,8 +426,8 @@ void demo_slhdsa(int device) {
     Bytes csig(SIG);
     for (const std::size_t i : sample(n)) {
         std::uint8_t cpk[PK], csk[SK];
-        check(openpqc_slhdsa_sha2_128f_keypair_derand(cpk, csk, &seeds[SEED * i]), "keypair_derand");
-        check(openpqc_slhdsa_sha2_128f_sign_derand(csig.data(), &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+        check(openpqc_testing_slhdsa_sha2_128f_keygen_derand(cpk, csk, &seeds[SEED * i]), "keypair_derand");
+        check(openpqc_testing_slhdsa_sha2_128f_sign_derand(csig.data(), &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
                                                    &addrnd[RND * i], csk),
               "sign_derand");
         identical = identical && same(cpk, &pk[PK * i], PK) && same(csk, &sk[SK * i], SK) &&
@@ -439,10 +440,10 @@ void demo_slhdsa(int device) {
 
     std::printf("  measuring the speed on the CPU and the GPU...\n");
     compare("SLH-DSA-SHA2-128f keygen", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_slhdsa_sha2_128f_keypair_derand(out, out + PK, &seeds[SEED * i]);
+        return openpqc_testing_slhdsa_sha2_128f_keygen_derand(out, out + PK, &seeds[SEED * i]);
     }, keygen);
     compare("SLH-DSA-SHA2-128f sign", n, [&](std::size_t i, std::uint8_t* out) {
-        return openpqc_slhdsa_sha2_128f_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
+        return openpqc_testing_slhdsa_sha2_128f_sign_derand(out, &msg[msg_bytes * i], msg_bytes, ctxstr, ctxlen,
                                                     &addrnd[RND * i], &sk[SK * i]);
     }, sign);
     compare("SLH-DSA-SHA2-128f verify", n, [&](std::size_t i, std::uint8_t*) {

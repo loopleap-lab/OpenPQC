@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include "ML/KEM/openpqc_mlkem.h"
+#include "openpqc/testing.h"
 
 #define TRIALS 32
 
@@ -56,22 +57,22 @@ typedef struct {
 } level_t;
 
 static const level_t levels[] = {
-    {"ML-KEM-512", MLKEM512_PUBLICKEYBYTES, MLKEM512_SECRETKEYBYTES, MLKEM512_CIPHERTEXTBYTES,
-     openpqc_mlkem512_keypair_derand, openpqc_mlkem512_keypair, openpqc_mlkem512_enc_derand, openpqc_mlkem512_enc,
-     openpqc_mlkem512_dec},
-    {"ML-KEM-768", MLKEM768_PUBLICKEYBYTES, MLKEM768_SECRETKEYBYTES, MLKEM768_CIPHERTEXTBYTES,
-     openpqc_mlkem768_keypair_derand, openpqc_mlkem768_keypair, openpqc_mlkem768_enc_derand, openpqc_mlkem768_enc,
-     openpqc_mlkem768_dec},
-    {"ML-KEM-1024", MLKEM1024_PUBLICKEYBYTES, MLKEM1024_SECRETKEYBYTES, MLKEM1024_CIPHERTEXTBYTES,
-     openpqc_mlkem1024_keypair_derand, openpqc_mlkem1024_keypair, openpqc_mlkem1024_enc_derand, openpqc_mlkem1024_enc,
-     openpqc_mlkem1024_dec},
+    {"ML-KEM-512", OPENPQC_MLKEM512_PUBLICKEYBYTES, OPENPQC_MLKEM512_SECRETKEYBYTES, OPENPQC_MLKEM512_CIPHERTEXTBYTES,
+     openpqc_mlkem512_keygen_from_seed, openpqc_mlkem512_keygen, openpqc_testing_mlkem512_encaps_derand, openpqc_mlkem512_encaps,
+     openpqc_mlkem512_decaps},
+    {"ML-KEM-768", OPENPQC_MLKEM768_PUBLICKEYBYTES, OPENPQC_MLKEM768_SECRETKEYBYTES, OPENPQC_MLKEM768_CIPHERTEXTBYTES,
+     openpqc_mlkem768_keygen_from_seed, openpqc_mlkem768_keygen, openpqc_testing_mlkem768_encaps_derand, openpqc_mlkem768_encaps,
+     openpqc_mlkem768_decaps},
+    {"ML-KEM-1024", OPENPQC_MLKEM1024_PUBLICKEYBYTES, OPENPQC_MLKEM1024_SECRETKEYBYTES, OPENPQC_MLKEM1024_CIPHERTEXTBYTES,
+     openpqc_mlkem1024_keygen_from_seed, openpqc_mlkem1024_keygen, openpqc_testing_mlkem1024_encaps_derand, openpqc_mlkem1024_encaps,
+     openpqc_mlkem1024_decaps},
 };
 
 /* TRIALS outputs per kind, and the output of the _derand call for all-zero coins at index TRIALS */
-static uint8_t ek[TRIALS + 1][MLKEM1024_PUBLICKEYBYTES];
-static uint8_t dk[TRIALS + 1][MLKEM1024_SECRETKEYBYTES];
-static uint8_t ct[TRIALS + 1][MLKEM1024_CIPHERTEXTBYTES];
-static uint8_t ss[TRIALS + 1][MLKEM_BYTES];
+static uint8_t ek[TRIALS + 1][OPENPQC_MLKEM1024_PUBLICKEYBYTES];
+static uint8_t dk[TRIALS + 1][OPENPQC_MLKEM1024_SECRETKEYBYTES];
+static uint8_t ct[TRIALS + 1][OPENPQC_MLKEM1024_CIPHERTEXTBYTES];
+static uint8_t ss[TRIALS + 1][OPENPQC_MLKEM_BYTES];
 
 static int errors = 0;
 
@@ -97,7 +98,7 @@ static int repeats(const uint8_t *rows, size_t stride, size_t offset, size_t len
 /* Returns the number of kinds of output that repeated (ek, dk, z, ct, K: 0 to 5). */
 static int check_level(const level_t *L)
 {
-    static const uint8_t zero[2 * MLKEM_SYMBYTES] = {0};
+    static const uint8_t zero[2 * OPENPQC_MLKEM_SYMBYTES] = {0};
     int repeated = 0;
 
     for (size_t i = 0; i < TRIALS; i++) {
@@ -111,7 +112,7 @@ static int check_level(const level_t *L)
     } keys[] = {
         {"ek", &ek[0][0], sizeof ek[0], 0, L->pk_bytes},
         {"dk", &dk[0][0], sizeof dk[0], 0, L->sk_bytes},
-        {"z (the end of dk)", &dk[0][0], sizeof dk[0], L->sk_bytes - MLKEM_SYMBYTES, MLKEM_SYMBYTES},
+        {"z (the end of dk)", &dk[0][0], sizeof dk[0], L->sk_bytes - OPENPQC_MLKEM_SYMBYTES, OPENPQC_MLKEM_SYMBYTES},
     };
     for (size_t k = 0; k < sizeof keys / sizeof keys[0]; k++) {
         const int n = repeats(keys[k].rows, keys[k].stride, keys[k].offset, keys[k].len);
@@ -123,13 +124,13 @@ static int check_level(const level_t *L)
 
     /* encapsulations to the first ek */
     for (size_t i = 0; i < TRIALS; i++) {
-        uint8_t ss2[MLKEM_BYTES];
+        uint8_t ss2[OPENPQC_MLKEM_BYTES];
         if (L->enc(ct[i], ss[i], ek[0]) != 0) fail(L, "enc");
-        if (L->dec(ss2, ct[i], dk[0]) != 0 || memcmp(ss2, ss[i], MLKEM_BYTES) != 0) fail(L, "dec");
+        if (L->dec(ss2, ct[i], dk[0]) != 0 || memcmp(ss2, ss[i], OPENPQC_MLKEM_BYTES) != 0) fail(L, "dec");
     }
     if (L->enc_derand(ct[TRIALS], ss[TRIALS], ek[0], zero) != 0) fail(L, "enc_derand");
     const int n_ct = repeats(&ct[0][0], sizeof ct[0], 0, L->ct_bytes);
-    const int n_ss = repeats(&ss[0][0], sizeof ss[0], 0, MLKEM_BYTES);
+    const int n_ss = repeats(&ss[0][0], sizeof ss[0], 0, OPENPQC_MLKEM_BYTES);
     if (n_ct) {
         printf("%s: enc: ciphertext repeated %d times in %d calls\n", L->name, n_ct, TRIALS);
         repeated++;

@@ -62,44 +62,41 @@ typedef enum { PURE, PREHASH, INTERNAL } interface_kind;
 #ifndef OPENPQC_ACVP_REFERENCE
 
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/common.h"
+#include "openpqc/sig.h"
+#include "openpqc/testing.h"
 
 #define CHECK_SIZES(NAME, s, S, N, SIG) \
-    _Static_assert(SLHDSA_##S##_N == (N) && SLHDSA_##S##_BYTES == (SIG), NAME ": C API differs from Table 2");
+    _Static_assert(OPENPQC_SLHDSA_##S##_N == (N) && OPENPQC_SLHDSA_##S##_BYTES == (SIG), NAME ": C API differs from Table 2");
 PARAMETER_SETS(CHECK_SIZES)
 
-/* The functions of one parameter set */
+/* A parameter set: OpenPQC's functions are those of the runtime-selected APIs (openpqc/sig.h, openpqc/testing.h)
+ * for the openpqc_alg of the ACVP name (openpqc_alg_from_name) */
 typedef struct {
     const char *name;
     size_t n, sig;
-    int (*keypair_derand)(uint8_t *, uint8_t *, const uint8_t *);
-    int (*sign_derand)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, const uint8_t *);
-    int (*verify)(const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *);
-    int (*prehash_sign_derand)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, int, const uint8_t *,
-                               const uint8_t *);
-    int (*prehash_verify)(const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, size_t, int,
-                          const uint8_t *);
-    int (*sign_internal)(uint8_t *, const uint8_t *, size_t, const uint8_t *, const uint8_t *);
-    int (*verify_internal)(const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *);
 } parameter_set;
 
-#define ENTRY(NAME, s, S, N, SIG)                                                                         \
-    {NAME,                                   N,                                                           \
-     SIG,                                    openpqc_slhdsa_##s##_keypair_derand,                        \
-     openpqc_slhdsa_##s##_sign_derand,       openpqc_slhdsa_##s##_verify,                                \
-     openpqc_slhdsa_##s##_prehash_sign_derand, openpqc_slhdsa_##s##_prehash_verify,                      \
-     openpqc_slhdsa_##s##_sign_internal,     openpqc_slhdsa_##s##_verify_internal},
+#define ENTRY(NAME, s, S, N, SIG) {NAME, N, SIG},
 static const parameter_set parameter_sets[] = {PARAMETER_SETS(ENTRY)};
+
+static openpqc_alg alg_of(const parameter_set *P)
+{
+    openpqc_alg alg = OPENPQC_SLH_DSA_SHA2_128S;
+    if (openpqc_alg_from_name(P->name, &alg) != OPENPQC_OK) abort(); /* check_parameter_sets ran first */
+    return alg;
+}
 
 /* The HashSLH-DSA pre-hash function named as in the ACVP vectors (0: unknown) */
 static int prehash_of(const char *name)
 {
     static const struct { const char *name; int ph; } table[] = {
-        {"SHA2-224", OPENPQC_SLHDSA_PREHASH_SHA2_224},         {"SHA2-256", OPENPQC_SLHDSA_PREHASH_SHA2_256},
-        {"SHA2-384", OPENPQC_SLHDSA_PREHASH_SHA2_384},         {"SHA2-512", OPENPQC_SLHDSA_PREHASH_SHA2_512},
-        {"SHA2-512/224", OPENPQC_SLHDSA_PREHASH_SHA2_512_224}, {"SHA2-512/256", OPENPQC_SLHDSA_PREHASH_SHA2_512_256},
-        {"SHA3-224", OPENPQC_SLHDSA_PREHASH_SHA3_224},         {"SHA3-256", OPENPQC_SLHDSA_PREHASH_SHA3_256},
-        {"SHA3-384", OPENPQC_SLHDSA_PREHASH_SHA3_384},         {"SHA3-512", OPENPQC_SLHDSA_PREHASH_SHA3_512},
-        {"SHAKE-128", OPENPQC_SLHDSA_PREHASH_SHAKE128},        {"SHAKE-256", OPENPQC_SLHDSA_PREHASH_SHAKE256},
+        {"SHA2-224", OPENPQC_PREHASH_SHA2_224},         {"SHA2-256", OPENPQC_PREHASH_SHA2_256},
+        {"SHA2-384", OPENPQC_PREHASH_SHA2_384},         {"SHA2-512", OPENPQC_PREHASH_SHA2_512},
+        {"SHA2-512/224", OPENPQC_PREHASH_SHA2_512_224}, {"SHA2-512/256", OPENPQC_PREHASH_SHA2_512_256},
+        {"SHA3-224", OPENPQC_PREHASH_SHA3_224},         {"SHA3-256", OPENPQC_PREHASH_SHA3_256},
+        {"SHA3-384", OPENPQC_PREHASH_SHA3_384},         {"SHA3-512", OPENPQC_PREHASH_SHA3_512},
+        {"SHAKE-128", OPENPQC_PREHASH_SHAKE128},        {"SHAKE-256", OPENPQC_PREHASH_SHAKE256},
     };
     for (size_t i = 0; i < sizeof table / sizeof table[0]; i++)
         if (strcmp(name, table[i].name) == 0) return table[i].ph;
@@ -109,28 +106,48 @@ static int prehash_of(const char *name)
 /* seed = SK.seed || SK.prf || PK.seed */
 static int keygen(const parameter_set *P, uint8_t *pk, uint8_t *sk, const uint8_t *seed)
 {
-    return P->keypair_derand(pk, sk, seed);
+    return openpqc_testing_sig_keygen_derand(alg_of(P), pk, sk, seed);
 }
 
-/* addrnd NULL: the deterministic variant */
+/* addrnd NULL: the deterministic variant, opt_rand = PK.seed (Algorithm 19, line 2): OPENPQC_SIGN_DETERMINISTIC for
+ * the external interfaces, PK.seed (the bytes sk + 2n) given as addrnd for the internal one */
 static int sign(const parameter_set *P, uint8_t *sig, interface_kind I, int ph, const uint8_t *m, size_t mlen,
                 const uint8_t *ctx, size_t ctxlen, const uint8_t *addrnd, const uint8_t *sk)
 {
-    if (I == INTERNAL) return P->sign_internal(sig, m, mlen, addrnd, sk);
-    if (I == PREHASH) return P->prehash_sign_derand(sig, m, mlen, ctx, ctxlen, ph, addrnd, sk);
-    return P->sign_derand(sig, m, mlen, ctx, ctxlen, addrnd, sk);
+    const openpqc_alg alg = alg_of(P);
+    if (I == INTERNAL) return openpqc_testing_sig_sign_internal(alg, sig, m, mlen, addrnd ? addrnd : sk + 2 * P->n, sk);
+    const openpqc_sign_opts opts = {ctx, ctxlen, I == PREHASH ? ph : 0, addrnd ? 0u : OPENPQC_SIGN_DETERMINISTIC};
+    if (!addrnd) return openpqc_sig_sign(alg, sig, m, mlen, &opts, sk);
+    return openpqc_testing_sig_sign_derand(alg, sig, m, mlen, &opts, addrnd, sk);
 }
 
 /* 0 for a valid signature */
 static int verify(const parameter_set *P, const uint8_t *sig, size_t siglen, interface_kind I, int ph,
                   const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *pk)
 {
-    if (I == INTERNAL) return P->verify_internal(sig, siglen, m, mlen, pk);
-    if (I == PREHASH) return P->prehash_verify(sig, siglen, m, mlen, ctx, ctxlen, ph, pk);
-    return P->verify(sig, siglen, m, mlen, ctx, ctxlen, pk);
+    const openpqc_alg alg = alg_of(P);
+    if (I == INTERNAL) return openpqc_testing_sig_verify_internal(alg, sig, siglen, m, mlen, pk);
+    const openpqc_sign_opts opts = {ctx, ctxlen, I == PREHASH ? ph : 0, 0};
+    return openpqc_sig_verify(alg, sig, siglen, m, mlen, &opts, pk);
 }
 
-static int check_parameter_sets(void) { return 1; }
+/* every ACVP name is an algorithm of this build, with the sizes of Table 2 */
+static int check_parameter_sets(void)
+{
+    for (size_t i = 0; i < sizeof parameter_sets / sizeof parameter_sets[0]; i++) {
+        const parameter_set *P = &parameter_sets[i];
+        openpqc_alg alg;
+        const openpqc_alg_info *info;
+        if (openpqc_alg_from_name(P->name, &alg) != OPENPQC_OK || (info = openpqc_alg_info_get(alg)) == NULL ||
+            info->kind != OPENPQC_KIND_SIGNATURE || info->public_key_bytes != 2 * P->n ||
+            info->secret_key_bytes != 4 * P->n || info->signature_bytes != P->sig ||
+            info->seed_bytes != 3 * P->n || info->randomness_bytes != P->n) {
+            fprintf(stderr, "%s: OpenPQC's algorithm table differs from FIPS 205, Table 2\n", P->name);
+            return 0;
+        }
+    }
+    return 1;
+}
 
 /* ====================================================================== reference */
 #else

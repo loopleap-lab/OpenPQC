@@ -33,7 +33,7 @@
  * -O3, on an i7-11370H shared with other jobs):
  *   - the six f sets (one SHA2 and one SHAKE set per security category):
  *     KeyGen; hedged Sign with and without a context string; the deterministic
- *     variant (addrnd = NULL); HashSLH-DSA (hedged, SHA2-512 and SHAKE256); and
+ *     variant (sign_deterministic); HashSLH-DSA (hedged, SHA2-512 and SHAKE256); and
  *     the verification of every signature, also of a rejected one
  *   - the six s sets: KeyGen, one hedged Sign with a context string, and its
  *     verification. The s sets run the same code as the f sets with other
@@ -125,10 +125,10 @@ static int is_secret_all(const void *p, size_t len)
 
 #define TEST_SET(S, M, FULL)                                                                                     \
     do {                                                                                                         \
-        static uint8_t pk[SLHDSA_##M##_PUBLICKEYBYTES], sk[SLHDSA_##M##_SECRETKEYBYTES], sig[SLHDSA_##M##_BYTES]; \
+        static uint8_t pk[OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES], sk[OPENPQC_SLHDSA_##M##_SECRETKEYBYTES], sig[OPENPQC_SLHDSA_##M##_BYTES]; \
         static const uint8_t m[] = "constant-time test message", ctx[] = "context";                            \
-        const size_t n = SLHDSA_##M##_N;                                                                         \
-        CHECK_PUBLIC_RESULT(openpqc_slhdsa_##S##_keypair(pk, sk), 0);                                            \
+        const size_t n = OPENPQC_SLHDSA_##M##_N;                                                                         \
+        CHECK_PUBLIC_RESULT(openpqc_slhdsa_##S##_keygen(pk, sk), 0);                                            \
         CHECK_SECRET_KEY(sk, n);                                                                                 \
         if (RUNNING_ON_VALGRIND) CHECK(is_secret(pk, 2 * n) == 0); /* PK.seed, PK.root */                        \
         CHECK_SIGN(openpqc_slhdsa_##S##_sign(sig, m, sizeof m, ctx, sizeof ctx, sk), sk, sig, n);                \
@@ -136,26 +136,26 @@ static int is_secret_all(const void *p, size_t len)
         if (FULL) {                                                                                              \
             CHECK_SIGN(openpqc_slhdsa_##S##_sign(sig, m, sizeof m, NULL, 0, sk), sk, sig, n);                    \
             CHECK_PUBLIC_RESULT(openpqc_slhdsa_##S##_verify(sig, sizeof sig, m, sizeof m, NULL, 0, pk), 0);      \
-            CHECK_SIGN(openpqc_slhdsa_##S##_sign_derand(sig, m, sizeof m, ctx, sizeof ctx, NULL, sk), sk, sig, n); \
+            CHECK_SIGN(openpqc_slhdsa_##S##_sign_deterministic(sig, m, sizeof m, ctx, sizeof ctx, sk), sk, sig, n);      \
             CHECK_PUBLIC_RESULT(openpqc_slhdsa_##S##_verify(sig, sizeof sig, m, sizeof m, ctx, sizeof ctx, pk), 0); \
             CHECK_SIGN(openpqc_slhdsa_##S##_prehash_sign(sig, m, sizeof m, ctx, sizeof ctx,                      \
-                                                         OPENPQC_SLHDSA_PREHASH_SHA2_512, sk),                   \
+                                                         OPENPQC_PREHASH_SHA2_512, sk),                   \
                        sk, sig, n);                                                                              \
             CHECK_PUBLIC_RESULT(openpqc_slhdsa_##S##_prehash_verify(sig, sizeof sig, m, sizeof m, ctx,           \
-                                                                    sizeof ctx, OPENPQC_SLHDSA_PREHASH_SHA2_512, \
+                                                                    sizeof ctx, OPENPQC_PREHASH_SHA2_512, \
                                                                     pk),                                         \
                                 0);                                                                              \
             CHECK_SIGN(openpqc_slhdsa_##S##_prehash_sign(sig, m, sizeof m, NULL, 0,                              \
-                                                         OPENPQC_SLHDSA_PREHASH_SHAKE256, sk),                   \
+                                                         OPENPQC_PREHASH_SHAKE256, sk),                   \
                        sk, sig, n);                                                                              \
             CHECK_PUBLIC_RESULT(openpqc_slhdsa_##S##_prehash_verify(sig, sizeof sig, m, sizeof m, NULL, 0,       \
-                                                                    OPENPQC_SLHDSA_PREHASH_SHAKE256, pk),        \
+                                                                    OPENPQC_PREHASH_SHAKE256, pk),        \
                                 0);                                                                              \
             /* a rejected signature: the decision is public too */                                               \
             sig[0] ^= 1;                                                                                         \
             CHECK_PUBLIC_RESULT(openpqc_slhdsa_##S##_prehash_verify(sig, sizeof sig, m, sizeof m, NULL, 0,       \
-                                                                    OPENPQC_SLHDSA_PREHASH_SHAKE256, pk),        \
-                                OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE);                                           \
+                                                                    OPENPQC_PREHASH_SHAKE256, pk),        \
+                                OPENPQC_ERR_INVALID_SIGNATURE);                                           \
         }                                                                                                        \
         printf("%s: done\n", #S);                                                                                \
         fflush(stdout);                                                                                          \

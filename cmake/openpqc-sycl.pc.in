@@ -8,5 +8,5 @@ Description: OpenPQC's GPU backends (SYCL, @OPENPQC_SYCL_IMPL@): batched ML-KEM,
 URL: https://github.com/UCF-ML-Research/OpenPQC
 Version: @PROJECT_VERSION@
 Requires: openpqc
-Cflags: -I${includedir}
+Cflags: -I${includedir} -I${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 Libs: -L${libdir} -lopenpqc_sycl

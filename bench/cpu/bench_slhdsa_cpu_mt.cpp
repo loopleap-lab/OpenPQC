@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/testing.h"   // KeyGen and signing with the randomness given, as the references are measured
 
 // The twelve parameter sets of Table 2: id, C infix, size-macro infix
 #define SLHDSA_SETS(X)              \
@@ -110,24 +111,26 @@ struct Api {
 #define OPENPQC(id, s, M)                                                                                      \
     Api{"openpqc",                                                                                             \
         id,                                                                                                    \
-        SLHDSA_##M##_N,                                                                                        \
-        SLHDSA_##M##_PUBLICKEYBYTES,                                                                           \
-        SLHDSA_##M##_SECRETKEYBYTES,                                                                           \
-        SLHDSA_##M##_BYTES,                                                                                    \
-        openpqc_slhdsa_##s##_keypair_derand,                                                                   \
+        OPENPQC_SLHDSA_##M##_N,                                                                                \
+        OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES,                                                                   \
+        OPENPQC_SLHDSA_##M##_SECRETKEYBYTES,                                                                   \
+        OPENPQC_SLHDSA_##M##_BYTES,                                                                            \
+        [](uint8_t* pk, uint8_t* sk, const uint8_t* seed) {                                                    \
+            return static_cast<int>(openpqc_testing_slhdsa_##s##_keygen_derand(pk, sk, seed));                 \
+        },                                                                                                     \
         [](uint8_t* sig, const uint8_t* m, size_t mlen, const uint8_t* addrnd, const uint8_t* sk) {            \
-            return openpqc_slhdsa_##s##_sign_derand(sig, m, mlen, nullptr, 0, addrnd, sk);                     \
+            return static_cast<int>(openpqc_testing_slhdsa_##s##_sign_derand(sig, m, mlen, nullptr, 0, addrnd, sk)); \
         },                                                                                                     \
         [](const uint8_t* sig, size_t siglen, const uint8_t* m, size_t mlen, const uint8_t* pk) {              \
-            return openpqc_slhdsa_##s##_verify(sig, siglen, m, mlen, nullptr, 0, pk);                          \
+            return static_cast<int>(openpqc_slhdsa_##s##_verify(sig, siglen, m, mlen, nullptr, 0, pk));        \
         }},
 #define REFERENCE(name, impl, id, s, M)                                                                        \
     Api{name,                                                                                                  \
         id,                                                                                                    \
-        SLHDSA_##M##_N,                                                                                        \
-        SLHDSA_##M##_PUBLICKEYBYTES,                                                                           \
-        SLHDSA_##M##_SECRETKEYBYTES,                                                                           \
-        SLHDSA_##M##_BYTES,                                                                                    \
+        OPENPQC_SLHDSA_##M##_N,                                                                                \
+        OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES,                                                                   \
+        OPENPQC_SLHDSA_##M##_SECRETKEYBYTES,                                                                   \
+        OPENPQC_SLHDSA_##M##_BYTES,                                                                            \
         [](uint8_t* pk, uint8_t* sk, const uint8_t* seed) {                                                    \
             return spx_##impl##_##s##_crypto_sign_seed_keypair(pk, sk, seed);                                  \
         },                                                                                                     \
@@ -135,7 +138,7 @@ struct Api {
             size_t siglen = 0;                                                                                 \
             const int r = spx_##impl##_##s##_crypto_sign_signature_derand(sig, &siglen, m, mlen, nullptr, 0, sk, \
                                                                           addrnd);                             \
-            return r != 0 || siglen != SLHDSA_##M##_BYTES ? -1 : 0;                                            \
+            return r != 0 || siglen != OPENPQC_SLHDSA_##M##_BYTES ? -1 : 0;                                       \
         },                                                                                                     \
         [](const uint8_t* sig, size_t siglen, const uint8_t* m, size_t mlen, const uint8_t* pk) {              \
             return spx_##impl##_##s##_crypto_sign_verify(sig, siglen, m, mlen, nullptr, 0, pk);                \

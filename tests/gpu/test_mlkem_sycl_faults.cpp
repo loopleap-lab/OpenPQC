@@ -133,6 +133,7 @@ inline void counted_device_free(sycl::queue& q, void* p) noexcept {
 #undef device_free
 
 #include "ML/KEM/openpqc_mlkem.h"
+#include "openpqc/testing.h"
 
 // The randomness of the library (openpqc_core_testrng): a deterministic generator, which fails on call number
 // fail_at (counted from the last reset) when that is set
@@ -172,7 +173,7 @@ int failures = 0;
     } while (0)
 
 constexpr std::size_t N = 257, BATCH = 100;
-constexpr std::size_t PK = MLKEM768_PUBLICKEYBYTES, SK = MLKEM768_SECRETKEYBYTES, CT = MLKEM768_CIPHERTEXTBYTES;
+constexpr std::size_t PK = OPENPQC_MLKEM768_PUBLICKEYBYTES, SK = OPENPQC_MLKEM768_SECRETKEYBYTES, CT = OPENPQC_MLKEM768_CIPHERTEXTBYTES;
 constexpr long DECAPS_LAUNCHES = 6;   // per chunk: decrypt, decaps_hash, sample_matrix, prf (y), prf (e1, e2), encrypt
 constexpr std::int32_t FAILED = OPQC_SYCL_MLKEM_FAILED;
 
@@ -189,8 +190,8 @@ struct Oracle {
         for (std::size_t i = 0; i < coins.size(); i++) coins[i] = static_cast<std::uint8_t>(i * 7 + 3);
         for (std::size_t i = 0; i < m.size(); i++) m[i] = static_cast<std::uint8_t>(i * 13 + 5);
         for (std::size_t i = 0; i < N; i++) {
-            CHECK(openpqc_mlkem768_keypair_derand(&pk[i * PK], &sk[i * SK], &coins[i * 64]) == 0);
-            CHECK(openpqc_mlkem768_enc_derand(&ct[i * CT], &ss[i * 32], &pk[i * PK], &m[i * 32]) == 0);
+            CHECK(openpqc_mlkem768_keygen_from_seed(&pk[i * PK], &sk[i * SK], &coins[i * 64]) == 0);
+            CHECK(openpqc_testing_mlkem768_encaps_derand(&ct[i * CT], &ss[i * 32], &pk[i * PK], &m[i * 32]) == 0);
         }
     }
 };
@@ -291,7 +292,7 @@ void success(int device, const Oracle& o) {
     std::size_t bad_random = 0;
     for (std::size_t i = 0; i < N; i++) {
         std::uint8_t k[32];
-        bad_random += openpqc_mlkem768_dec(k, &f.ct[i * CT], &f.sk[i * SK]) != 0 || std::memcmp(k, &f.ss[i * 32], 32) != 0;
+        bad_random += openpqc_mlkem768_decaps(k, &f.ct[i * CT], &f.sk[i * SK]) != 0 || std::memcmp(k, &f.ss[i * 32], 32) != 0;
     }
     CHECK(bad_random == 0 && f.count_status(0, N, 0) == N);
     const std::size_t after_random = f.secret_nonzero();

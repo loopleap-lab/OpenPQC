@@ -14,7 +14,7 @@
 //   regenerates the key in a frame of its own)
 //       SK.seed, SK.prf; every WOTS+ secret value and chain value of every key of the top XMSS tree, its
 //       leaves (WOTS+ public keys) and every node below the root
-//   Sign (hedged: sign) and, for the f sets, the deterministic variant (sign_derand with addrnd = NULL) and
+//   Sign (hedged: sign) and, for the f sets, the deterministic variant (sign_deterministic) and
 //   HashSLH-DSA (prehash_sign, hedged; each of the twelve f-set trials with the next of the twelve pre-hash
 //   functions, so that every one is searched once)
 //       SK.seed, SK.prf; for the SHA2 sets SK.prf xor ipad and xor opad (HMAC's key blocks, FIPS 198-1)
@@ -90,7 +90,7 @@
 // neither KeyGen's secrets nor the test's signature (never published) nor, for the f sets, the secrets of
 // making it; and KeyGen of SLH-DSA-SHA2-256f, whose test holds the largest signature (49,856 bytes) in its
 // frame, and its Sign and Verify must end in a fault at the guard page on short stacks, never write below it,
-// with no probes but the library's own. With --frames <object> (the library's object, compiled with
+// with no probes but the library's own. With --frames <objects> (the library's objects, separated by ';', compiled with
 // -fstack-usage), it also checks the compiler's report of the library's frames: every frame of 3.5 KiB or more
 // must be one that the library touches before entering it (library_frames below).
 //
@@ -102,6 +102,7 @@
 #include "Core/opqc_sha2.h"
 #include "Core/opqc_sha3.h"
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/testing.h"
 #include "SLH/DSA/scheme/slh_dsa.hpp"
 
 #include <pthread.h>
@@ -614,14 +615,15 @@ struct CApi {
     int id;
     const char* name;
     std::size_t n, pk, sk, sig;
-    int (*keypair)(uint8_t*, uint8_t*);
-    int (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
-    int (*sign)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
-    int (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
-    int (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
-    int (*prehash_sign)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*);
-    int (*prehash_verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*);
-    int (*sign_internal)(uint8_t*, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*keypair)(uint8_t*, uint8_t*);
+    openpqc_status (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
+    openpqc_status (*sign)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*sign_deterministic)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*prehash_sign)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*);
+    openpqc_status (*prehash_verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*);
+    openpqc_status (*sign_internal)(uint8_t*, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
 };
 
 // Built with OPENPQC_TEST_KEYGEN_PCT (slhdsa_stack_pct), the test runs against the library built with the
@@ -641,14 +643,14 @@ std::array<std::uint8_t, 128> sk{}, sk2{};
 std::array<std::uint8_t, 49856> sig{}, pct_sig{};
 std::array<std::uint8_t, 100> message{};
 std::array<std::uint8_t, 20> ctx{};
-int ph = OPENPQC_SLHDSA_PREHASH_SHA2_256;   // the pre-hash function of the current trial
+int ph = OPENPQC_PREHASH_SHA2_256;   // the pre-hash function of the current trial
 unsigned prehash_searched = 0;              // bit ph - 1: HashSLH-DSA was searched with ph
 int result = 0;
 
 void op_keypair_derand() { result = api->keypair_derand(pk.data(), sk.data(), seed.data()); }
 void op_keypair() { result = api->keypair(pk2.data(), sk2.data()); }
 void op_sign_deterministic() {
-    result = api->sign_derand(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), nullptr, sk.data());
+    result = api->sign_deterministic(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data());
 }
 void op_sign() { result = api->sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data()); }
 void op_prehash_sign() {
@@ -1030,7 +1032,7 @@ struct Secrets {
     // which is never published, and (all) the secrets of making it, as for any signature
     static void pct(Residue& r, const std::uint8_t* SK, bool all) {
         const Bytes M_prime(slh::pct_message.begin(), slh::pct_message.end());
-        CHECK_EQ(api->sign_internal(pct_sig.data(), M_prime.data(), M_prime.size(), nullptr, SK), 0);
+        CHECK_EQ(api->sign_internal(pct_sig.data(), M_prime.data(), M_prime.size(), SK + 2 * n, SK), 0);   // PK.seed
         r.string("pieces of the pair-wise consistency test's signature", pct_sig.data(), S::sig);
         if (all) sign(r, SK, M_prime, M_prime.size(), nullptr, pct_sig.data());
     }
@@ -1106,12 +1108,12 @@ void prehash_compressions(Residue& r, int prehash) {
         r.compressions<std::uint64_t>(kind, H0, false, padded<std::uint64_t>(0, {M}));
     };
     switch (prehash) {
-        case OPENPQC_SLHDSA_PREHASH_SHA2_224: sha256_from(sha224); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_256: sha256_from(opqc_sha256_H0); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_384: sha512_from(sha384); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512: sha512_from(opqc_sha512_H0); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512_224: sha512_from(sha512_224); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512_256: sha512_from(sha512_256); break;
+        case OPENPQC_PREHASH_SHA2_224: sha256_from(sha224); break;
+        case OPENPQC_PREHASH_SHA2_256: sha256_from(opqc_sha256_H0); break;
+        case OPENPQC_PREHASH_SHA2_384: sha512_from(sha384); break;
+        case OPENPQC_PREHASH_SHA2_512: sha512_from(opqc_sha512_H0); break;
+        case OPENPQC_PREHASH_SHA2_512_224: sha512_from(sha512_224); break;
+        case OPENPQC_PREHASH_SHA2_512_256: sha512_from(sha512_256); break;
         default: break;
     }
 }
@@ -1210,8 +1212,8 @@ void test_set(const CApi& a, bool fast, bool verbose, bool keygen_only = false) 
 
         // Verify of the last pure signature
         queue(nullptr, 0);
-        CHECK_EQ(api->sign_derand(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), nullptr,
-                                  sk.data()),
+        CHECK_EQ(api->sign_deterministic(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(),
+                                         sk.data()),
                  0);
         stack = measure(op_verify);
         CHECK_EQ(result, 0);
@@ -1360,7 +1362,7 @@ struct SchemeLayer {
 // state holds) nor pieces of the message (which a SHA-2 state holds) nor the words of the SHA-2 compressions
 // of the message (the schedule W_t gives the block back) on the stack as it is
 std::array<std::uint8_t, openpqc::max_prehash_bytes> prehash_out{};
-int prehash_function = OPENPQC_SLHDSA_PREHASH_SHA2_256;
+int prehash_function = OPENPQC_PREHASH_SHA2_256;
 void op_prehash() {
     openpqc::prehash(prehash_out, static_cast<openpqc::PreHash>(prehash_function), message);
 }
@@ -1560,11 +1562,12 @@ std::string scheme_control(bool h) {
     X(12, "SLH-DSA-SHAKE-256f", shake_256f, SHAKE_256F, true)
 
 #define CAPI(id, name, s, M, fast)                                                                             \
-    const CApi capi_##s = {id, name, SLHDSA_##M##_N, SLHDSA_##M##_PUBLICKEYBYTES, SLHDSA_##M##_SECRETKEYBYTES,  \
-                           SLHDSA_##M##_BYTES, openpqc_slhdsa_##s##_keypair, openpqc_slhdsa_##s##_keypair_derand, \
-                           openpqc_slhdsa_##s##_sign, openpqc_slhdsa_##s##_sign_derand, openpqc_slhdsa_##s##_verify, \
+    const CApi capi_##s = {id, name, OPENPQC_SLHDSA_##M##_N, OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES, OPENPQC_SLHDSA_##M##_SECRETKEYBYTES,  \
+                           OPENPQC_SLHDSA_##M##_BYTES, openpqc_slhdsa_##s##_keygen, openpqc_testing_slhdsa_##s##_keygen_derand, \
+                           openpqc_slhdsa_##s##_sign, openpqc_testing_slhdsa_##s##_sign_derand,                       \
+                           openpqc_slhdsa_##s##_sign_deterministic, openpqc_slhdsa_##s##_verify,          \
                            openpqc_slhdsa_##s##_prehash_sign, openpqc_slhdsa_##s##_prehash_verify,               \
-                           openpqc_slhdsa_##s##_sign_internal};
+                           openpqc_testing_slhdsa_##s##_sign_internal};
 SLHDSA_SETS(CAPI)
 #undef CAPI
 
@@ -1618,7 +1621,7 @@ void short_stacks(const CApi& a, std::initializer_list<std::size_t> sizes) {
     api = &a;
     for (std::size_t i = 0; i < seed.size(); i++) seed[i] = static_cast<std::uint8_t>(i * 29 + 1);
     CHECK_EQ(api->keypair_derand(pk.data(), sk.data(), seed.data()), 0);
-    CHECK_EQ(api->sign_derand(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), nullptr, sk.data()),
+    CHECK_EQ(api->sign_deterministic(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data()),
              0);
     struct Op {
         const char* name;
@@ -1678,8 +1681,8 @@ void library_frames(const char* object) {
         std::fprintf(stderr, "library frames: no report %s\n", report.c_str());
         return;
     }
-    std::vector<std::size_t> signatures = {SLHDSA_SHA2_128S_BYTES, SLHDSA_SHA2_128F_BYTES, SLHDSA_SHA2_192S_BYTES,
-                                           SLHDSA_SHA2_192F_BYTES, SLHDSA_SHA2_256S_BYTES, SLHDSA_SHA2_256F_BYTES};
+    std::vector<std::size_t> signatures = {OPENPQC_SLHDSA_SHA2_128S_BYTES, OPENPQC_SLHDSA_SHA2_128F_BYTES, OPENPQC_SLHDSA_SHA2_192S_BYTES,
+                                           OPENPQC_SLHDSA_SHA2_192F_BYTES, OPENPQC_SLHDSA_SHA2_256S_BYTES, OPENPQC_SLHDSA_SHA2_256F_BYTES};
     std::sort(signatures.begin(), signatures.end());   // the signature sizes of FIPS 205, Table 2
     constexpr std::size_t large = 3584;
     std::size_t functions = 0, clear = 0, checks = 0, check_low = SIZE_MAX, check_high = 0, other = 0;
@@ -1750,7 +1753,12 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    if (frames) library_frames(frames);
+    // the library's objects, separated by ';' (CMake's list: the C API and its testing interfaces)
+    for (std::string objects = frames ? frames : ""; !objects.empty();) {
+        const std::size_t semicolon = objects.find(';');
+        library_frames(objects.substr(0, semicolon).c_str());
+        objects = semicolon == std::string::npos ? "" : objects.substr(semicolon + 1);
+    }
     // the region: from the low end of the stack mapping (grown well below anything the operations use) to
     // 64 KiB below this frame (room for the frames of the test's own functions; the operations run below
     // the 96 KiB of padded())

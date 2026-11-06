@@ -65,9 +65,9 @@
 #include "ML/KEM/scheme/parameter_sets.hpp"
 #include "ML/KEM/sycl/mlkem_sycl_self_test.hpp"
 
-static_assert(OPQC_SYCL_MLKEM_RNG_FAIL == OPENPQC_MLKEM_ERR_RNG_FAIL &&
-              OPQC_SYCL_MLKEM_INVALID_PK == OPENPQC_MLKEM_ERR_INVALID_PK &&
-              OPQC_SYCL_MLKEM_INVALID_SK == OPENPQC_MLKEM_ERR_INVALID_SK);
+static_assert(OPQC_SYCL_MLKEM_RNG_FAIL == OPENPQC_ERR_RNG &&
+              OPQC_SYCL_MLKEM_INVALID_PK == OPENPQC_ERR_INVALID_PUBLIC_KEY &&
+              OPQC_SYCL_MLKEM_INVALID_SK == OPENPQC_ERR_INVALID_SECRET_KEY);
 
 namespace openpqc::mlkem::gpu {
 namespace {

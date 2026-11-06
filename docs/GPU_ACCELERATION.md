@@ -344,7 +344,7 @@ units they are the identity.
 ### 4.2 API
 
 ```c
-#include "ML/KEM/openpqc_mlkem.h"             /* the sizes MLKEM768_* */
+#include "ML/KEM/openpqc_mlkem.h"             /* the sizes OPENPQC_MLKEM768_* */
 #include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
 
 opqc_sycl_mlkem *ctx;
@@ -1311,7 +1311,7 @@ Since then (November 2026, after the review of October 2026; the header `include
 states the contract):
 
 - **Status.** Verification requires `status` (NULL or misaligned: -1); every entry is set to
-  `OPENPQC_MLDSA_ERR_INVALID_SIGNATURE` before the first kernel, and again, waited for, when a call is refused or
+  `OPENPQC_ERR_INVALID_SIGNATURE` before the first kernel, and again, waited for, when a call is refused or
   fails, so that an entry no kernel reached never reads as valid. Signing keeps `status` optional.
 - **Failures.** The context is Core's: a device error or an exception fails it for good (every call, `sync` and
   `memcpy` whose arguments are accepted then return -2), and the workspace is zeroized once by the first call or

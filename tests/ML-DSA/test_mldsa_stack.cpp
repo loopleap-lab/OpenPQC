@@ -70,6 +70,7 @@
 #include "check.hpp"
 #include "Core/opqc_sha3.h"
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/testing.h"
 #include "ML/DSA/scheme/ml_dsa.hpp"
 
 #include <algorithm>
@@ -563,12 +564,12 @@ template <int Level> struct CApi;
 #define OPENPQC_TEST_CAPI(N)                                                                  \
     template <> struct CApi<N> {                                                              \
         using P = dsa::params::ML_DSA_##N;                                                    \
-        static constexpr auto keypair = openpqc_mldsa##N##_keypair;                           \
-        static constexpr auto keypair_derand = openpqc_mldsa##N##_keypair_derand;             \
+        static constexpr auto keypair = openpqc_mldsa##N##_keygen;                           \
+        static constexpr auto keypair_derand = openpqc_mldsa##N##_keygen_from_seed;             \
         static constexpr auto check_sk = openpqc_mldsa##N##_check_sk;                         \
         static constexpr auto check_keypair = openpqc_mldsa##N##_check_keypair;               \
         static constexpr auto sign = openpqc_mldsa##N##_sign;                                 \
-        static constexpr auto sign_derand = openpqc_mldsa##N##_sign_derand;                   \
+        static constexpr auto sign_derand = openpqc_testing_mldsa##N##_sign_derand;                   \
         static constexpr auto prehash_sign = openpqc_mldsa##N##_prehash_sign;                 \
         static constexpr auto prehash_verify = openpqc_mldsa##N##_prehash_verify;             \
         static constexpr auto sign_mu = openpqc_mldsa##N##_sign_mu;                           \
@@ -581,7 +582,7 @@ OPENPQC_TEST_CAPI(65)
 OPENPQC_TEST_CAPI(87)
 #undef OPENPQC_TEST_CAPI
 
-constexpr int ph = OPENPQC_MLDSA_PREHASH_SHA2_512;   // the pre-hash function of prehash_sign
+constexpr int ph = OPENPQC_PREHASH_SHA2_512;   // the pre-hash function of prehash_sign
 
 template <int Level>
 struct Run {

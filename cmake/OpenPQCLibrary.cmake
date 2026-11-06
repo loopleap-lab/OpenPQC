@@ -27,3 +27,23 @@ function(openpqc_library_objects target)
             $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang,IntelLLVM>:-fno-exceptions -fno-rtti>)
     endif()
 endfunction()
+
+# openpqc_testing_objects(<scheme> <source>)
+#
+#   The object library openpqc_<scheme>_testing_objects: a scheme's testing interfaces (openpqc/testing.h; FIPS
+#   203, Section 3.3; FIPS 204, Section 6; FIPS 205, Section 9), for the library OpenPQC::testing and the
+#   per-scheme libraries of the tests, never for the library openpqc (review finding M13). It is compiled as the
+#   scheme's library objects (openpqc_<scheme>_objects) are, with their compile definitions (those given to them
+#   later too, such as OPENPQC_MLKEM_KEYGEN_PCT: a generator expression), so that the templates both instantiate
+#   are the same.
+function(openpqc_testing_objects scheme source)
+    set(_target openpqc_${scheme}_testing_objects)
+    add_library(${_target} OBJECT ${source})
+    target_include_directories(${_target} PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
+    target_compile_features(${_target} PUBLIC cxx_std_20)
+    target_compile_definitions(${_target} PRIVATE
+        $<TARGET_PROPERTY:openpqc_${scheme}_objects,COMPILE_DEFINITIONS>)
+    target_link_libraries(${_target} PRIVATE openpqc_strict_warnings)
+    openpqc_library_objects(${_target} NO_CXX_RUNTIME)
+endfunction()

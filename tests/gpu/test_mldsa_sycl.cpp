@@ -6,12 +6,12 @@
 //
 // For every SYCL device (or the one given), each parameter set and batches of random inputs
 // (messages of 0 to 300 bytes; context strings of 0, 1 and 255 bytes):
-//   keypair_derand:  pk and sk identical to openpqc_mldsaNN_keypair_derand
-//   sign_derand:     signatures identical to openpqc_mldsaNN_sign_derand (rnd random, and
+//   keypair_derand:  pk and sk identical to openpqc_mldsaNN_keygen_from_seed
+//   sign_derand:     signatures identical to openpqc_testing_mldsaNN_sign_derand (rnd random, and
 //                    rnd = 0 for every third), status 0; again with other schedules of the
 //                    signing loop (opqc_sycl_mldsa_set_speculation), which must not change any
 //                    signature
-//   sign_mu_derand:  identical to openpqc_mldsaNN_sign_mu_derand
+//   sign_mu_derand:  identical to openpqc_testing_mldsaNN_sign_mu_derand
 //   one key:         sign_one_key_derand and verify_one_key (all messages under key 0) identical
 //                    to the CPU library
 //   verify:          the same decision as openpqc_mldsaNN_verify for valid signatures and for
@@ -72,6 +72,7 @@
 
 #include "Core/opqc_sha3.h"
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/testing.h"
 #include "ML/DSA/scheme/encoding.hpp"
 #include "ML/DSA/scheme/mldsa_internal.hpp"
 #include "ML/DSA/sycl/mldsa_sycl_self_test.hpp"
@@ -136,25 +137,25 @@ struct CpuApi {
     int level;
     std::size_t pk, sk, sig, k, omega, ctilde, z_bytes, hint_offset;
     std::uint32_t gamma1;
-    int (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
-    int (*check_keypair)(const uint8_t*, const uint8_t*);
-    int (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
-    int (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
-    int (*external_mu)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
-    int (*sign_mu_derand)(uint8_t*, const uint8_t*, const uint8_t*, const uint8_t*);
-    int (*verify_mu)(const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
+    openpqc_status (*check_keypair)(const uint8_t*, const uint8_t*);
+    openpqc_status (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*external_mu)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*sign_mu_derand)(uint8_t*, const uint8_t*, const uint8_t*, const uint8_t*);
+    openpqc_status (*verify_mu)(const uint8_t*, size_t, const uint8_t*, const uint8_t*);
     void (*sign_with_large_z)(uint8_t*, const uint8_t*, const uint8_t*);
 };
 
 #define CPU_API(N)                                                                                           \
     CpuApi {                                                                                                 \
-        N, MLDSA##N##_PUBLICKEYBYTES, MLDSA##N##_SECRETKEYBYTES, MLDSA##N##_BYTES, dsa::params::ML_DSA_##N::k, \
+        N, OPENPQC_MLDSA##N##_PUBLICKEYBYTES, OPENPQC_MLDSA##N##_SECRETKEYBYTES, OPENPQC_MLDSA##N##_BYTES, dsa::params::ML_DSA_##N::k, \
                 dsa::params::ML_DSA_##N::omega, dsa::Sizes<dsa::params::ML_DSA_##N>::ctilde,                 \
                 dsa::Sizes<dsa::params::ML_DSA_##N>::z, dsa::Layout<dsa::params::ML_DSA_##N>::sig_h,          \
                 dsa::params::ML_DSA_##N::gamma1,                                                             \
-                openpqc_mldsa##N##_keypair_derand, openpqc_mldsa##N##_check_keypair,                         \
-                openpqc_mldsa##N##_sign_derand, openpqc_mldsa##N##_verify, openpqc_mldsa##N##_external_mu,    \
-                openpqc_mldsa##N##_sign_mu_derand, openpqc_mldsa##N##_verify_mu,                             \
+                openpqc_mldsa##N##_keygen_from_seed, openpqc_mldsa##N##_check_keypair,                         \
+                openpqc_testing_mldsa##N##_sign_derand, openpqc_mldsa##N##_verify, openpqc_mldsa##N##_external_mu,    \
+                openpqc_testing_mldsa##N##_sign_mu_derand, openpqc_mldsa##N##_verify_mu,                             \
                 sign_with_large_z<dsa::params::ML_DSA_##N>                                                   \
     }
 
@@ -451,11 +452,11 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
                                                    n),
                     SENTINEL);
             refused(opqc_sycl_mldsa_verify_mu(c, d_sig.p, d_mu.p, d_pk.p, nullptr, n), SENTINEL);
-            refused(opqc_sycl_mldsa_verify_mu(c, d_sig.p, d_mu.p + 1, d_pk.p, st, n), OPENPQC_MLDSA_ERR_INVALID_SIGNATURE);
+            refused(opqc_sycl_mldsa_verify_mu(c, d_sig.p, d_mu.p + 1, d_pk.p, st, n), OPENPQC_ERR_INVALID_SIGNATURE);
             refused(opqc_sycl_mldsa_verify(c, d_sig.p, d_msg.p, offsets, long_ctx.data(), 256, d_pk.p, st, n),
-                    OPENPQC_MLDSA_ERR_INVALID_SIGNATURE);
+                    OPENPQC_ERR_INVALID_SIGNATURE);
             refused(opqc_sycl_mldsa_verify(c, d_sig.p, nullptr, offsets, ctx.data(), ctxlen, d_pk.p, st, n),
-                    OPENPQC_MLDSA_ERR_INVALID_SIGNATURE);
+                    OPENPQC_ERR_INVALID_SIGNATURE);
             CHECK(bad_api == 0);
             CHECK(opqc_sycl_mldsa_sync(c) == 0);   // no refusal fails the context
         }
@@ -600,7 +601,7 @@ SelfTestAnswers self_test_answers(const CpuApi& api) {
     tampered[st::TAMPERED_BYTE] ^= 1;
     a.verdicts = api.verify(sig.data(), sig.size(), msg.data(), msg.size(), ctx.data(), ctx.size(), pk.data()) == 0 &&
                  api.verify(tampered.data(), tampered.size(), msg.data(), msg.size(), ctx.data(), ctx.size(),
-                            pk.data()) == OPENPQC_MLDSA_ERR_INVALID_SIGNATURE;
+                            pk.data()) == OPENPQC_ERR_INVALID_SIGNATURE;
     opqc_sha3_256(a.pk.data(), pk.data(), pk.size());
     opqc_sha3_256(a.sk.data(), sk.data(), sk.size());
     opqc_sha3_256(a.sig.data(), sig.data(), sig.size());

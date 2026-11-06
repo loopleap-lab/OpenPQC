@@ -32,34 +32,34 @@
 
 int crypto_sign_seed_keypair(unsigned char *pk, unsigned char *sk, const unsigned char *seed)
 {
-    return OPENPQC_TARGET_API(keypair_derand)(pk, sk, seed) == OPENPQC_SLHDSA_OK ? 0 : -1;
+    return OPENPQC_TESTING_TARGET_API(keygen_derand)(pk, sk, seed) == OPENPQC_OK ? 0 : -1;
 }
 
 int crypto_sign_keypair(unsigned char *pk, unsigned char *sk)
 {
-    return OPENPQC_TARGET_API(keypair)(pk, sk) == OPENPQC_SLHDSA_OK ? 0 : -1;
+    return OPENPQC_TARGET_API(keygen)(pk, sk) == OPENPQC_OK ? 0 : -1;
 }
 
 int crypto_sign_signature(uint8_t *sig, size_t *siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx,
                           size_t ctxlen, const uint8_t *sk)
 {
     const int rc = OPENPQC_TARGET_API(sign)(sig, m, mlen, ctx, ctxlen, sk);
-    *siglen = rc == OPENPQC_SLHDSA_OK ? SPX_BYTES : 0;
-    return rc == OPENPQC_SLHDSA_OK ? 0 : -1;
+    *siglen = rc == OPENPQC_OK ? SPX_BYTES : 0;
+    return rc == OPENPQC_OK ? 0 : -1;
 }
 
 int crypto_sign_signature_derand(uint8_t *sig, size_t *siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx,
                                  size_t ctxlen, const uint8_t *sk, const uint8_t *addrnd)
 {
-    const int rc = OPENPQC_TARGET_API(sign_derand)(sig, m, mlen, ctx, ctxlen, addrnd, sk);
-    *siglen = rc == OPENPQC_SLHDSA_OK ? SPX_BYTES : 0;
-    return rc == OPENPQC_SLHDSA_OK ? 0 : -1;
+    const int rc = OPENPQC_TESTING_TARGET_API(sign_derand)(sig, m, mlen, ctx, ctxlen, addrnd, sk);
+    *siglen = rc == OPENPQC_OK ? SPX_BYTES : 0;
+    return rc == OPENPQC_OK ? 0 : -1;
 }
 
 int crypto_sign_verify(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx,
                        size_t ctxlen, const uint8_t *pk)
 {
-    return OPENPQC_TARGET_API(verify)(sig, siglen, m, mlen, ctx, ctxlen, pk) == OPENPQC_SLHDSA_OK ? 0 : -1;
+    return OPENPQC_TARGET_API(verify)(sig, siglen, m, mlen, ctx, ctxlen, pk) == OPENPQC_OK ? 0 : -1;
 }
 
 /* sm = sig || m; m is moved to sm + SPX_BYTES after signing, as sign.c does. m may be sm + SPX_BYTES or any

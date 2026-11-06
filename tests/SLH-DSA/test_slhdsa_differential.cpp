@@ -70,6 +70,7 @@
 #include <vector>
 
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/testing.h"
 
 #if defined(OPENPQC_DIFFERENTIAL_OPENSSL)
 #include <openssl/evp.h>
@@ -176,26 +177,26 @@ namespace {
 // Algorithm 23, lines 10, 13, 16 and 19 (toByte(0x0609608648016503040201, 11) etc.), the others from
 // NIST's registry of hash algorithm OIDs (2.16.840.1.101.3.4.2.x)
 struct PreHashFunction {
-    int ph;                                  // OPENPQC_SLHDSA_PREHASH_*
+    int ph;                                  // OPENPQC_PREHASH_*
     const char* name;
     std::array<std::uint8_t, 11> oid;
     std::size_t digest_bytes;
 };
 const PreHashFunction prehash_functions[] = {
-    {OPENPQC_SLHDSA_PREHASH_SHA2_224, "SHA2-224", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04}, 28},
-    {OPENPQC_SLHDSA_PREHASH_SHA2_256, "SHA2-256", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01}, 32},
-    {OPENPQC_SLHDSA_PREHASH_SHA2_384, "SHA2-384", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02}, 48},
-    {OPENPQC_SLHDSA_PREHASH_SHA2_512, "SHA2-512", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03}, 64},
-    {OPENPQC_SLHDSA_PREHASH_SHA2_512_224, "SHA2-512/224",
+    {OPENPQC_PREHASH_SHA2_224, "SHA2-224", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04}, 28},
+    {OPENPQC_PREHASH_SHA2_256, "SHA2-256", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01}, 32},
+    {OPENPQC_PREHASH_SHA2_384, "SHA2-384", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02}, 48},
+    {OPENPQC_PREHASH_SHA2_512, "SHA2-512", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03}, 64},
+    {OPENPQC_PREHASH_SHA2_512_224, "SHA2-512/224",
      {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x05}, 28},
-    {OPENPQC_SLHDSA_PREHASH_SHA2_512_256, "SHA2-512/256",
+    {OPENPQC_PREHASH_SHA2_512_256, "SHA2-512/256",
      {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x06}, 32},
-    {OPENPQC_SLHDSA_PREHASH_SHA3_224, "SHA3-224", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x07}, 28},
-    {OPENPQC_SLHDSA_PREHASH_SHA3_256, "SHA3-256", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x08}, 32},
-    {OPENPQC_SLHDSA_PREHASH_SHA3_384, "SHA3-384", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x09}, 48},
-    {OPENPQC_SLHDSA_PREHASH_SHA3_512, "SHA3-512", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x0A}, 64},
-    {OPENPQC_SLHDSA_PREHASH_SHAKE128, "SHAKE128", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x0B}, 32},
-    {OPENPQC_SLHDSA_PREHASH_SHAKE256, "SHAKE256", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x0C}, 64},
+    {OPENPQC_PREHASH_SHA3_224, "SHA3-224", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x07}, 28},
+    {OPENPQC_PREHASH_SHA3_256, "SHA3-256", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x08}, 32},
+    {OPENPQC_PREHASH_SHA3_384, "SHA3-384", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x09}, 48},
+    {OPENPQC_PREHASH_SHA3_512, "SHA3-512", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x0A}, 64},
+    {OPENPQC_PREHASH_SHAKE128, "SHAKE128", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x0B}, 32},
+    {OPENPQC_PREHASH_SHAKE256, "SHAKE256", {0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x0C}, 64},
 };
 
 // PH(M) (Algorithm 23, lines 8-20: SHAKE128(M, 256) and SHAKE256(M, 512) for the XOFs)
@@ -204,22 +205,22 @@ Bytes prehash_of(const PreHashFunction& f, const Bytes& M) {
 #if defined(OPENPQC_DIFFERENTIAL_OPENSSL)
     const EVP_MD* md = nullptr;
     switch (f.ph) {
-        case OPENPQC_SLHDSA_PREHASH_SHA2_224: md = EVP_sha224(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_256: md = EVP_sha256(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_384: md = EVP_sha384(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512: md = EVP_sha512(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512_224: md = EVP_sha512_224(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512_256: md = EVP_sha512_256(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA3_224: md = EVP_sha3_224(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA3_256: md = EVP_sha3_256(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA3_384: md = EVP_sha3_384(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA3_512: md = EVP_sha3_512(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHAKE128: md = EVP_shake128(); break;
-        case OPENPQC_SLHDSA_PREHASH_SHAKE256: md = EVP_shake256(); break;
+        case OPENPQC_PREHASH_SHA2_224: md = EVP_sha224(); break;
+        case OPENPQC_PREHASH_SHA2_256: md = EVP_sha256(); break;
+        case OPENPQC_PREHASH_SHA2_384: md = EVP_sha384(); break;
+        case OPENPQC_PREHASH_SHA2_512: md = EVP_sha512(); break;
+        case OPENPQC_PREHASH_SHA2_512_224: md = EVP_sha512_224(); break;
+        case OPENPQC_PREHASH_SHA2_512_256: md = EVP_sha512_256(); break;
+        case OPENPQC_PREHASH_SHA3_224: md = EVP_sha3_224(); break;
+        case OPENPQC_PREHASH_SHA3_256: md = EVP_sha3_256(); break;
+        case OPENPQC_PREHASH_SHA3_384: md = EVP_sha3_384(); break;
+        case OPENPQC_PREHASH_SHA3_512: md = EVP_sha3_512(); break;
+        case OPENPQC_PREHASH_SHAKE128: md = EVP_shake128(); break;
+        case OPENPQC_PREHASH_SHAKE256: md = EVP_shake256(); break;
     }
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     bool ok = ctx && md && EVP_DigestInit_ex(ctx, md, nullptr) == 1 && EVP_DigestUpdate(ctx, M.data(), M.size()) == 1;
-    if (f.ph == OPENPQC_SLHDSA_PREHASH_SHAKE128 || f.ph == OPENPQC_SLHDSA_PREHASH_SHAKE256) {
+    if (f.ph == OPENPQC_PREHASH_SHAKE128 || f.ph == OPENPQC_PREHASH_SHAKE256) {
         ok = ok && EVP_DigestFinalXOF(ctx, out.data(), out.size()) == 1;
     } else {
         unsigned len = 0;
@@ -233,18 +234,18 @@ Bytes prehash_of(const PreHashFunction& f, const Bytes& M) {
 #else
     const std::uint8_t* m = M.data();
     switch (f.ph) {
-        case OPENPQC_SLHDSA_PREHASH_SHA2_224: opqc_sha224(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_256: opqc_sha256(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_384: opqc_sha384(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512: opqc_sha512(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512_224: opqc_sha512_224(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA2_512_256: opqc_sha512_256(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA3_224: opqc_sha3_224(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA3_256: opqc_sha3_256(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA3_384: opqc_sha3_384(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHA3_512: opqc_sha3_512(out.data(), m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHAKE128: opqc_shake128(out.data(), 32, m, M.size()); break;
-        case OPENPQC_SLHDSA_PREHASH_SHAKE256: opqc_shake256(out.data(), 64, m, M.size()); break;
+        case OPENPQC_PREHASH_SHA2_224: opqc_sha224(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA2_256: opqc_sha256(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA2_384: opqc_sha384(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA2_512: opqc_sha512(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA2_512_224: opqc_sha512_224(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA2_512_256: opqc_sha512_256(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA3_224: opqc_sha3_224(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA3_256: opqc_sha3_256(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA3_384: opqc_sha3_384(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHA3_512: opqc_sha3_512(out.data(), m, M.size()); break;
+        case OPENPQC_PREHASH_SHAKE128: opqc_shake128(out.data(), 32, m, M.size()); break;
+        case OPENPQC_PREHASH_SHAKE256: opqc_shake256(out.data(), 64, m, M.size()); break;
     }
 #endif
     return out;
@@ -253,18 +254,21 @@ Bytes prehash_of(const PreHashFunction& f, const Bytes& M) {
 // --- the two libraries --------------------------------------------------------------------------
 
 struct OpenPQC {
-    int (*keypair)(uint8_t*, uint8_t*);
-    int (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
-    int (*sign)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
-    int (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
-    int (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
-    int (*prehash_sign)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*);
-    int (*prehash_sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*,
-                               const uint8_t*);
-    int (*prehash_verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, int,
+    openpqc_status (*keypair)(uint8_t*, uint8_t*);
+    openpqc_status (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
+    openpqc_status (*sign)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*sign_deterministic)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*prehash_sign)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*);
+    openpqc_status (*prehash_sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int, const uint8_t*,
+                                          const uint8_t*);
+    openpqc_status (*prehash_sign_deterministic)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, int,
+                                                 const uint8_t*);
+    openpqc_status (*prehash_verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, int,
                           const uint8_t*);
-    int (*sign_internal)(uint8_t*, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
-    int (*verify_internal)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*sign_internal)(uint8_t*, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*verify_internal)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
 };
 struct Reference {
     int (*seed_keypair)(unsigned char*, unsigned char*, const unsigned char*);
@@ -287,11 +291,12 @@ struct Reference {
 
 #define OPENPQC(s)                                                                                          \
     OpenPQC {                                                                                               \
-        openpqc_slhdsa_##s##_keypair, openpqc_slhdsa_##s##_keypair_derand, openpqc_slhdsa_##s##_sign,       \
-                openpqc_slhdsa_##s##_sign_derand, openpqc_slhdsa_##s##_verify,                              \
-                openpqc_slhdsa_##s##_prehash_sign, openpqc_slhdsa_##s##_prehash_sign_derand,                \
-                openpqc_slhdsa_##s##_prehash_verify, openpqc_slhdsa_##s##_sign_internal,                    \
-                openpqc_slhdsa_##s##_verify_internal                                                        \
+        openpqc_slhdsa_##s##_keygen, openpqc_testing_slhdsa_##s##_keygen_derand, openpqc_slhdsa_##s##_sign,       \
+                openpqc_testing_slhdsa_##s##_sign_derand, openpqc_slhdsa_##s##_sign_deterministic,                  \
+                openpqc_slhdsa_##s##_verify, openpqc_slhdsa_##s##_prehash_sign,                                     \
+                openpqc_testing_slhdsa_##s##_prehash_sign_derand, openpqc_slhdsa_##s##_prehash_sign_deterministic,  \
+                openpqc_slhdsa_##s##_prehash_verify, openpqc_testing_slhdsa_##s##_sign_internal,                    \
+                openpqc_testing_slhdsa_##s##_verify_internal                                                        \
     }
 #define REFERENCE(s, impl)                                                                                  \
     Reference {                                                                                             \
@@ -377,13 +382,13 @@ void run(const Level& L) {
         const Bytes pk0 = pk, sk0 = sk, s0 = s, seed(3 * n, 7);
         check(L.openpqc.keypair_derand(good_pk.data(), good_sk.data(), seed.data()) == 0, L, "keypair_derand", -1);
         rng_fails = true;
-        check(L.openpqc.keypair(pk.data(), sk.data()) == OPENPQC_SLHDSA_ERR_RNG_FAIL && pk == pk0 && sk == sk0, L,
+        check(L.openpqc.keypair(pk.data(), sk.data()) == OPENPQC_ERR_RNG && pk == pk0 && sk == sk0, L,
               "keypair (RNG failure)", -1);
-        check(L.openpqc.sign(s.data(), nullptr, 0, nullptr, 0, good_sk.data()) == OPENPQC_SLHDSA_ERR_RNG_FAIL &&
+        check(L.openpqc.sign(s.data(), nullptr, 0, nullptr, 0, good_sk.data()) == OPENPQC_ERR_RNG &&
                       s == s0,
               L, "sign (RNG failure)", -1);
-        check(L.openpqc.prehash_sign(s.data(), nullptr, 0, nullptr, 0, OPENPQC_SLHDSA_PREHASH_SHA2_512,
-                                     good_sk.data()) == OPENPQC_SLHDSA_ERR_RNG_FAIL &&
+        check(L.openpqc.prehash_sign(s.data(), nullptr, 0, nullptr, 0, OPENPQC_PREHASH_SHA2_512,
+                                     good_sk.data()) == OPENPQC_ERR_RNG &&
                       s == s0,
               L, "prehash_sign (RNG failure)", -1);
         rng_fails = false;
@@ -393,19 +398,19 @@ void run(const Level& L) {
         for (const int ph : {0, 13}) {
             script({});
             check(L.openpqc.prehash_sign_derand(s.data(), m.data(), m.size(), nullptr, 0, ph, addrnd.data(),
-                                                good_sk.data()) == OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT &&
+                                                good_sk.data()) == OPENPQC_ERR_INVALID_ARGUMENT &&
                           s == s0,
                   L, "prehash_sign_derand (unknown pre-hash function)", -1);
-            check(L.openpqc.prehash_sign_derand(s.data(), m.data(), m.size(), nullptr, 0, ph, nullptr,
-                                                good_sk.data()) == OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT &&
+            check(L.openpqc.prehash_sign_deterministic(s.data(), m.data(), m.size(), nullptr, 0, ph,
+                                                       good_sk.data()) == OPENPQC_ERR_INVALID_ARGUMENT &&
                           s == s0,
                   L, "prehash_sign_derand, deterministic (unknown pre-hash function)", -1);
             check(L.openpqc.prehash_sign(s.data(), m.data(), m.size(), nullptr, 0, ph, good_sk.data()) ==
-                                  OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT &&
+                                  OPENPQC_ERR_INVALID_ARGUMENT &&
                           s == s0 && draws.empty(),
                   L, "prehash_sign (unknown pre-hash function)", -1);
             check(L.openpqc.prehash_verify(s.data(), s.size(), m.data(), m.size(), nullptr, 0, ph, good_pk.data()) !=
-                          OPENPQC_SLHDSA_OK,
+                          OPENPQC_OK,
                   L, "prehash_verify (unknown pre-hash function)", -1);
         }
     }
@@ -442,10 +447,10 @@ void run(const Level& L) {
         }
         const Bytes PK_seed(sk.begin() + static_cast<std::ptrdiff_t>(2 * n), sk.begin() + static_cast<std::ptrdiff_t>(3 * n));
 
-        // Sign, the deterministic variant: addrnd = NULL and addrnd = PK.seed (Algorithm 19, line 2)
+        // Sign, the deterministic variant: sign_deterministic and addrnd = PK.seed (Algorithm 19, line 2)
         Bytes sig_det(L.sig), sig(L.sig);
-        check(L.openpqc.sign_derand(sig_det.data(), m.data(), mlen, ctx.data(), ctxlen, nullptr, sk.data()) == 0, L,
-              "sign_derand (deterministic)", it);
+        check(L.openpqc.sign_deterministic(sig_det.data(), m.data(), mlen, ctx.data(), ctxlen, sk.data()) == 0, L,
+              "sign_deterministic", it);
         {
             Bytes s(L.sig);
             check(L.openpqc.sign_derand(s.data(), m.data(), mlen, ctx.data(), ctxlen, PK_seed.data(), sk.data()) == 0,
@@ -502,7 +507,7 @@ void run(const Level& L) {
         auto both_reject = [&](const Bytes& s, std::size_t slen, const Bytes& msg, const Bytes& c, const Bytes& key,
                                const char* what) {
             const int r = L.openpqc.verify(s.data(), slen, msg.data(), msg.size(), c.data(), c.size(), key.data());
-            check(r == OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE, L, what, it);
+            check(r == OPENPQC_ERR_INVALID_SIGNATURE, L, what, it);
             for (const auto& [impl, ref] : L.references)
                 check(ref.verify(nz(s), slen, nz(msg), msg.size(), nz(c), c.size(), key.data()) != 0, L, what, it);
         };
@@ -543,7 +548,7 @@ void run(const Level& L) {
                 Bytes key = pk;
                 key[i] ^= static_cast<std::uint8_t>(1u << (i % 8));
                 if (L.openpqc.verify(sig.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, key.data()) !=
-                            OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE &&
+                            OPENPQC_ERR_INVALID_SIGNATURE &&
                     accepted.empty())
                     accepted = "byte " + std::to_string(i) + (i < n ? " (PK.seed)" : " (PK.root)");
             }
@@ -555,7 +560,7 @@ void run(const Level& L) {
                 const std::size_t i = block * n + block % n;
                 s[i] ^= static_cast<std::uint8_t>(1u << (block % 8));
                 if (L.openpqc.verify(s.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, pk.data()) !=
-                            OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE &&
+                            OPENPQC_ERR_INVALID_SIGNATURE &&
                     accepted.empty())
                     accepted = "byte " + std::to_string(i) + " (" + signature_part(L, i) + ")";
             }
@@ -571,27 +576,27 @@ void run(const Level& L) {
             Bytes s(L.sig, 0xAA);
             const Bytes s0 = s;
             check(L.openpqc.sign_derand(s.data(), m.data(), mlen, long_ctx.data(), 256, addrnd.data(), sk.data()) ==
-                                  OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT &&
+                                  OPENPQC_ERR_INVALID_ARGUMENT &&
                           s == s0,
                   L, "sign_derand (context of 256 bytes)", it);
-            check(L.openpqc.sign_derand(s.data(), m.data(), mlen, long_ctx.data(), 256, nullptr, sk.data()) ==
-                                  OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT &&
+            check(L.openpqc.sign_deterministic(s.data(), m.data(), mlen, long_ctx.data(), 256, sk.data()) ==
+                                  OPENPQC_ERR_INVALID_ARGUMENT &&
                           s == s0,
                   L, "sign_derand, deterministic (context of 256 bytes)", it);
             script({});
             check(L.openpqc.sign(s.data(), m.data(), mlen, long_ctx.data(), 256, sk.data()) ==
-                                  OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT &&
+                                  OPENPQC_ERR_INVALID_ARGUMENT &&
                           s == s0 && draws.empty(),
                   L, "sign (context of 256 bytes; lines 1-3 before lines 4-7)", it);
             check(L.openpqc.prehash_sign_derand(s.data(), m.data(), mlen, long_ctx.data(), 256,
-                                                OPENPQC_SLHDSA_PREHASH_SHA2_256, addrnd.data(), sk.data()) ==
-                                  OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT &&
+                                                OPENPQC_PREHASH_SHA2_256, addrnd.data(), sk.data()) ==
+                                  OPENPQC_ERR_INVALID_ARGUMENT &&
                           s == s0,
                   L, "prehash_sign_derand (context of 256 bytes)", it);
             script({});
             check(L.openpqc.prehash_sign(s.data(), m.data(), mlen, long_ctx.data(), 256,
-                                         OPENPQC_SLHDSA_PREHASH_SHAKE128, sk.data()) ==
-                                  OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT &&
+                                         OPENPQC_PREHASH_SHAKE128, sk.data()) ==
+                                  OPENPQC_ERR_INVALID_ARGUMENT &&
                           s == s0 && draws.empty(),
                   L, "prehash_sign (context of 256 bytes)", it);
             for (const auto& [impl, ref] : L.references) {
@@ -608,15 +613,16 @@ void run(const Level& L) {
                 const Bytes wrapped = concat({&domain, &long_ctx, &m});
                 const Bytes long_m = concat({&long_ctx, &m});
                 Bytes w(L.sig);
-                check(L.openpqc.sign_internal(w.data(), wrapped.data(), wrapped.size(), nullptr, sk.data()) == 0 &&
+                check(L.openpqc.sign_internal(w.data(), wrapped.data(), wrapped.size(), sk.data() + 2 * L.n,
+                                              sk.data()) == 0 &&   // addrnd = PK.seed: deterministic
                               L.openpqc.verify(w.data(), L.sig, long_m.data(), long_m.size(), nullptr, 0,
                                                pk.data()) == 0,
                       L, "sign_internal of the M' of the message ctx || m (256-byte ctx) with an empty context", it);
                 both_reject(w, L.sig, m, long_ctx, pk, "verify (the signature of that M', with the 256-byte context)");
             }
             check(L.openpqc.prehash_verify(sig.data(), L.sig, m.data(), mlen, long_ctx.data(), 256,
-                                           OPENPQC_SLHDSA_PREHASH_SHA2_256, pk.data()) ==
-                          OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                                           OPENPQC_PREHASH_SHA2_256, pk.data()) ==
+                          OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "prehash_verify (context of 256 bytes)", it);
         }
 
@@ -624,9 +630,11 @@ void run(const Level& L) {
         // addrnd given in even iterations, the deterministic variant in odd ones
         {
             const Bytes mp = random_bytes(static_cast<std::size_t>(rng() % 500));
-            const std::uint8_t* r = it % 2 == 0 ? addrnd.data() : nullptr;
+            const std::uint8_t* r = it % 2 == 0 ? addrnd.data() : nullptr;   // the reference: NULL, deterministic
             Bytes s1(L.sig);
-            check(L.openpqc.sign_internal(s1.data(), mp.data(), mp.size(), r, sk.data()) == 0, L, "sign_internal", it);
+            check(L.openpqc.sign_internal(s1.data(), mp.data(), mp.size(), r ? r : sk.data() + 2 * L.n,   // PK.seed
+                                          sk.data()) == 0,
+                  L, "sign_internal", it);
             for (const auto& [impl, ref] : L.references) {
                 Bytes s2(L.sig);
                 std::size_t siglen = 0;
@@ -644,15 +652,15 @@ void run(const Level& L) {
             check(L.openpqc.verify_internal(s1.data(), L.sig, mp.data(), mp.size(), pk.data()) == 0, L,
                   "verify_internal", it);
             check(L.openpqc.verify_internal(s1.data(), L.sig - 1, mp.data(), mp.size(), pk.data()) ==
-                          OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                          OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "verify_internal (one byte short)", it);
             Bytes longer = s1;
             longer.push_back(0);
             check(L.openpqc.verify_internal(longer.data(), L.sig + 1, mp.data(), mp.size(), pk.data()) ==
-                          OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                          OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "verify_internal (one byte long)", it);
             check(L.openpqc.verify_internal(flipped(s1, rng() % L.sig).data(), L.sig, mp.data(), mp.size(),
-                                            pk.data()) == OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                                            pk.data()) == OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "verify_internal (bit flipped)", it);
             // the pure signature is the internal signature of M' = toByte(0, 1) || toByte(|ctx|, 1) || ctx || M
             // (Algorithm 22, line 8)
@@ -674,11 +682,14 @@ void run(const Level& L) {
             const Bytes PH_M = prehash_of(f, m);
             const Bytes OID(f.oid.begin(), f.oid.end());
             const bool deterministic = (j + static_cast<std::size_t>(it)) % 2 == 0;
-            const std::uint8_t* r = deterministic ? nullptr : addrnd.data();
-            std::string what = std::string("prehash_sign_derand (") + f.name + (deterministic ? ", deterministic)" : ")");
+            const std::uint8_t* r = deterministic ? nullptr : addrnd.data();   // the reference: NULL, deterministic
+            std::string what = deterministic ? std::string("prehash_sign_deterministic (") + f.name + ")"
+                                             : std::string("prehash_sign_derand (") + f.name + ")";
             Bytes psig(L.sig);
-            check(L.openpqc.prehash_sign_derand(psig.data(), m.data(), mlen, ctx.data(), ctxlen, f.ph, r, sk.data()) ==
-                          0,
+            check((deterministic ? L.openpqc.prehash_sign_deterministic(psig.data(), m.data(), mlen, ctx.data(), ctxlen,
+                                                                        f.ph, sk.data())
+                                 : L.openpqc.prehash_sign_derand(psig.data(), m.data(), mlen, ctx.data(), ctxlen, f.ph, r,
+                                                                 sk.data())) == 0,
                   L, what.c_str(), it);
             for (const auto& [impl, ref] : L.references) {
                 Bytes s(L.sig);
@@ -707,25 +718,25 @@ void run(const Level& L) {
             // wrong lengths, a context string of 256 bytes
             const int other = f.ph % 12 + 1;
             check(L.openpqc.prehash_verify(psig.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, other, pk.data()) ==
-                          OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                          OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "prehash_verify (another pre-hash function)", it);
             check(L.openpqc.verify(psig.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, pk.data()) ==
-                          OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                          OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "verify of a pre-hash signature", it);
             check(L.openpqc.prehash_verify(sig.data(), L.sig, m.data(), mlen, ctx.data(), ctxlen, f.ph, pk.data()) ==
-                          OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                          OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "prehash_verify of a pure signature", it);
             Bytes longer_m = m;
             longer_m.push_back(0x42);
             check(L.openpqc.prehash_verify(psig.data(), L.sig, longer_m.data(), longer_m.size(), ctx.data(), ctxlen,
-                                           f.ph, pk.data()) == OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                                           f.ph, pk.data()) == OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "prehash_verify (message one byte longer)", it);
             Bytes long_psig = psig;
             long_psig.push_back(0);
             check(L.openpqc.prehash_verify(long_psig.data(), L.sig + 1, m.data(), mlen, ctx.data(), ctxlen, f.ph,
-                                           pk.data()) == OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE &&
+                                           pk.data()) == OPENPQC_ERR_INVALID_SIGNATURE &&
                           L.openpqc.prehash_verify(psig.data(), L.sig - 1, m.data(), mlen, ctx.data(), ctxlen, f.ph,
-                                                   pk.data()) == OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE,
+                                                   pk.data()) == OPENPQC_ERR_INVALID_SIGNATURE,
                   L, "prehash_verify (signature one byte long or short)", it);
             for (const auto& [impl, ref] : L.references) {
                 check(ref.verify_prehash(sig.data(), L.sig, PH_M.data(), PH_M.size(), OID.data(), OID.size(), nz(ctx),
@@ -736,8 +747,8 @@ void run(const Level& L) {
             // the deterministic variant equals addrnd = PK.seed; hedged equals addrnd given
             if (j == 0) {
                 Bytes s1(L.sig), s2(L.sig);
-                check(L.openpqc.prehash_sign_derand(s1.data(), m.data(), mlen, ctx.data(), ctxlen, f.ph, nullptr,
-                                                    sk.data()) == 0 &&
+                check(L.openpqc.prehash_sign_deterministic(s1.data(), m.data(), mlen, ctx.data(), ctxlen, f.ph,
+                                                           sk.data()) == 0 &&
                               L.openpqc.prehash_sign_derand(s2.data(), m.data(), mlen, ctx.data(), ctxlen, f.ph,
                                                             PK_seed.data(), sk.data()) == 0,
                       L, "prehash_sign_derand (deterministic, PK.seed)", it);
@@ -791,8 +802,8 @@ int main(int argc, char** argv) {
     constexpr int f_iterations = 10, s_iterations = 1;
     std::vector<Level> levels;
 #define LEVEL(id, name, s, M, k, a)                                                                             \
-    levels.push_back({id, name, #s, SLHDSA_##M##_N, k, a, SLHDSA_##M##_PUBLICKEYBYTES,                        \
-                      SLHDSA_##M##_SECRETKEYBYTES, SLHDSA_##M##_BYTES, OPENPQC(s), {{"ref", REFERENCE(s, ref)}}, \
+    levels.push_back({id, name, #s, OPENPQC_SLHDSA_##M##_N, k, a, OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES,                        \
+                      OPENPQC_SLHDSA_##M##_SECRETKEYBYTES, OPENPQC_SLHDSA_##M##_BYTES, OPENPQC(s), {{"ref", REFERENCE(s, ref)}}, \
                       0});
     SLHDSA_SETS(LEVEL)
 #undef LEVEL

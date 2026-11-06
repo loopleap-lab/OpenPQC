@@ -7,9 +7,9 @@
 // For every SYCL device (or the one given), each parameter set and a batch of random seeds, once in one launch
 // and once in chunks with a ragged last chunk. Before every call, its output and status buffers are filled with a
 // pattern, so that no check can pass on what an earlier call left there:
-//   keypair_derand: ek, dk identical to openpqc_mlkemNNN_keypair_derand
-//   enc_derand:     c, K identical to openpqc_mlkemNNN_enc_derand, status 0
-//   dec:            K identical to openpqc_mlkemNNN_dec, status 0, for valid and for tampered ciphertexts
+//   keypair_derand: ek, dk identical to openpqc_mlkemNNN_keygen_from_seed
+//   enc_derand:     c, K identical to openpqc_testing_mlkemNNN_encaps_derand, status 0
+//   dec:            K identical to openpqc_mlkemNNN_decaps, status 0, for valid and for tampered ciphertexts
 //                   (implicit rejection, K-bar = J(z || c))
 //   invalid inputs: ek with a 12-bit value >= q -> INVALID_PK, c and K zero (and q - 1 -> valid, as on the
 //                   CPU); dk with a wrong H(ek) -> INVALID_SK, K zero
@@ -54,6 +54,7 @@
 
 #include "Core/opqc_sha3.h"
 #include "ML/KEM/openpqc_mlkem.h"
+#include "openpqc/testing.h"
 #include "ML/KEM/sycl/mlkem_sycl_self_test.hpp"
 #include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
 
@@ -79,18 +80,18 @@ constexpr std::int32_t FAILED = OPQC_SYCL_MLKEM_FAILED;
 struct CpuApi {
     int level;
     std::size_t pk, sk, ct;
-    int (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
-    int (*enc_derand)(uint8_t*, uint8_t*, const uint8_t*, const uint8_t*);
-    int (*dec)(uint8_t*, const uint8_t*, const uint8_t*);
+    openpqc_status (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
+    openpqc_status (*enc_derand)(uint8_t*, uint8_t*, const uint8_t*, const uint8_t*);
+    openpqc_status (*dec)(uint8_t*, const uint8_t*, const uint8_t*);
 };
 
 const CpuApi apis[] = {
-        {512, MLKEM512_PUBLICKEYBYTES, MLKEM512_SECRETKEYBYTES, MLKEM512_CIPHERTEXTBYTES,
-         openpqc_mlkem512_keypair_derand, openpqc_mlkem512_enc_derand, openpqc_mlkem512_dec},
-        {768, MLKEM768_PUBLICKEYBYTES, MLKEM768_SECRETKEYBYTES, MLKEM768_CIPHERTEXTBYTES,
-         openpqc_mlkem768_keypair_derand, openpqc_mlkem768_enc_derand, openpqc_mlkem768_dec},
-        {1024, MLKEM1024_PUBLICKEYBYTES, MLKEM1024_SECRETKEYBYTES, MLKEM1024_CIPHERTEXTBYTES,
-         openpqc_mlkem1024_keypair_derand, openpqc_mlkem1024_enc_derand, openpqc_mlkem1024_dec},
+        {512, OPENPQC_MLKEM512_PUBLICKEYBYTES, OPENPQC_MLKEM512_SECRETKEYBYTES, OPENPQC_MLKEM512_CIPHERTEXTBYTES,
+         openpqc_mlkem512_keygen_from_seed, openpqc_testing_mlkem512_encaps_derand, openpqc_mlkem512_decaps},
+        {768, OPENPQC_MLKEM768_PUBLICKEYBYTES, OPENPQC_MLKEM768_SECRETKEYBYTES, OPENPQC_MLKEM768_CIPHERTEXTBYTES,
+         openpqc_mlkem768_keygen_from_seed, openpqc_testing_mlkem768_encaps_derand, openpqc_mlkem768_decaps},
+        {1024, OPENPQC_MLKEM1024_PUBLICKEYBYTES, OPENPQC_MLKEM1024_SECRETKEYBYTES, OPENPQC_MLKEM1024_CIPHERTEXTBYTES,
+         openpqc_mlkem1024_keygen_from_seed, openpqc_testing_mlkem1024_encaps_derand, openpqc_mlkem1024_decaps},
 };
 
 // A device buffer of the context
@@ -306,8 +307,8 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
             if (i % 2 == 1) {
                 CHECK(api.enc_derand(&ct_edge[i * api.ct], &ss_edge[i * 32], &pk_bad[i * api.pk], &m[i * 32]) == 0);
             } else {
-                std::uint8_t c_cpu[MLKEM1024_CIPHERTEXTBYTES], k_cpu[32];
-                CHECK(api.enc_derand(c_cpu, k_cpu, &pk_bad[i * api.pk], &m[i * 32]) == OPENPQC_MLKEM_ERR_INVALID_PK);
+                std::uint8_t c_cpu[OPENPQC_MLKEM1024_CIPHERTEXTBYTES], k_cpu[32];
+                CHECK(api.enc_derand(c_cpu, k_cpu, &pk_bad[i * api.pk], &m[i * 32]) == OPENPQC_ERR_INVALID_PUBLIC_KEY);
             }
         }
         d_pk.put(pk_bad.data());

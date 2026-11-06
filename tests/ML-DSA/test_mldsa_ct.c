@@ -58,28 +58,28 @@ static int failures = 0;
 
 #define TEST_LEVEL(N)                                                                                         \
     do {                                                                                                      \
-        static uint8_t pk[MLDSA##N##_PUBLICKEYBYTES], sk[MLDSA##N##_SECRETKEYBYTES], sig[MLDSA##N##_BYTES];   \
-        static uint8_t bad[MLDSA##N##_SECRETKEYBYTES];                                                        \
+        static uint8_t pk[OPENPQC_MLDSA##N##_PUBLICKEYBYTES], sk[OPENPQC_MLDSA##N##_SECRETKEYBYTES], sig[OPENPQC_MLDSA##N##_BYTES];   \
+        static uint8_t bad[OPENPQC_MLDSA##N##_SECRETKEYBYTES];                                                        \
         static const uint8_t m[] = "constant-time test message", ctx[] = "context";                         \
-        uint8_t mu[MLDSA_CRHBYTES];                                                                           \
+        uint8_t mu[OPENPQC_MLDSA_CRHBYTES];                                                                           \
         for (int i = 0; i < 3; i++) {                                                                         \
-            CHECK(openpqc_mldsa##N##_keypair(pk, sk) == 0);                                                   \
+            CHECK(openpqc_mldsa##N##_keygen(pk, sk) == 0);                                                   \
             CHECK(openpqc_mldsa##N##_check_sk(sk) == 0);                                                      \
             CHECK(openpqc_mldsa##N##_check_keypair(pk, sk) == 0);                                             \
             /* the first byte of s1 (sk[128]) as 0xFF: codes 7 (eta = 2) or 15 (eta = 4), out of range */      \
             memcpy(bad, sk, sizeof sk);                                                                       \
             bad[128] = 0xFF;                                                                                  \
-            CHECK(openpqc_mldsa##N##_sign(sig, m, sizeof m, NULL, 0, bad) == OPENPQC_MLDSA_ERR_INVALID_KEY);  \
-            CHECK(openpqc_mldsa##N##_check_sk(bad) == OPENPQC_MLDSA_ERR_INVALID_KEY);                         \
-            CHECK(openpqc_mldsa##N##_check_keypair(pk, bad) == OPENPQC_MLDSA_ERR_INVALID_KEY);                \
+            CHECK(openpqc_mldsa##N##_sign(sig, m, sizeof m, NULL, 0, bad) == OPENPQC_ERR_INVALID_SECRET_KEY);  \
+            CHECK(openpqc_mldsa##N##_check_sk(bad) == OPENPQC_ERR_INVALID_SECRET_KEY);                         \
+            CHECK(openpqc_mldsa##N##_check_keypair(pk, bad) == OPENPQC_ERR_INVALID_SECRET_KEY);                \
             CHECK(openpqc_mldsa##N##_sign(sig, m, sizeof m, NULL, 0, sk) == 0);                               \
             CHECK(openpqc_mldsa##N##_verify(sig, sizeof sig, m, sizeof m, NULL, 0, pk) == 0);                 \
             CHECK(openpqc_mldsa##N##_sign(sig, m, sizeof m, ctx, sizeof ctx, sk) == 0);                       \
             CHECK(openpqc_mldsa##N##_verify(sig, sizeof sig, m, sizeof m, ctx, sizeof ctx, pk) == 0);         \
             CHECK(openpqc_mldsa##N##_prehash_sign(sig, m, sizeof m, ctx, sizeof ctx,                          \
-                                                  OPENPQC_MLDSA_PREHASH_SHA2_512, sk) == 0);                  \
+                                                  OPENPQC_PREHASH_SHA2_512, sk) == 0);                  \
             CHECK(openpqc_mldsa##N##_prehash_verify(sig, sizeof sig, m, sizeof m, ctx, sizeof ctx,            \
-                                                    OPENPQC_MLDSA_PREHASH_SHA2_512, pk) == 0);                \
+                                                    OPENPQC_PREHASH_SHA2_512, pk) == 0);                \
             CHECK(openpqc_mldsa##N##_external_mu(mu, m, sizeof m, ctx, sizeof ctx, pk) == 0);                 \
             CHECK(openpqc_mldsa##N##_sign_mu(sig, mu, sk) == 0);                                              \
             CHECK(openpqc_mldsa##N##_verify(sig, sizeof sig, m, sizeof m, ctx, sizeof ctx, pk) == 0);         \

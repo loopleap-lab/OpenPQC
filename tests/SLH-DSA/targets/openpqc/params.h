@@ -15,6 +15,7 @@
 #define OPENPQC_TARGET_PARAMS_H
 
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/testing.h" /* keygen_derand and sign_derand: OpenPQC::testing */
 
 #ifndef OPENPQC_TARGET_SET
 #error "OPENPQC_TARGET_SET must be the OpenPQC id of the parameter set (OPENPQC_SLHDSA_*, 1-12)"
@@ -23,40 +24,52 @@
 /* FIPS 205, Table 2: n, h, d, a (FORS tree height), k (FORS trees); lg_w = 4 for all twelve */
 #if OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHA2_128S
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_sha2_128s_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHA2_128S_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_sha2_128s_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHA2_128S_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHAKE_128S
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_shake_128s_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHAKE_128S_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_shake_128s_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHAKE_128S_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHA2_128F
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_sha2_128f_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHA2_128F_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_sha2_128f_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHA2_128F_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHAKE_128F
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_shake_128f_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHAKE_128F_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_shake_128f_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHAKE_128F_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHA2_192S
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_sha2_192s_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHA2_192S_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_sha2_192s_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHA2_192S_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHAKE_192S
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_shake_192s_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHAKE_192S_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_shake_192s_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHAKE_192S_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHA2_192F
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_sha2_192f_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHA2_192F_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_sha2_192f_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHA2_192F_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHAKE_192F
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_shake_192f_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHAKE_192F_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_shake_192f_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHAKE_192F_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHA2_256S
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_sha2_256s_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHA2_256S_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_sha2_256s_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHA2_256S_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHAKE_256S
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_shake_256s_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHAKE_256S_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_shake_256s_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHAKE_256S_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHA2_256F
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_sha2_256f_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHA2_256F_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_sha2_256f_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHA2_256F_##what
 #elif OPENPQC_TARGET_SET == OPENPQC_SLHDSA_SHAKE_256F
 #define OPENPQC_TARGET_API(name) openpqc_slhdsa_shake_256f_##name
-#define OPENPQC_TARGET_SIZE(what) SLHDSA_SHAKE_256F_##what
+#define OPENPQC_TESTING_TARGET_API(name) openpqc_testing_slhdsa_shake_256f_##name
+#define OPENPQC_TARGET_SIZE(what) OPENPQC_SLHDSA_SHAKE_256F_##what
 #else
 #error "unknown OPENPQC_TARGET_SET"
 #endif

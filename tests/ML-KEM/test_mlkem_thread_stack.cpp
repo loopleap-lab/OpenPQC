@@ -10,15 +10,17 @@
 //              measured twice, with two patterns, and the deeper result counts. The part below the frame of
 //              the thread function that makes the call (its frame address, taken in the thread) is what the
 //              call needs below its caller: it must not exceed what openpqc_mlkem.h documents, about 48, 58
-//              and 68 KiB for keypair, keypair_derand, enc, enc_derand and dec of ML-KEM-512, -768 and -1024
+//              and 68 KiB for keygen, keygen_from_seed, encaps, encaps_derand, decaps and check_keypair of
+//              ML-KEM-512, -768 and -1024
 //              (copied below as documented_kib), at most about 9 KiB for check_pk and check_sk.
 //   documented on a stack that leaves exactly that much room below the thread function's frame (to 64
 //              bytes; check_pk and check_sk get more, since no thread has a stack smaller than
 //              PTHREAD_STACK_MIN), directly above a PROT_NONE guard page, below which a canary region of
 //              512 KiB holds a pattern, in a child process: the call must return its normal result, the
 //              canary intact.
-//   too small  keypair, keypair_derand, enc, enc_derand, dec and dec of a ciphertext that is implicitly
-//              rejected, on stacks laid out the same way that leave 16 KiB, 20 KiB, ... (in steps of 4 KiB)
+//   too small  keygen, keygen_from_seed, encaps, encaps_derand, decaps, check_keypair and decaps of a
+//              ciphertext that is implicitly rejected, on stacks laid out the same way that leave 16 KiB, 20 KiB,
+//              ... (in steps of 4 KiB)
 //              and the documented size less 4 KiB below the thread function's frame: the call must end in
 //              SIGSEGV with the canary intact. The frames of K-PKE.Encrypt and Decrypt are larger than a page
 //              (up to 33 KB for ML-KEM-1024 with Clang 23), and a frame larger than the guard page is
@@ -39,6 +41,7 @@
 // and the stack out in one mapping).
 #include "check.hpp"
 #include "ML/KEM/openpqc_mlkem.h"
+#include "openpqc/testing.h"
 
 #include <pthread.h>
 #include <sys/mman.h>
@@ -81,20 +84,29 @@ constexpr std::size_t documented_check_kib = 9;
 struct Api {
     const char* name;
     std::size_t ek_bytes, dk_bytes, ct_bytes;
-    int (*keypair)(std::uint8_t*, std::uint8_t*);
-    int (*keypair_derand)(std::uint8_t*, std::uint8_t*, const std::uint8_t*);
-    int (*enc)(std::uint8_t*, std::uint8_t*, const std::uint8_t*);
-    int (*enc_derand)(std::uint8_t*, std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
-    int (*dec)(std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
-    int (*check_pk)(const std::uint8_t*);
-    int (*check_sk)(const std::uint8_t*);
+    openpqc_status (*keygen)(std::uint8_t*, std::uint8_t*);
+    openpqc_status (*keygen_from_seed)(std::uint8_t*, std::uint8_t*, const std::uint8_t*);
+    openpqc_status (*encaps)(std::uint8_t*, std::uint8_t*, const std::uint8_t*);
+    openpqc_status (*encaps_derand)(std::uint8_t*, std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
+    openpqc_status (*decaps)(std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
+    openpqc_status (*check_pk)(const std::uint8_t*);
+    openpqc_status (*check_sk)(const std::uint8_t*);
+    openpqc_status (*check_keypair)(const std::uint8_t*, const std::uint8_t*, const std::uint8_t*);
 };
 
-#define OPENPQC_TEST_API(N)                                                                                         \
-    Api{"ML-KEM-" #N,                  MLKEM##N##_PUBLICKEYBYTES,       MLKEM##N##_SECRETKEYBYTES,                  \
-        MLKEM##N##_CIPHERTEXTBYTES,    openpqc_mlkem##N##_keypair,      openpqc_mlkem##N##_keypair_derand,          \
-        openpqc_mlkem##N##_enc,        openpqc_mlkem##N##_enc_derand,   openpqc_mlkem##N##_dec,                     \
-        openpqc_mlkem##N##_check_pk,   openpqc_mlkem##N##_check_sk}
+#define OPENPQC_TEST_API(N)                                                                                \
+    Api{"ML-KEM-" #N,                                                                                      \
+        OPENPQC_MLKEM##N##_PUBLICKEYBYTES,                                                                 \
+        OPENPQC_MLKEM##N##_SECRETKEYBYTES,                                                                 \
+        OPENPQC_MLKEM##N##_CIPHERTEXTBYTES,                                                                \
+        openpqc_mlkem##N##_keygen,                                                                         \
+        openpqc_mlkem##N##_keygen_from_seed,                                                               \
+        openpqc_mlkem##N##_encaps,                                                                         \
+        openpqc_testing_mlkem##N##_encaps_derand,                                                          \
+        openpqc_mlkem##N##_decaps,                                                                         \
+        openpqc_mlkem##N##_check_pk,                                                                       \
+        openpqc_mlkem##N##_check_sk,                                                                       \
+        openpqc_mlkem##N##_check_keypair}
 const Api apis[] = {OPENPQC_TEST_API(512), OPENPQC_TEST_API(768), OPENPQC_TEST_API(1024)};
 #undef OPENPQC_TEST_API
 
@@ -103,21 +115,23 @@ struct Inputs {
     std::vector<std::uint8_t> ek, dk, ct, ct_rejected, out_ek, out_dk, out_ct, out_ss;
 };
 
-const std::array<std::uint8_t, 2 * MLKEM_SYMBYTES> coins = {1, 2, 3, 4, 5, 6, 7, 8};
-const std::array<std::uint8_t, MLKEM_SYMBYTES> m = {9, 8, 7, 6, 5, 4, 3, 2};
+const std::array<std::uint8_t, 2 * OPENPQC_MLKEM_SYMBYTES> coins = {1, 2, 3, 4, 5, 6, 7, 8};
+const std::array<std::uint8_t, OPENPQC_MLKEM_SYMBYTES> m = {9, 8, 7, 6, 5, 4, 3, 2};
 
 const Api* api = nullptr;
 Inputs* in = nullptr;
 
 // The functions under test, each a call with valid inputs whose result must be 0
-int op_keypair() { return api->keypair(in->out_ek.data(), in->out_dk.data()); }
-int op_keypair_derand() { return api->keypair_derand(in->out_ek.data(), in->out_dk.data(), coins.data()); }
-int op_enc() { return api->enc(in->out_ct.data(), in->out_ss.data(), in->ek.data()); }
-int op_enc_derand() { return api->enc_derand(in->out_ct.data(), in->out_ss.data(), in->ek.data(), m.data()); }
-int op_dec() { return api->dec(in->out_ss.data(), in->ct.data(), in->dk.data()); }
-int op_dec_rejected() { return api->dec(in->out_ss.data(), in->ct_rejected.data(), in->dk.data()); }
+int op_keygen() { return api->keygen(in->out_ek.data(), in->out_dk.data()); }
+int op_keygen_from_seed() { return api->keygen_from_seed(in->out_ek.data(), in->out_dk.data(), coins.data()); }
+int op_encaps() { return api->encaps(in->out_ct.data(), in->out_ss.data(), in->ek.data()); }
+int op_encaps_derand() { return api->encaps_derand(in->out_ct.data(), in->out_ss.data(), in->ek.data(), m.data()); }
+int op_decaps() { return api->decaps(in->out_ss.data(), in->ct.data(), in->dk.data()); }
+int op_decaps_rejected() { return api->decaps(in->out_ss.data(), in->ct_rejected.data(), in->dk.data()); }
 int op_check_pk() { return api->check_pk(in->ek.data()); }
 int op_check_sk() { return api->check_sk(in->dk.data()); }
+int op_check_keypair() { return api->check_keypair(in->ek.data(), in->dk.data(), nullptr); }
+int op_check_keypair_seed() { return api->check_keypair(in->ek.data(), in->dk.data(), coins.data()); }
 int op_nothing() { return 0; }
 
 struct Op {
@@ -126,14 +140,16 @@ struct Op {
     bool check;   // check_pk or check_sk (the smaller documented size; not run on short stacks)
 };
 const Op ops[] = {
-    {"keypair", op_keypair, false},
-    {"keypair_derand", op_keypair_derand, false},
-    {"enc", op_enc, false},
-    {"enc_derand", op_enc_derand, false},
-    {"dec", op_dec, false},
-    {"dec (rejected)", op_dec_rejected, false},
+    {"keygen", op_keygen, false},
+    {"keygen_from_seed", op_keygen_from_seed, false},
+    {"encaps", op_encaps, false},
+    {"encaps_derand", op_encaps_derand, false},
+    {"decaps", op_decaps, false},
+    {"decaps (rejected)", op_decaps_rejected, false},
     {"check_pk", op_check_pk, true},
     {"check_sk", op_check_sk, true},
+    {"check_keypair", op_check_keypair, false},
+    {"check_keypair (seed)", op_check_keypair_seed, false},
 };
 
 void prepare(const Api& a, Inputs& x) {
@@ -143,17 +159,17 @@ void prepare(const Api& a, Inputs& x) {
     x.out_ek.assign(a.ek_bytes, 0);
     x.out_dk.assign(a.dk_bytes, 0);
     x.out_ct.assign(a.ct_bytes, 0);
-    x.out_ss.assign(MLKEM_BYTES, 0);
-    std::array<std::uint8_t, MLKEM_BYTES> K{};
-    CHECK_EQ(a.keypair_derand(x.ek.data(), x.dk.data(), coins.data()), 0);
-    CHECK_EQ(a.enc_derand(x.ct.data(), K.data(), x.ek.data(), m.data()), 0);
+    x.out_ss.assign(OPENPQC_MLKEM_BYTES, 0);
+    std::array<std::uint8_t, OPENPQC_MLKEM_BYTES> K{};
+    CHECK_EQ(a.keygen_from_seed(x.ek.data(), x.dk.data(), coins.data()), 0);
+    CHECK_EQ(a.encaps_derand(x.ct.data(), K.data(), x.ek.data(), m.data()), 0);
     // one bit of the last byte of c changed: Decaps rejects it implicitly (FIPS 203, Algorithm 18), and
     // returns 0 with K-bar
     x.ct_rejected = x.ct;
     x.ct_rejected.back() ^= 0x80;
-    std::array<std::uint8_t, MLKEM_BYTES> K_decaps{}, K_rejected{};
-    CHECK_EQ(a.dec(K_decaps.data(), x.ct.data(), x.dk.data()), 0);
-    CHECK_EQ(a.dec(K_rejected.data(), x.ct_rejected.data(), x.dk.data()), 0);
+    std::array<std::uint8_t, OPENPQC_MLKEM_BYTES> K_decaps{}, K_rejected{};
+    CHECK_EQ(a.decaps(K_decaps.data(), x.ct.data(), x.dk.data()), 0);
+    CHECK_EQ(a.decaps(K_rejected.data(), x.ct_rejected.data(), x.dk.data()), 0);
     CHECK(K_decaps == K && K_rejected != K);
 }
 

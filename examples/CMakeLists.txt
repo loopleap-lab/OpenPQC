@@ -20,7 +20,9 @@ if(OPENPQC_HAVE_SYCL)
     find_package(Threads REQUIRED)
     # The GPU library (OpenPQC::sycl) and the CPU library, as an application uses them
     add_executable(demo_gpu demo_gpu.cpp)
-    target_link_libraries(demo_gpu PRIVATE OpenPQC::sycl OpenPQC::openpqc openpqc_strict_warnings
+    # It compares the GPU's _derand functions with the CPU's testing interfaces (OpenPQC::testing) on the same
+    # inputs; the GPU API of Phase 4 replaces both
+    target_link_libraries(demo_gpu PRIVATE OpenPQC::sycl OpenPQC::testing openpqc_strict_warnings
                                            Threads::Threads ${CMAKE_DL_LIBS})
     target_compile_features(demo_gpu PRIVATE cxx_std_20)
 

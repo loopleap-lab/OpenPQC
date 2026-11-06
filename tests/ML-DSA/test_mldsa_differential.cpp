@@ -34,6 +34,8 @@
 #include <vector>
 
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/testing.h"
+#include "../as_int.hpp"
 #include "ML/DSA/scheme/ml_dsa.hpp"
 
 extern "C" {
@@ -263,10 +265,12 @@ struct ReferenceInternal {
 
 #define OPENPQC(N)                                                                                         \
     OpenPQC {                                                                                              \
-        openpqc_mldsa##N##_keypair_derand, openpqc_mldsa##N##_keypair, openpqc_mldsa##N##_sign,            \
-                openpqc_mldsa##N##_sign_derand, openpqc_mldsa##N##_verify, openpqc_mldsa##N##_sign_internal, \
-                openpqc_mldsa##N##_verify_internal, openpqc_mldsa##N##_external_mu,                        \
-                openpqc_mldsa##N##_verify_mu, openpqc_mldsa##N##_prehash_sign, openpqc_mldsa##N##_sign_mu, \
+        as_int<openpqc_mldsa##N##_keygen_from_seed>::call, as_int<openpqc_mldsa##N##_keygen>::call,        \
+                as_int<openpqc_mldsa##N##_sign>::call, as_int<openpqc_testing_mldsa##N##_sign_derand>::call,  \
+                as_int<openpqc_mldsa##N##_verify>::call, as_int<openpqc_testing_mldsa##N##_sign_internal>::call, \
+                as_int<openpqc_testing_mldsa##N##_verify_internal>::call,                                  \
+                as_int<openpqc_mldsa##N##_external_mu>::call, as_int<openpqc_mldsa##N##_verify_mu>::call,  \
+                as_int<openpqc_mldsa##N##_prehash_sign>::call, as_int<openpqc_mldsa##N##_sign_mu>::call,   \
                 sign_with_large_z<dsa::params::ML_DSA_##N>, sign_with_z_at<dsa::params::ML_DSA_##N>,       \
                 check_signing_limit<dsa::params::ML_DSA_##N>                                               \
     }
@@ -319,16 +323,16 @@ void run(const Level& L, int iterations) {
         const Bytes pk0 = pk, sk0 = sk, s0 = s, xi(32, 7), mu(64, 1);
         check(L.openpqc.keypair_derand(good_pk.data(), good_sk.data(), xi.data()) == 0, L.name, "keypair_derand", -1);
         rng_fails = true;
-        check(L.openpqc.keypair(pk.data(), sk.data()) == OPENPQC_MLDSA_ERR_RNG_FAIL && pk == pk0 && sk == sk0, L.name,
+        check(L.openpqc.keypair(pk.data(), sk.data()) == OPENPQC_ERR_RNG && pk == pk0 && sk == sk0, L.name,
               "keypair (RNG failure)", -1);
-        check(L.openpqc.sign(s.data(), nullptr, 0, nullptr, 0, good_sk.data()) == OPENPQC_MLDSA_ERR_RNG_FAIL &&
+        check(L.openpqc.sign(s.data(), nullptr, 0, nullptr, 0, good_sk.data()) == OPENPQC_ERR_RNG &&
                       s == s0,
               L.name, "sign (RNG failure)", -1);
-        check(L.openpqc.prehash_sign(s.data(), nullptr, 0, nullptr, 0, OPENPQC_MLDSA_PREHASH_SHA2_512,
-                                     good_sk.data()) == OPENPQC_MLDSA_ERR_RNG_FAIL &&
+        check(L.openpqc.prehash_sign(s.data(), nullptr, 0, nullptr, 0, OPENPQC_PREHASH_SHA2_512,
+                                     good_sk.data()) == OPENPQC_ERR_RNG &&
                       s == s0,
               L.name, "prehash_sign (RNG failure)", -1);
-        check(L.openpqc.sign_mu(s.data(), mu.data(), good_sk.data()) == OPENPQC_MLDSA_ERR_RNG_FAIL && s == s0, L.name,
+        check(L.openpqc.sign_mu(s.data(), mu.data(), good_sk.data()) == OPENPQC_ERR_RNG && s == s0, L.name,
               "sign_mu (RNG failure)", -1);
         rng_fails = false;
     }
@@ -388,7 +392,7 @@ void run(const Level& L, int iterations) {
         auto both_reject = [&](const Bytes& s, std::size_t slen, const Bytes& msg, const Bytes& c, const Bytes& key,
                                const char* what) {
             const int r1 = L.openpqc.verify(s.data(), slen, msg.data(), msg.size(), c.data(), c.size(), key.data());
-            check(r1 == OPENPQC_MLDSA_ERR_INVALID_SIGNATURE, L.name, what, it);
+            check(r1 == OPENPQC_ERR_INVALID_SIGNATURE, L.name, what, it);
             for (const auto& [impl, ref] : L.references) {
                 check(ref.verify(s.data(), slen, nonnull(msg), msg.size(), nonnull(c), c.size(), key.data()) != 0,
                       L.name, what, it);
@@ -497,7 +501,7 @@ void run(const Level& L, int iterations) {
             const Bytes long_ctx(256, 7);
             Bytes s(L.sig);
             check(L.openpqc.sign_derand(s.data(), m.data(), mlen, long_ctx.data(), 256, rnd.data(), sk.data()) ==
-                          OPENPQC_MLDSA_ERR_INVALID_ARGUMENT,
+                          OPENPQC_ERR_INVALID_ARGUMENT,
                   L.name, "sign (context of 256 bytes)", it);
             for (const auto& [impl, ref] : L.references) {
                 std::size_t siglen = 0;
@@ -506,7 +510,7 @@ void run(const Level& L, int iterations) {
                       "reference signature (context of 256 bytes)", it);
             }
             check(L.openpqc.verify(sig.data(), L.sig, m.data(), mlen, long_ctx.data(), 256, pk.data()) ==
-                          OPENPQC_MLDSA_ERR_INVALID_SIGNATURE,
+                          OPENPQC_ERR_INVALID_SIGNATURE,
                   L.name, "verify (context of 256 bytes)", it);
         }
 
@@ -536,11 +540,11 @@ void run(const Level& L, int iterations) {
 int main(int argc, char** argv) {
     const int iterations = argc > 1 ? std::atoi(argv[1]) : 300;
     std::vector<Level> levels = {
-            {"ML-DSA-44", MLDSA44_PUBLICKEYBYTES, MLDSA44_SECRETKEYBYTES, MLDSA44_BYTES, 4, 4, 80, 576, 32, 1u << 17,
+            {"ML-DSA-44", OPENPQC_MLDSA44_PUBLICKEYBYTES, OPENPQC_MLDSA44_SECRETKEYBYTES, OPENPQC_MLDSA44_BYTES, 4, 4, 80, 576, 32, 1u << 17,
              78, OPENPQC(44), {{"ref", REFERENCE(2, ref)}}, REFERENCE_INTERNAL(2)},
-            {"ML-DSA-65", MLDSA65_PUBLICKEYBYTES, MLDSA65_SECRETKEYBYTES, MLDSA65_BYTES, 6, 5, 55, 640, 48, 1u << 19,
+            {"ML-DSA-65", OPENPQC_MLDSA65_PUBLICKEYBYTES, OPENPQC_MLDSA65_SECRETKEYBYTES, OPENPQC_MLDSA65_BYTES, 6, 5, 55, 640, 48, 1u << 19,
              196, OPENPQC(65), {{"ref", REFERENCE(3, ref)}}, REFERENCE_INTERNAL(3)},
-            {"ML-DSA-87", MLDSA87_PUBLICKEYBYTES, MLDSA87_SECRETKEYBYTES, MLDSA87_BYTES, 8, 7, 75, 640, 64, 1u << 19,
+            {"ML-DSA-87", OPENPQC_MLDSA87_PUBLICKEYBYTES, OPENPQC_MLDSA87_SECRETKEYBYTES, OPENPQC_MLDSA87_BYTES, 8, 7, 75, 640, 64, 1u << 19,
              120, OPENPQC(87), {{"ref", REFERENCE(5, ref)}}, REFERENCE_INTERNAL(5)},
     };
 #if defined(OPENPQC_HAVE_REFERENCE_MLDSA_AVX2)

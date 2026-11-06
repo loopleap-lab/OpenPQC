@@ -5,28 +5,24 @@
 //
 // Header-only wrapper over the C API in ML/DSA/openpqc_mldsa.h, so that
 // including it does not pull in the algorithms (those are in ML/DSA/scheme/,
-// compiled once in ML/DSA/mldsa.cpp). Sizes are part of the types:
+// compiled once in ML/DSA/mldsa.cpp). Sizes are part of the types, and the
+// secrets (sk, the seed) are openpqc::secret<N>, which zeroize themselves
+// (openpqc/common.hpp):
 //
-//   using DSA = openpqc::mldsa::MLDSA65;
+//   using DSA = openpqc::ML_DSA_65;                 // openpqc/openpqc.hpp; = openpqc::mldsa::MLDSA<65>
 //   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
-//   if (DSA::keypair(pk, sk) != 0 ||               // randomness from the operating system
-//       DSA::sign(sig, message, sk) != 0)          // hedged; optional context string last
-//       return -1;                                 // no key pair or no signature
-//   bool valid = DSA::verify(sig, message, pk) == 0;            // 0 and only 0: valid
-//   if (DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk) != 0)   // HashML-DSA
-//       return -1;
+//   openpqc::check(DSA::keygen(pk, sk));            // randomness from the operating system
+//   openpqc::check(DSA::sign(sig, message, sk));    // hedged; optional context string last
+//   bool valid = DSA::verify(sig, message, pk) == openpqc::status::ok;    // ok and only ok: valid
+//   openpqc::check(DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk));   // HashML-DSA
 //
-// All functions return 0 on success (for verification: a valid signature) and
-// otherwise one of the OPENPQC_MLDSA_ERR_* codes of openpqc_mldsa.h. What that
-// header says about private keys (sk from a trusted source; check_sk and
-// check_keypair for a stored or imported key) and about the stack each call
-// needs applies here too.
-//
-// keypair_derand, sign_derand, prehash_sign_derand and sign_mu_derand take xi or rnd
-// from the caller: keypair_derand is for testing and for expanding a seed xi stored in
-// place of sk (FIPS 204, Section 3.6.3), the signing functions with rnd = {0} are the
-// deterministic variant (Sections 3.4 and 5.2) and with any other rnd for testing only
-// (Sections 5.4 and 6; "Testing interfaces" in openpqc_mldsa.h).
+// Every function returns an openpqc::status and is [[nodiscard]]. What
+// openpqc_mldsa.h says about private keys (sk from a trusted source; check_sk
+// and check_keypair for a stored or imported key) and about the stack each
+// call needs applies here too. keygen_from_seed expands a seed xi stored in
+// place of sk (FIPS 204, Section 3.6.3); the *_deterministic functions sign
+// with rnd = {0}^32 (Sections 3.4 and 5.2). Signing with rnd given and the
+// internal functions are for testing only, in openpqc/testing.hpp.
 #pragma once
 
 #include <array>
@@ -36,6 +32,7 @@
 
 #include "Core/prehash.hpp"
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/common.hpp"
 
 namespace openpqc::mldsa {
 
@@ -53,22 +50,23 @@ template <int Level> struct api;
 
 #define OPENPQC_MLDSA_CXX_API(N)                                                                            \
     template <> struct api<N> {                                                                             \
-        static constexpr std::size_t public_key_bytes = MLDSA##N##_PUBLICKEYBYTES;                          \
-        static constexpr std::size_t secret_key_bytes = MLDSA##N##_SECRETKEYBYTES;                          \
-        static constexpr std::size_t signature_bytes = MLDSA##N##_BYTES;                                    \
-        static constexpr auto keypair = openpqc_mldsa##N##_keypair;                                         \
-        static constexpr auto keypair_derand = openpqc_mldsa##N##_keypair_derand;                           \
+        static constexpr openpqc_alg alg = OPENPQC_ML_DSA_##N;                                              \
+        static constexpr std::size_t public_key_bytes = OPENPQC_MLDSA##N##_PUBLICKEYBYTES;                  \
+        static constexpr std::size_t secret_key_bytes = OPENPQC_MLDSA##N##_SECRETKEYBYTES;                  \
+        static constexpr std::size_t signature_bytes = OPENPQC_MLDSA##N##_BYTES;                            \
+        static constexpr auto keygen = openpqc_mldsa##N##_keygen;                                           \
+        static constexpr auto keygen_from_seed = openpqc_mldsa##N##_keygen_from_seed;                       \
         static constexpr auto check_sk = openpqc_mldsa##N##_check_sk;                                       \
         static constexpr auto check_keypair = openpqc_mldsa##N##_check_keypair;                             \
         static constexpr auto sign = openpqc_mldsa##N##_sign;                                               \
-        static constexpr auto sign_derand = openpqc_mldsa##N##_sign_derand;                                 \
+        static constexpr auto sign_deterministic = openpqc_mldsa##N##_sign_deterministic;                   \
         static constexpr auto verify = openpqc_mldsa##N##_verify;                                           \
         static constexpr auto prehash_sign = openpqc_mldsa##N##_prehash_sign;                               \
-        static constexpr auto prehash_sign_derand = openpqc_mldsa##N##_prehash_sign_derand;                 \
+        static constexpr auto prehash_sign_deterministic = openpqc_mldsa##N##_prehash_sign_deterministic;   \
         static constexpr auto prehash_verify = openpqc_mldsa##N##_prehash_verify;                           \
         static constexpr auto external_mu = openpqc_mldsa##N##_external_mu;                                 \
         static constexpr auto sign_mu = openpqc_mldsa##N##_sign_mu;                                         \
-        static constexpr auto sign_mu_derand = openpqc_mldsa##N##_sign_mu_derand;                           \
+        static constexpr auto sign_mu_deterministic = openpqc_mldsa##N##_sign_mu_deterministic;             \
         static constexpr auto verify_mu = openpqc_mldsa##N##_verify_mu;                                     \
     };
 
@@ -85,87 +83,94 @@ struct MLDSA {
     using api = detail::api<Level>;
     using bytes = std::span<const std::uint8_t>;
 
+    static constexpr openpqc_alg alg = api::alg;
     static constexpr int level = Level;
     static constexpr std::size_t public_key_bytes = api::public_key_bytes;
     static constexpr std::size_t secret_key_bytes = api::secret_key_bytes;
     static constexpr std::size_t signature_bytes = api::signature_bytes;
-    static constexpr std::size_t seed_bytes = MLDSA_SEEDBYTES;   // xi
-    static constexpr std::size_t rnd_bytes = MLDSA_RNDBYTES;     // rnd
-    static constexpr std::size_t mu_bytes = MLDSA_CRHBYTES;      // mu
+    static constexpr std::size_t seed_bytes = OPENPQC_MLDSA_SEEDBYTES;        // xi
+    static constexpr std::size_t randomness_bytes = OPENPQC_MLDSA_RNDBYTES;   // rnd (testing interfaces)
+    static constexpr std::size_t mu_bytes = OPENPQC_MLDSA_CRHBYTES;           // mu
 
     using public_key = std::array<std::uint8_t, public_key_bytes>;
-    using secret_key = std::array<std::uint8_t, secret_key_bytes>;
+    using secret_key = openpqc::secret<secret_key_bytes>;
     using signature = std::array<std::uint8_t, signature_bytes>;
-    using seed = std::array<std::uint8_t, seed_bytes>;
-    using randomness = std::array<std::uint8_t, rnd_bytes>;
+    using seed = openpqc::secret<seed_bytes>;
+    using randomness = std::array<std::uint8_t, randomness_bytes>;
     using message_representative = std::array<std::uint8_t, mu_bytes>;
 
+    using pk_in = std::span<const std::uint8_t, public_key_bytes>;
+    using sk_in = std::span<const std::uint8_t, secret_key_bytes>;
+    using sig_out = std::span<std::uint8_t, signature_bytes>;
+    using mu_in = std::span<const std::uint8_t, mu_bytes>;
+
     // ML-DSA.KeyGen, FIPS 204 Algorithm 1 (xi from the operating system)
-    [[nodiscard]] static int keypair(public_key& pk, secret_key& sk) { return api::keypair(pk.data(), sk.data()); }
+    [[nodiscard]] static status keygen(std::span<std::uint8_t, public_key_bytes> pk,
+                                       std::span<std::uint8_t, secret_key_bytes> sk) {
+        return to_status(api::keygen(pk.data(), sk.data()));
+    }
 
     // ML-DSA.KeyGen_internal(xi), Algorithm 6: the key pair of a stored seed
-    [[nodiscard]] static int keypair_derand(public_key& pk, secret_key& sk, const seed& xi) {
-        return api::keypair_derand(pk.data(), sk.data(), xi.data());
+    [[nodiscard]] static status keygen_from_seed(std::span<std::uint8_t, public_key_bytes> pk,
+                                                 std::span<std::uint8_t, secret_key_bytes> sk,
+                                                 std::span<const std::uint8_t, seed_bytes> xi) {
+        return to_status(api::keygen_from_seed(pk.data(), sk.data(), xi.data()));
     }
 
-    // The check of a stored or imported private key (not part of FIPS 204): 0 if sk is what KeyGen
-    // computes for its rho, s1 and s2, OPENPQC_MLDSA_ERR_INVALID_KEY otherwise
-    [[nodiscard]] static int check_sk(const secret_key& sk) { return api::check_sk(sk.data()); }
+    // The check of a stored or imported private key (not part of FIPS 204): ok if sk is what KeyGen computes
+    // for its rho, s1 and s2, invalid_secret_key otherwise
+    [[nodiscard]] static status check_sk(sk_in sk) { return to_status(api::check_sk(sk.data())); }
 
-    // The same for a key pair: 0 if, besides, pk is the public key regenerated from sk
-    [[nodiscard]] static int check_keypair(const public_key& pk, const secret_key& sk) {
-        return api::check_keypair(pk.data(), sk.data());
+    // The same for a key pair: ok if, besides, pk is the public key regenerated from sk
+    [[nodiscard]] static status check_keypair(pk_in pk, sk_in sk) {
+        return to_status(api::check_keypair(pk.data(), sk.data()));
     }
 
-    // ML-DSA.Sign, Algorithm 2: hedged (rnd from the operating system)
-    [[nodiscard]] static int sign(signature& sig, bytes message, const secret_key& sk, bytes ctx = {}) {
-        return api::sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data());
+    // ML-DSA.Sign, Algorithm 2: hedged (rnd from the operating system), and the deterministic variant
+    [[nodiscard]] static status sign(sig_out sig, bytes message, sk_in sk, bytes ctx = {}) {
+        return to_status(api::sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data()));
+    }
+    [[nodiscard]] static status sign_deterministic(sig_out sig, bytes message, sk_in sk, bytes ctx = {}) {
+        return to_status(api::sign_deterministic(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(),
+                                                 sk.data()));
     }
 
-    // Algorithm 2 with rnd given; rnd = {0} is the deterministic variant
-    [[nodiscard]] static int sign_derand(signature& sig, bytes message, const randomness& rnd, const secret_key& sk,
-                                         bytes ctx = {}) {
-        return api::sign_derand(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), rnd.data(),
-                                sk.data());
-    }
-
-    // ML-DSA.Verify, Algorithm 3: 0 for a valid signature (any length is accepted as input)
-    [[nodiscard]] static int verify(bytes sig, bytes message, const public_key& pk, bytes ctx = {}) {
-        return api::verify(sig.data(), sig.size(), message.data(), message.size(), ctx.data(), ctx.size(), pk.data());
+    // ML-DSA.Verify, Algorithm 3: ok for a valid signature (any length is accepted as input)
+    [[nodiscard]] static status verify(bytes sig, bytes message, pk_in pk, bytes ctx = {}) {
+        return to_status(api::verify(sig.data(), sig.size(), message.data(), message.size(), ctx.data(), ctx.size(),
+                                     pk.data()));
     }
 
     // HashML-DSA.Sign and HashML-DSA.Verify, Algorithms 4 and 5
-    [[nodiscard]] static int prehash_sign(signature& sig, bytes message, PreHash ph, const secret_key& sk,
-                                          bytes ctx = {}) {
-        return api::prehash_sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(),
-                                 static_cast<int>(ph), sk.data());
+    [[nodiscard]] static status prehash_sign(sig_out sig, bytes message, PreHash ph, sk_in sk, bytes ctx = {}) {
+        return to_status(api::prehash_sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(),
+                                           static_cast<int>(ph), sk.data()));
     }
-    [[nodiscard]] static int prehash_sign_derand(signature& sig, bytes message, PreHash ph, const randomness& rnd,
-                                                 const secret_key& sk, bytes ctx = {}) {
-        return api::prehash_sign_derand(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(),
-                                        static_cast<int>(ph), rnd.data(), sk.data());
+    [[nodiscard]] static status prehash_sign_deterministic(sig_out sig, bytes message, PreHash ph, sk_in sk,
+                                                           bytes ctx = {}) {
+        return to_status(api::prehash_sign_deterministic(sig.data(), message.data(), message.size(), ctx.data(),
+                                                         ctx.size(), static_cast<int>(ph), sk.data()));
     }
-    [[nodiscard]] static int prehash_verify(bytes sig, bytes message, PreHash ph, const public_key& pk,
-                                            bytes ctx = {}) {
-        return api::prehash_verify(sig.data(), sig.size(), message.data(), message.size(), ctx.data(), ctx.size(),
-                                   static_cast<int>(ph), pk.data());
+    [[nodiscard]] static status prehash_verify(bytes sig, bytes message, PreHash ph, pk_in pk, bytes ctx = {}) {
+        return to_status(api::prehash_verify(sig.data(), sig.size(), message.data(), message.size(), ctx.data(),
+                                             ctx.size(), static_cast<int>(ph), pk.data()));
     }
 
     // External mu: mu = H(H(pk, 64) || M', 64), computed where the message is (Algorithm 7, line 6),
-    // then signed (hedged, or with rnd given) and verified where the keys are
-    [[nodiscard]] static int external_mu(message_representative& mu, bytes message, const public_key& pk,
-                                         bytes ctx = {}) {
-        return api::external_mu(mu.data(), message.data(), message.size(), ctx.data(), ctx.size(), pk.data());
+    // then signed (hedged, or deterministically) and verified where the keys are
+    [[nodiscard]] static status external_mu(std::span<std::uint8_t, mu_bytes> mu, bytes message, pk_in pk,
+                                            bytes ctx = {}) {
+        return to_status(api::external_mu(mu.data(), message.data(), message.size(), ctx.data(), ctx.size(),
+                                          pk.data()));
     }
-    [[nodiscard]] static int sign_mu(signature& sig, const message_representative& mu, const secret_key& sk) {
-        return api::sign_mu(sig.data(), mu.data(), sk.data());
+    [[nodiscard]] static status sign_mu(sig_out sig, mu_in mu, sk_in sk) {
+        return to_status(api::sign_mu(sig.data(), mu.data(), sk.data()));
     }
-    [[nodiscard]] static int sign_mu_derand(signature& sig, const message_representative& mu, const randomness& rnd,
-                                            const secret_key& sk) {
-        return api::sign_mu_derand(sig.data(), mu.data(), rnd.data(), sk.data());
+    [[nodiscard]] static status sign_mu_deterministic(sig_out sig, mu_in mu, sk_in sk) {
+        return to_status(api::sign_mu_deterministic(sig.data(), mu.data(), sk.data()));
     }
-    [[nodiscard]] static int verify_mu(bytes sig, const message_representative& mu, const public_key& pk) {
-        return api::verify_mu(sig.data(), sig.size(), mu.data(), pk.data());
+    [[nodiscard]] static status verify_mu(bytes sig, mu_in mu, pk_in pk) {
+        return to_status(api::verify_mu(sig.data(), sig.size(), mu.data(), pk.data()));
     }
 };
 

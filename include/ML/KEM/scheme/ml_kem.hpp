@@ -330,5 +330,40 @@ Status decaps(std::span<std::uint8_t, 32> K, std::span<const std::uint8_t, Sizes
     return s;
 }
 
+// --- The key-pair check of Section 7.1 -----------------------------------------------------------
+
+// Section 7.1: the check of a key pair that the application imports or holds (review finding N16). With the seed
+// d || z (seed not NULL, 64 bytes), item 1, seed consistency: KeyGen_internal(d, z) must give exactly ek and dk;
+// then items 2 and 3, the checks of Sections 7.2 and 7.3; then item 4, the pair-wise consistency check, which
+// draws m from the RNG. Call it as check_key_pair.
+template <ParameterSet P>
+OPENPQC_MLKEM_NOINLINE Status ml_kem_check_key_pair(std::span<const std::uint8_t, Sizes<P>::ek> ek,
+                                                    std::span<const std::uint8_t, Sizes<P>::dk> dk,
+                                                    const std::uint8_t* seed) {
+    if (seed != nullptr) {
+        std::array<std::uint8_t, Sizes<P>::ek> ek_regenerated;
+        std::array<std::uint8_t, Sizes<P>::dk> dk_regenerated;
+        ZeroizeOnExit wipe{ek_regenerated, dk_regenerated};
+        const std::span<const std::uint8_t, 64> d_z(seed, 64);
+        internal::keygen<P>(ek_regenerated, dk_regenerated, d_z.first<32>(), d_z.last<32>());   // Algorithm 16
+        std::uint8_t differ = opqc_ct_memcmp(ek_regenerated.data(), ek.data(), ek.size()) |
+                              opqc_ct_memcmp(dk_regenerated.data(), dk.data(), dk.size());
+        OPQC_CT_DECLASSIFY(&differ, sizeof differ);   // the outcome of the check is public
+        if (differ != 0) return Status::invalid_secret_key;
+    }
+    if (Status s = check_encapsulation_key<P>(ek); s != Status::ok) return s;
+    if (Status s = check_decapsulation_key<P>(dk); s != Status::ok) return s;
+    return check_pair_wise_consistency<P>(ek, dk);
+}
+
+// Section 7.1: the key-pair check (seed: d || z, or nullptr)
+template <ParameterSet P>
+Status check_key_pair(std::span<const std::uint8_t, Sizes<P>::ek> ek, std::span<const std::uint8_t, Sizes<P>::dk> dk,
+                      const std::uint8_t* seed) {
+    const Status s = call_below_padding<&ml_kem_check_key_pair<P>>(ek, dk, seed);
+    burn_stack<P>();
+    return s;
+}
+
 OPENPQC_ABI_END
 } // namespace openpqc::mlkem

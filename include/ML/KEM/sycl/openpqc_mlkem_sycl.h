@@ -15,13 +15,13 @@
  * aligned, as those of opqc_sycl_mlkem_malloc are, and outputs must not overlap
  * inputs. The results are byte-identical to the CPU library:
  *
- *   opqc_sycl_mlkem_keypair_derand   = openpqc_mlkemNNN_keypair_derand, coins d || z (64 B/op)
- *   opqc_sycl_mlkem_enc_derand       = openpqc_mlkemNNN_enc_derand,     coins m      (32 B/op)
- *   opqc_sycl_mlkem_dec              = openpqc_mlkemNNN_dec
+ *   opqc_sycl_mlkem_keypair_derand   = openpqc_mlkemNNN_keygen_from_seed, coins d || z (64 B/op)
+ *   opqc_sycl_mlkem_enc_derand       = openpqc_testing_mlkemNNN_encaps_derand, coins m (32 B/op)
+ *   opqc_sycl_mlkem_dec              = openpqc_mlkemNNN_decaps
  *
  * opqc_sycl_mlkem_keypair_derand is meant for testing and for expanding stored seeds
  * d || z (FIPS 203, Section 3.3); opqc_sycl_mlkem_enc_derand for testing only: anybody
- * who knows m knows K (openpqc_mlkem.h, "Testing interfaces").
+ * who knows m knows K (openpqc/testing.h, where the CPU's counterpart is).
  * opqc_sycl_mlkem_keypair and opqc_sycl_mlkem_enc draw the coins from the operating
  * system's RNG on the host (FIPS 203, Section 3.3: the module, not the caller,
  * generates the randomness).
@@ -176,7 +176,7 @@ extern "C" {
 #define OPQC_SYCL_MLKEM_INVALID_SK (-5) /* dk failed the check of FIPS 203, Section 7.3 */
 
 /* Results of calls (see Return values) */
-#define OPQC_SYCL_MLKEM_RNG_FAIL (-3)       /* = OPENPQC_MLKEM_ERR_RNG_FAIL */
+#define OPQC_SYCL_MLKEM_RNG_FAIL (-3)       /* = OPENPQC_ERR_RNG */
 #define OPQC_SYCL_MLKEM_SELF_TEST_FAIL (-7) /* create's known-answer self-test failed */
 
 /* The largest max_batch of a context: every launch stays below 2^31 work-items (32

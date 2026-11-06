@@ -24,7 +24,8 @@
 //                                                  omitted, so that opt_rand = PK.seed (Algorithm 19, line 2)
 //   sign_derand, hash_sign_derand                  addrnd given (for testing; addrnd = PK.seed gives the
 //                                                  deterministic signature)
-// keygen_derand is slh_keygen_internal (Algorithm 18) for given seeds, e.g. to expand stored ones.
+// keygen_derand is slh_keygen_internal (Algorithm 18) for given seeds: a testing interface of the C API
+// (openpqc/testing.h; FIPS 205, Section 9). check_secret_key and check_key_pair are the checks of Section 3.1.
 //
 // The pre-hash functions PH, their OIDs and digest lengths are Core's
 // (Core/prehash.hpp), shared with HashML-DSA. As there, the requirement of
@@ -78,6 +79,17 @@ bool check_secret_key(std::span<const std::uint8_t, Sizes<P>::sk> SK) {
     bool ok = opqc_ct_memcmp(PK.data() + Lay::pk_root, SK.data() + Lay::sk_pk_root, P::n) == 0;
     OPQC_CT_DECLASSIFY(&ok, sizeof ok);   // the outcome of the check is public
     return ok;
+}
+
+// The same for a key pair: SK passes check_secret_key and PK is the public key that SK holds (PK.seed ||
+// PK.root, the last 2n bytes of SK). Neither check can see SK.prf, which takes no part in PK: a changed SK.prf
+// signs with a different randomizer R (Algorithm 19, line 3), and the signatures still verify.
+template <ParameterSet P>
+bool check_key_pair(std::span<const std::uint8_t, Sizes<P>::pk> PK, std::span<const std::uint8_t, Sizes<P>::sk> SK) {
+    using Lay = Layout<P>;
+    bool same = opqc_ct_memcmp(PK.data(), SK.data() + Lay::sk_pk_seed, Sizes<P>::pk) == 0;
+    OPQC_CT_DECLASSIFY(&same, sizeof same);   // PK.seed and PK.root are public
+    return same && check_secret_key<P>(SK);
 }
 
 // The configuration of key generation. keygen_derand and keygen run the pair-wise consistency test only

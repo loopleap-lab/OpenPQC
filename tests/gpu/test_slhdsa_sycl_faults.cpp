@@ -19,7 +19,7 @@
 //              returns, so that it leaves no write into status behind it (status in page-locked host memory, read
 //              by the host at once, without a sync)
 //   never run  no kernel runs, and status holds 0 ("valid") from an earlier call: every entry reads
-//              OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE (the fill queued before the first kernel), and the call, sync
+//              OPENPQC_ERR_INVALID_SIGNATURE (the fill queued before the first kernel), and the call, sync
 //              and memcpy return 0 (the runtime saw nothing fail)
 //   fault      chunk 1 runs, chunks 2 and 3 do not, status holds 0 from an earlier call, and the device reports
 //              an asynchronous error after the call has returned 0: memcpy and sync return -2, and status holds
@@ -111,6 +111,7 @@ void counted_for_each_team(sycl::queue& q, std::size_t n, std::size_t local_word
 #undef for_each_team
 
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/testing.h"
 
 namespace faults_test {
 
@@ -127,7 +128,7 @@ int failures = 0;
         }                                                                                    \
     } while (0)
 
-constexpr std::int32_t INVALID = OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE;
+constexpr std::int32_t INVALID = OPENPQC_ERR_INVALID_SIGNATURE;
 constexpr std::int32_t UNTOUCHED = 0x5A5A5A5A;   // a host buffer that no copy reached
 constexpr std::size_t OPS = 5, BATCH = 2, CHUNKS = 3, PH_BYTES = 32;   // PH: SHA2-256
 constexpr std::size_t STATUS_BYTES = OPS * sizeof(std::int32_t);
@@ -137,16 +138,16 @@ struct Cpu {
     int id;
     const char* name;
     std::size_t n, pk, sk, sig, seed;
-    int (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
-    int (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
-    int (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
+    openpqc_status (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
 };
 
 #define SLH_CPU_LIBRARY(S, M)                                                                             \
     Cpu {                                                                                                 \
-        OPENPQC_SLHDSA_##M, #S, SLHDSA_##M##_N, SLHDSA_##M##_PUBLICKEYBYTES, SLHDSA_##M##_SECRETKEYBYTES, \
-                SLHDSA_##M##_BYTES, SLHDSA_##M##_SEEDBYTES, openpqc_slhdsa_##S##_keypair_derand,          \
-                openpqc_slhdsa_##S##_sign_derand, openpqc_slhdsa_##S##_verify                             \
+        OPENPQC_SLHDSA_##M, #S, OPENPQC_SLHDSA_##M##_N, OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES, OPENPQC_SLHDSA_##M##_SECRETKEYBYTES, \
+                OPENPQC_SLHDSA_##M##_BYTES, OPENPQC_SLHDSA_##M##_SEEDBYTES, openpqc_testing_slhdsa_##S##_keygen_derand,          \
+                openpqc_testing_slhdsa_##S##_sign_derand, openpqc_slhdsa_##S##_verify                             \
     }
 const Cpu sets[] = {SLH_CPU_LIBRARY(sha2_128f, SHA2_128F), SLH_CPU_LIBRARY(shake_128f, SHAKE_128F)};
 
@@ -180,8 +181,8 @@ Oracle make_oracle(const Cpu& cpu) {
     o.msg = bytes(40);
     o.ctxstr = {'c', 't', 'x'};
     Bytes sig(cpu.sig);
-    CHECK(cpu.sign_derand(sig.data(), o.msg.data(), o.msg.size(), o.ctxstr.data(), o.ctxstr.size(), nullptr,
-                          o.sk.data()) == 0);
+    CHECK(cpu.sign_derand(sig.data(), o.msg.data(), o.msg.size(), o.ctxstr.data(), o.ctxstr.size(),
+                          o.sk.data() + 2 * cpu.n, o.sk.data()) == 0);   // addrnd = PK.seed: deterministic
     // forged: R, a byte in the FORS part, the last byte (the hypertree part)
     const std::size_t flip[OPS] = {0, 0, 0, cpu.n + 5, cpu.sig - 1};
     for (std::size_t i = 0; i < OPS; i++) {
@@ -433,11 +434,11 @@ void fault(int device, const Oracle& o, long per_chunk) {
                                     pageable_status.data(), OPS),
             f.verify(marker),
             opqc_sycl_slhdsa_prehash_verify(f.ctx, f.sig, f.ph, marker.data(), marker.size(),
-                                            OPENPQC_SLHDSA_PREHASH_SHA2_256, f.pk, f.status, OPS),
+                                            OPENPQC_PREHASH_SHA2_256, f.pk, f.status, OPS),
             opqc_sycl_slhdsa_sign_derand(f.ctx, f.out_sig, f.msg, f.offsets, marker.data(), marker.size(), nullptr,
                                          f.sk, OPS),
             opqc_sycl_slhdsa_prehash_sign_derand(f.ctx, f.out_sig, f.ph, marker.data(), marker.size(),
-                                                 OPENPQC_SLHDSA_PREHASH_SHA2_256, nullptr, f.sk, OPS),
+                                                 OPENPQC_PREHASH_SHA2_256, nullptr, f.sk, OPS),
             opqc_sycl_slhdsa_sign(f.ctx, f.out_sig, f.msg, f.offsets, marker.data(), marker.size(), f.sk, OPS),
             opqc_sycl_slhdsa_keypair_derand(f.ctx, f.out_pk, f.out_sk, f.seeds, OPS),
             opqc_sycl_slhdsa_keypair(f.ctx, f.out_pk, f.out_sk, OPS),

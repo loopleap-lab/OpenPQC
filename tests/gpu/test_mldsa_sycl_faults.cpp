@@ -26,7 +26,7 @@
 //              of the workspace is zero (FIPS 204, Section 3.6.3); verification with status NULL is refused, and a
 //              refused verification has set every status entry to "invalid" when it returns
 //   never run  verification none of whose kernels run, into status entries that hold 0 ("valid") from an earlier
-//              call: every entry reads OPENPQC_MLDSA_ERR_INVALID_SIGNATURE, and the call, sync and memcpy return 0
+//              call: every entry reads OPENPQC_ERR_INVALID_SIGNATURE, and the call, sync and memcpy return 0
 //              (the runtime saw nothing fail); signing none of whose kernels run: -2, since the counters of its
 //              first round are not those of a complete round (before: 0, with no signature written), the workspace
 //              zero, and the next call -2 without a launch
@@ -39,16 +39,16 @@
 //              queue nothing), the workspace zero
 //   throw      signing whose second launch of the first round throws: -2, the workspace zero, the next call -2
 //              without a launch
-//   rng        randomized keypair and sign whose randombytes() fails for chunk 2: OPENPQC_MLDSA_ERR_RNG_FAIL, the
+//   rng        randomized keypair and sign whose randombytes() fails for chunk 2: OPENPQC_ERR_RNG, the
 //              coins and every secret section zero; the context has not failed (the next call gives the CPU's
 //              keys); a refused randomized call draws no randomness
-//   pct        KeyGen whose computation of tr (H(pk), into sk) is left out for chunk 1: OPENPQC_MLDSA_ERR_PCT_FAIL,
+//   pct        KeyGen whose computation of tr (H(pk), into sk) is left out for chunk 1: OPENPQC_ERR_PCT,
 //              pk and sk of operations 0 and 1 zero, the others the CPU's; randomized, the same, with every chunk
 //              computed
 //   limit      the end of the signing loop (FIPS 204, Appendix C), with the loop's bound lowered to one attempt
 //              (Schedule::bound, which the C API never changes; the CPU library's tests do the same with
 //              sign_mu<P, 1>): 16 signatures, most of which reach it, all-zero signatures and
-//              OPENPQC_MLDSA_ERR_SIGNING_LIMIT in status where the CPU library has them, and as the result of a
+//              OPENPQC_ERR_SIGNING_LIMIT in status where the CPU library has them, and as the result of a
 //              call without status; the secret sections zero
 //   self-test  create with one launch of its self-test left out: OPQC_SYCL_MLDSA_SELF_TEST_FAIL, and no context
 //
@@ -133,6 +133,7 @@ void counted_for_each_team(sycl::queue& q, std::size_t n, std::size_t local_word
 #undef for_each_team
 
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/testing.h"
 
 // The randomness of the library (openpqc_core_testrng): a deterministic generator, which fails on call number
 // fail_at (counted from the last reset) when that is set, and keeps every byte it gives since the last reset
@@ -178,8 +179,8 @@ int failures = 0;
     } while (0)
 
 constexpr std::size_t OPS = 5, BATCH = 2;
-constexpr std::size_t PK = MLDSA44_PUBLICKEYBYTES, SK = MLDSA44_SECRETKEYBYTES, SIG = MLDSA44_BYTES;
-constexpr std::int32_t INVALID = OPENPQC_MLDSA_ERR_INVALID_SIGNATURE;
+constexpr std::size_t PK = OPENPQC_MLDSA44_PUBLICKEYBYTES, SK = OPENPQC_MLDSA44_SECRETKEYBYTES, SIG = OPENPQC_MLDSA44_BYTES;
+constexpr std::int32_t INVALID = OPENPQC_ERR_INVALID_SIGNATURE;
 constexpr std::int32_t UNTOUCHED = 0x5A5A5A5A;   // a host buffer that no copy reached
 constexpr long KEYGEN_LAUNCHES = 5;              // keygen_seed, expand_a, expand_s, keygen_arith, hash_pk (tr)
 constexpr long VERIFY_LAUNCHES = 5;              // hash_pk, verify_prepare, expand_a, verify_arith, verify_final
@@ -201,7 +202,7 @@ struct Oracle {
         for (std::size_t i = 0; i < OPS; i++) {
             for (std::size_t j = 0; j < 20 + 9 * i; j++) msgs.push_back(static_cast<std::uint8_t>(i * 31 + j));
             offsets.push_back(msgs.size());
-            CHECK(openpqc_mldsa44_keypair_derand(&pk[i * PK], &sk[i * SK], &seeds[32 * i]) == 0);
+            CHECK(openpqc_mldsa44_keygen_from_seed(&pk[i * PK], &sk[i * SK], &seeds[32 * i]) == 0);
             CHECK(sign(&sig[i * SIG], i, &rnd[32 * i], &sk[i * SK]) == 0);
         }
         forged = sig;
@@ -217,7 +218,7 @@ struct Oracle {
     const std::uint8_t* message(std::size_t i) const { return msgs.data() + offsets[i]; }
     std::size_t length(std::size_t i) const { return offsets[i + 1] - offsets[i]; }
     int sign(std::uint8_t* out, std::size_t i, const std::uint8_t* r, const std::uint8_t* key) const {
-        return openpqc_mldsa44_sign_derand(out, message(i), length(i), CTXSTR, sizeof CTXSTR, r, key);
+        return openpqc_testing_mldsa44_sign_derand(out, message(i), length(i), CTXSTR, sizeof CTXSTR, r, key);
     }
 };
 
@@ -356,7 +357,7 @@ void cpu_keys(const Bytes& xi, Bytes& pk, Bytes& sk) {
     pk.assign(PK * OPS, 0);
     sk.assign(SK * OPS, 0);
     for (std::size_t i = 0; i < OPS; i++)
-        CHECK(openpqc_mldsa44_keypair_derand(&pk[i * PK], &sk[i * SK], &xi[32 * i]) == 0);
+        CHECK(openpqc_mldsa44_keygen_from_seed(&pk[i * PK], &sk[i * SK], &xi[32 * i]) == 0);
 }
 
 // Nothing injected: the CPU's results, the workspace's secret sections zero after each call
@@ -611,7 +612,7 @@ void rng(int device, const Oracle& o) {
     Rng::fail_at = 2;
     const int src = opqc_sycl_mldsa_sign(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, sizeof CTXSTR, f.sk, f.status, OPS);
     const std::string sleft = f.secrets_left();
-    CHECK(krc == OPENPQC_MLDSA_ERR_RNG_FAIL && src == OPENPQC_MLDSA_ERR_RNG_FAIL);
+    CHECK(krc == OPENPQC_ERR_RNG && src == OPENPQC_ERR_RNG);
     CHECK(kleft == "none" && sleft == "none");
     // the context has not failed
     CHECK(opqc_sycl_mldsa_keypair_derand(f.ctx, f.pk, f.sk, f.seeds, OPS) == 0);
@@ -653,8 +654,8 @@ void pct(int device, const Oracle& o) {
     const bool randomized = records(f.raw_get(f.pk, PK * OPS), rpk, PK, {0, 1}) &&
                             records(f.raw_get(f.sk, SK * OPS), rsk, SK, {0, 1});
     const int next = opqc_sycl_mldsa_keypair_derand(f.ctx, f.pk, f.sk, f.seeds, OPS);
-    CHECK(rc == OPENPQC_MLDSA_ERR_PCT_FAIL && derand && left == "none");
-    CHECK(rrc == OPENPQC_MLDSA_ERR_PCT_FAIL && randomized && Rng::calls == 3 && next == 0);
+    CHECK(rc == OPENPQC_ERR_PCT && derand && left == "none");
+    CHECK(rrc == OPENPQC_ERR_PCT && randomized && Rng::calls == 3 && next == 0);
     report(device, "pct", before,
            "keypair_derand " + std::to_string(rc) + ", pairs 0 and 1 zero and the others the CPU's: " +
                    (derand ? "yes" : "NO") + ", secrets left: " + left + "; keypair " + std::to_string(rrc) +
@@ -687,7 +688,7 @@ void limit(int device, const Oracle& o) {
         want_status[i] = static_cast<std::int32_t>(r);
     }
     const auto limited = static_cast<std::size_t>(
-            std::count(want_status.begin(), want_status.end(), std::int32_t{OPENPQC_MLDSA_ERR_SIGNING_LIMIT}));
+            std::count(want_status.begin(), want_status.end(), std::int32_t{OPENPQC_ERR_SIGNING_LIMIT}));
     CHECK(limited > 0 && limited < N);   // both outcomes
     auto* d = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(f.ctx, mu.size() + rnd.size() + keys.size() + SIG * N));
     auto* st = static_cast<std::int32_t*>(opqc_sycl_mldsa_malloc(f.ctx, 4 * N));
@@ -706,7 +707,7 @@ void limit(int device, const Oracle& o) {
     const Bytes got2 = f.raw_get(d_sig, SIG * N);
     const std::string left = f.secrets_left();
     CHECK(rc == 0 && got == want && got_status == want_status);
-    CHECK(rc_nostatus == OPENPQC_MLDSA_ERR_SIGNING_LIMIT && got2 == want && left == "none");
+    CHECK(rc_nostatus == OPENPQC_ERR_SIGNING_LIMIT && got2 == want && left == "none");
     opqc_sycl_mldsa_free(f.ctx, d);
     opqc_sycl_mldsa_free(f.ctx, st);
     // randomized, the fixture's messages under their keys in three launches: the CPU's sign_mu<P, 1> of each
@@ -729,10 +730,10 @@ void limit(int device, const Oracle& o) {
                     std::span<std::uint8_t, SIG>(&rwant[i * SIG], SIG), std::span<const std::uint8_t, SK>(&o.sk[i * SK], SK),
                     std::span<const std::uint8_t, 64>(m.data(), 64), std::span<const std::uint8_t, 32>(&r[32 * i], 32)));
         }
-        const bool any = std::count(rstatus.begin(), rstatus.end(), std::int32_t{OPENPQC_MLDSA_ERR_SIGNING_LIMIT}) > 0;
+        const bool any = std::count(rstatus.begin(), rstatus.end(), std::int32_t{OPENPQC_ERR_SIGNING_LIMIT}) > 0;
         const bool same = records(f.raw_get(f.sig, SIG * OPS), rwant, SIG);
         const bool ok = same && (with_status ? rrc == 0 && f.raw_status() == rstatus
-                                             : rrc == (any ? OPENPQC_MLDSA_ERR_SIGNING_LIMIT : 0));
+                                             : rrc == (any ? OPENPQC_ERR_SIGNING_LIMIT : 0));
         CHECK(ok);
         randomized += std::string(with_status ? "; sign " : ", without status ") + std::to_string(rrc) + " " +
                       (with_status ? show(rstatus) : std::string(any ? "(a signature at the limit)" : "(none)")) +

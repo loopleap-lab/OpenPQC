@@ -11,13 +11,13 @@
  * checks of Sections 7.2 and 7.3 and encapsulate and decapsulate to the same key. The check draws its
  * m from randombytes() (here the test's own): keypair_derand must make exactly that one call of 32
  * bytes, which a build without the check does not make, and still be deterministic; keypair makes two
- * (d || z, then m). If either call fails, KeyGen must return OPENPQC_MLKEM_ERR_RNG_FAIL, and if the
+ * (d || z, then m). If either call fails, KeyGen must return OPENPQC_ERR_RNG, and if the
  * check's call fails, the keys it has computed must be zeroized. (That a passing check leaves the keys
  * as they are is checked by mlkemNNN_pct_kat: the known-answer hash of the library with the check.)
  *
  * Built with OPENPQC_TEST_EXPECT_PCT_FAIL (mlkem_pct_fail), against the library built with
  * OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST as well, which changes a bit of the check's K: then KeyGen,
- * randomized and from a seed, must return OPENPQC_MLKEM_ERR_PCT_FAIL and leave both keys zeroized.
+ * randomized and from a seed, must return OPENPQC_ERR_PCT and leave both keys zeroized.
  * This fails if the check is not compiled in or its result is not used, which the checks above cannot
  * see.
  */
@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include "ML/KEM/openpqc_mlkem.h"
+#include "openpqc/testing.h"
 
 static int failures = 0;
 
@@ -81,45 +82,45 @@ static int all_zero(const uint8_t *p, size_t len)
 /* KeyGen with the check: succeeds, uses the RNG as documented, gives working keys */
 #define TEST_LEVEL(N)                                                                                      \
     do {                                                                                                   \
-        static uint8_t pk[MLKEM##N##_PUBLICKEYBYTES], sk[MLKEM##N##_SECRETKEYBYTES];                     \
-        static uint8_t pk2[MLKEM##N##_PUBLICKEYBYTES], sk2[MLKEM##N##_SECRETKEYBYTES];                   \
-        static uint8_t ct[MLKEM##N##_CIPHERTEXTBYTES];                                                     \
-        uint8_t coins[2 * MLKEM_SYMBYTES], m[MLKEM_SYMBYTES], ss[MLKEM_BYTES], ss2[MLKEM_BYTES];         \
+        static uint8_t pk[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], sk[OPENPQC_MLKEM##N##_SECRETKEYBYTES];                     \
+        static uint8_t pk2[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], sk2[OPENPQC_MLKEM##N##_SECRETKEYBYTES];                   \
+        static uint8_t ct[OPENPQC_MLKEM##N##_CIPHERTEXTBYTES];                                                     \
+        uint8_t coins[2 * OPENPQC_MLKEM_SYMBYTES], m[OPENPQC_MLKEM_SYMBYTES], ss[OPENPQC_MLKEM_BYTES], ss2[OPENPQC_MLKEM_BYTES];         \
         for (unsigned i = 0; i < sizeof coins; i++) coins[i] = (uint8_t)(i * 13 + N);                    \
         for (unsigned i = 0; i < sizeof m; i++) m[i] = (uint8_t)(i * 7 + 1);                             \
         /* from a seed: exactly one RNG call, for the check's m */                                       \
         rng_reset(0);                                                                                      \
-        CHECK(openpqc_mlkem##N##_keypair_derand(pk, sk, coins) == OPENPQC_MLKEM_OK);                       \
-        CHECK(rng_calls == 1 && rng_bytes == MLKEM_SYMBYTES);                                              \
+        CHECK(openpqc_mlkem##N##_keygen_from_seed(pk, sk, coins) == OPENPQC_OK);                       \
+        CHECK(rng_calls == 1 && rng_bytes == OPENPQC_MLKEM_SYMBYTES);                                              \
         /* deterministic all the same: the check does not change the keys */                             \
-        CHECK(openpqc_mlkem##N##_keypair_derand(pk2, sk2, coins) == OPENPQC_MLKEM_OK);                     \
+        CHECK(openpqc_mlkem##N##_keygen_from_seed(pk2, sk2, coins) == OPENPQC_OK);                     \
         CHECK(memcmp(pk, pk2, sizeof pk) == 0 && memcmp(sk, sk2, sizeof sk) == 0);                         \
-        CHECK(openpqc_mlkem##N##_check_pk(pk) == OPENPQC_MLKEM_OK);                                        \
-        CHECK(openpqc_mlkem##N##_check_sk(sk) == OPENPQC_MLKEM_OK);                                        \
-        CHECK(openpqc_mlkem##N##_enc_derand(ct, ss, pk, m) == OPENPQC_MLKEM_OK);                           \
-        CHECK(openpqc_mlkem##N##_dec(ss2, ct, sk) == OPENPQC_MLKEM_OK);                                    \
+        CHECK(openpqc_mlkem##N##_check_pk(pk) == OPENPQC_OK);                                        \
+        CHECK(openpqc_mlkem##N##_check_sk(sk) == OPENPQC_OK);                                        \
+        CHECK(openpqc_testing_mlkem##N##_encaps_derand(ct, ss, pk, m) == OPENPQC_OK);                           \
+        CHECK(openpqc_mlkem##N##_decaps(ss2, ct, sk) == OPENPQC_OK);                                    \
         CHECK(memcmp(ss, ss2, sizeof ss) == 0);                                                            \
         /* randomized: d || z, then the check's m */                                                     \
         rng_reset(0);                                                                                      \
-        CHECK(openpqc_mlkem##N##_keypair(pk, sk) == OPENPQC_MLKEM_OK);                                     \
-        CHECK(rng_calls == 2 && rng_bytes == 3 * MLKEM_SYMBYTES);                                          \
-        CHECK(openpqc_mlkem##N##_enc(ct, ss, pk) == OPENPQC_MLKEM_OK);                                     \
-        CHECK(openpqc_mlkem##N##_dec(ss2, ct, sk) == OPENPQC_MLKEM_OK);                                    \
+        CHECK(openpqc_mlkem##N##_keygen(pk, sk) == OPENPQC_OK);                                     \
+        CHECK(rng_calls == 2 && rng_bytes == 3 * OPENPQC_MLKEM_SYMBYTES);                                          \
+        CHECK(openpqc_mlkem##N##_encaps(ct, ss, pk) == OPENPQC_OK);                                     \
+        CHECK(openpqc_mlkem##N##_decaps(ss2, ct, sk) == OPENPQC_OK);                                    \
         CHECK(memcmp(ss, ss2, sizeof ss) == 0);                                                            \
         /* no randomness for the check's m: an error, and both keys zeroized */                          \
         memset(pk, 0xAA, sizeof pk);                                                                       \
         memset(sk, 0xAA, sizeof sk);                                                                       \
         rng_reset(1);                                                                                      \
-        CHECK(openpqc_mlkem##N##_keypair_derand(pk, sk, coins) == OPENPQC_MLKEM_ERR_RNG_FAIL);             \
+        CHECK(openpqc_mlkem##N##_keygen_from_seed(pk, sk, coins) == OPENPQC_ERR_RNG);             \
         CHECK(all_zero(pk, sizeof pk) && all_zero(sk, sizeof sk));                                         \
         memset(pk, 0xAA, sizeof pk);                                                                       \
         memset(sk, 0xAA, sizeof sk);                                                                       \
         rng_reset(2);                                                                                      \
-        CHECK(openpqc_mlkem##N##_keypair(pk, sk) == OPENPQC_MLKEM_ERR_RNG_FAIL);                           \
+        CHECK(openpqc_mlkem##N##_keygen(pk, sk) == OPENPQC_ERR_RNG);                           \
         CHECK(all_zero(pk, sizeof pk) && all_zero(sk, sizeof sk));                                         \
         /* no randomness for d || z: an error */                                                         \
         rng_reset(1);                                                                                      \
-        CHECK(openpqc_mlkem##N##_keypair(pk, sk) == OPENPQC_MLKEM_ERR_RNG_FAIL);                           \
+        CHECK(openpqc_mlkem##N##_keygen(pk, sk) == OPENPQC_ERR_RNG);                           \
         CHECK(rng_calls == 1);                                                                             \
         printf("ML-KEM-%d: done\n", N);                                                                    \
         fflush(stdout);                                                                                    \
@@ -128,20 +129,20 @@ static int all_zero(const uint8_t *p, size_t len)
 /* KeyGen with a check that fails: an error, and both keys zeroized */
 #define TEST_PCT_FAIL(N)                                                                                   \
     do {                                                                                                   \
-        static uint8_t pk[MLKEM##N##_PUBLICKEYBYTES], sk[MLKEM##N##_SECRETKEYBYTES];                     \
-        uint8_t coins[2 * MLKEM_SYMBYTES];                                                                 \
+        static uint8_t pk[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], sk[OPENPQC_MLKEM##N##_SECRETKEYBYTES];                     \
+        uint8_t coins[2 * OPENPQC_MLKEM_SYMBYTES];                                                                 \
         for (unsigned i = 0; i < sizeof coins; i++) coins[i] = (uint8_t)(i * 13 + N);                    \
         memset(pk, 0xAA, sizeof pk);                                                                       \
         memset(sk, 0xAA, sizeof sk);                                                                       \
         rng_reset(0);                                                                                      \
-        CHECK(openpqc_mlkem##N##_keypair(pk, sk) == OPENPQC_MLKEM_ERR_PCT_FAIL);                           \
-        CHECK(rng_calls == 2 && rng_bytes == 3 * MLKEM_SYMBYTES);   /* d || z, the check's m */           \
+        CHECK(openpqc_mlkem##N##_keygen(pk, sk) == OPENPQC_ERR_PCT);                           \
+        CHECK(rng_calls == 2 && rng_bytes == 3 * OPENPQC_MLKEM_SYMBYTES);   /* d || z, the check's m */           \
         CHECK(all_zero(pk, sizeof pk) && all_zero(sk, sizeof sk));                                         \
         memset(pk, 0xAA, sizeof pk);                                                                       \
         memset(sk, 0xAA, sizeof sk);                                                                       \
         rng_reset(0);                                                                                      \
-        CHECK(openpqc_mlkem##N##_keypair_derand(pk, sk, coins) == OPENPQC_MLKEM_ERR_PCT_FAIL);             \
-        CHECK(rng_calls == 1 && rng_bytes == MLKEM_SYMBYTES);       /* the check's m */                   \
+        CHECK(openpqc_mlkem##N##_keygen_from_seed(pk, sk, coins) == OPENPQC_ERR_PCT);             \
+        CHECK(rng_calls == 1 && rng_bytes == OPENPQC_MLKEM_SYMBYTES);       /* the check's m */                   \
         CHECK(all_zero(pk, sizeof pk) && all_zero(sk, sizeof sk));                                         \
         printf("ML-KEM-%d: done\n", N);                                                                    \
         fflush(stdout);                                                                                    \

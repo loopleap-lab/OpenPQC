@@ -27,6 +27,10 @@ The primitives are organised in groups: Core (shared by every scheme) and one gr
 
 ```
 include/
+  openpqc/   the common API: openpqc_status, openpqc_alg and the algorithm table (common.h), the parameter set
+             chosen at run time (kem.h, sig.h), all of the C API (openpqc.h) and of the C++ API (openpqc.hpp:
+             ML_KEM_768 ..., status, secret<N>, visit_kem, visit_sig); the testing interfaces (testing.h,
+             testing.hpp), in the library OpenPQC::testing, for the tests only
   Core/      shared by every scheme: Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11, header-only), constant-time
              helpers, OS randomness and zeroization, C++ wrappers, the pre-hash functions of HashML-DSA and
              HashSLH-DSA (prehash.hpp); sycl/: the GPU runtime, team, sponge, SHA-2 and message helpers of all
@@ -165,8 +169,10 @@ benchmark that compiles a backend's source itself.
 
 `cmake --install build --prefix <prefix>` installs the library `openpqc` (static, or shared with
 `-DBUILD_SHARED_LIBS=ON`), the GPU library `openpqc_sycl` if it was built, the headers of their APIs under
-`<prefix>/include/openpqc` (included as `"ML/KEM/openpqc_mlkem.h"`, `"ML/DSA/mldsa.hpp"`, `"Core/openpqc_version.h"`,
-...), a CMake package and pkg-config files. Nothing of the tests is installed.
+`<prefix>/include/openpqc` (included as `"openpqc/openpqc.h"`, `"openpqc/openpqc.hpp"`, `"ML/KEM/openpqc_mlkem.h"`,
+`"Core/openpqc_version.h"`, ...; the package's include directories are `<prefix>/include` and
+`<prefix>/include/openpqc`), a CMake package and pkg-config files. Nothing of the tests is installed, the testing
+interfaces (`openpqc/testing.h`, the library `OpenPQC::testing`) included.
 
 ```cmake
 find_package(OpenPQC 0.3 REQUIRED)                       # COMPONENTS sycl: also the GPU library
@@ -189,47 +195,63 @@ Complete programs: [examples/](examples/README.md) (`demo_cpu`: the three scheme
 batches on a GPU, checked against the CPU and timed against it).
 
 ```c
-#include "ML/KEM/openpqc_mlkem.h"        /* link OpenPQC::openpqc */
+#include "openpqc/openpqc.h"             /* link OpenPQC::openpqc */
 
-uint8_t pk[MLKEM768_PUBLICKEYBYTES], sk[MLKEM768_SECRETKEYBYTES];
-uint8_t ct[MLKEM768_CIPHERTEXTBYTES], ss[MLKEM_BYTES], ss2[MLKEM_BYTES];
-if (openpqc_mlkem768_keypair(pk, sk) != 0 ||     /* randomness from the operating system */
-    openpqc_mlkem768_enc(ct, ss, pk) != 0 ||     /* checks pk first (FIPS 203, Section 7.2) */
-    openpqc_mlkem768_dec(ss2, ct, sk) != 0)      /* ss2 == ss */
-    return -1;                                   /* OPENPQC_MLKEM_ERR_*: use none of pk, sk, ct, ss, ss2 */
+uint8_t pk[OPENPQC_MLKEM768_PUBLICKEYBYTES], sk[OPENPQC_MLKEM768_SECRETKEYBYTES];
+uint8_t ct[OPENPQC_MLKEM768_CIPHERTEXTBYTES], ss[OPENPQC_MLKEM_BYTES], ss2[OPENPQC_MLKEM_BYTES];
+if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||     /* randomness from the operating system */
+    openpqc_mlkem768_encaps(ct, ss, pk) != OPENPQC_OK || /* checks pk first (FIPS 203, Section 7.2) */
+    openpqc_mlkem768_decaps(ss2, ct, sk) != OPENPQC_OK)  /* ss2 == ss */
+    return -1;                                            /* use none of pk, sk, ct, ss, ss2 */
+
+uint8_t dpk[OPENPQC_MLDSA65_PUBLICKEYBYTES], dsk[OPENPQC_MLDSA65_SECRETKEYBYTES], sig[OPENPQC_MLDSA65_BYTES];
+if (openpqc_mldsa65_keygen(dpk, dsk) != OPENPQC_OK ||
+    openpqc_mldsa65_sign(sig, msg, msglen, ctx, ctxlen, dsk) != OPENPQC_OK)    /* hedged; ctx may be NULL, 0 */
+    return -1;                                                                 /* no key pair or no signature */
+int valid = openpqc_mldsa65_verify(sig, sizeof sig, msg, msglen, ctx, ctxlen, dpk) == OPENPQC_OK;   /* and only OK */
+
+/* the same with the parameter set chosen at run time (openpqc/kem.h, openpqc/sig.h) */
+openpqc_alg alg;
+const openpqc_sign_opts opts = {ctx, ctxlen, OPENPQC_PREHASH_SHA2_512, 0};    /* HashSLH-DSA, hedged */
+if (openpqc_alg_from_name("SLH-DSA-SHA2-128f", &alg) != OPENPQC_OK ||
+    openpqc_sig_keygen(alg, spk, ssk) != OPENPQC_OK ||                         /* sizes: openpqc_alg_info_get(alg) */
+    openpqc_sig_sign(alg, ssig, msg, msglen, &opts, ssk) != OPENPQC_OK)
+    return -1;
 ```
 
-```c
-#include "ML/DSA/openpqc_mldsa.h"        /* link OpenPQC::openpqc */
+Every function returns an `openpqc_status` (`openpqc/common.h`): `OPENPQC_OK` (0) or a negative `OPENPQC_ERR_*` code,
+the same values in every scheme. Its result must be checked: the headers declare the functions `OPENPQC_MUST_CHECK`,
+so the compiler warns about a call whose result is not used. A call that fails produces no output: its buffers keep
+their old contents, or are zero, as each header says under "Results"; they are never a key, a shared secret or a
+signature to use. The functions that take the random values or the formatted message from the caller are for testing
+(FIPS 203 §3.3, FIPS 204 §6, FIPS 205 §9) and are not in this library but in `OpenPQC::testing` (`openpqc/testing.h`,
+built only for the tests, benchmarks and examples, never installed); the library has the deterministic signing
+variants (`*_deterministic`, `OPENPQC_SIGN_DETERMINISTIC`) and the expansion of a stored seed (`*_keygen_from_seed`,
+ML-KEM and ML-DSA). The library needs nothing of the C++ runtime: a C program links it with the C compiler alone.
 
-uint8_t pk[MLDSA65_PUBLICKEYBYTES], sk[MLDSA65_SECRETKEYBYTES], sig[MLDSA65_BYTES];
-if (openpqc_mldsa65_keypair(pk, sk) != 0 ||
-    openpqc_mldsa65_sign(sig, msg, msglen, ctx, ctxlen, sk) != 0)        /* hedged; ctx may be NULL, 0 */
-    return -1;                                   /* OPENPQC_MLDSA_ERR_*: no key pair or no signature */
-int valid = openpqc_mldsa65_verify(sig, sizeof sig, msg, msglen, ctx, ctxlen, pk) == 0;   /* 0 and only 0: valid */
+```cpp
+#include "openpqc/openpqc.hpp"
+
+using KEM = openpqc::ML_KEM_768;                 // = openpqc::mlkem::MLKEM<768>
+KEM::public_key pk;  KEM::secret_key sk;         // secret_key: openpqc::secret<2400>, zeroized when destroyed
+KEM::ciphertext ct;  KEM::shared_secret ss, ss2;
+openpqc::check(KEM::keygen(pk, sk));             // [[nodiscard]] openpqc::status; check() throws openpqc::error
+openpqc::check(KEM::encaps(ct, ss, pk));
+openpqc::check(KEM::decaps(ss2, ct, sk));
+
+openpqc_alg alg;                                 // a parameter set chosen at run time, as a type
+openpqc::check(openpqc::alg_from_name("ML-DSA-65", alg));
+openpqc::status s = openpqc::visit_sig(alg, [&]<class DSA>(DSA) {
+    typename DSA::public_key dpk;  typename DSA::secret_key dsk;  typename DSA::signature sig;
+    openpqc::check(DSA::keygen(dpk, dsk));
+    return DSA::sign(sig, message, dsk);
+});
 ```
 
-```c
-#include "SLH/DSA/openpqc_slhdsa.h"      /* link OpenPQC::openpqc */
-
-uint8_t pk[SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[SLHDSA_SHA2_128F_SECRETKEYBYTES];
-static uint8_t sig[SLHDSA_SHA2_128F_BYTES];
-if (openpqc_slhdsa_sha2_128f_keypair(pk, sk) != 0 ||
-    openpqc_slhdsa_sha2_128f_sign(sig, msg, msglen, ctx, ctxlen, sk) != 0)   /* hedged; ctx may be NULL, 0 */
-    return -1;                                   /* OPENPQC_SLHDSA_ERR_*: no key pair or no signature */
-int valid = openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, msglen, ctx, ctxlen, pk) == 0;
-```
-
-Every function returns 0 or a negative error code, and its result must be checked: the headers declare the functions
-`OPQC_MUST_CHECK`, so the compiler warns about a call whose result is not used. A call that fails produces no output:
-its buffers keep their old contents, or are zero, as each header says under "Results"; they are never a key, a shared
-secret or a signature to use. The `_derand` and `_internal` functions take the random values or the formatted message
-from the caller and are for testing (FIPS 203 §3.3, FIPS 204 §6, FIPS 205 §9), apart from the deterministic signing
-variants and the expansion of a stored seed (see the headers, "Testing interfaces"). The library needs nothing of the
-C++ runtime: a C program links it with the C compiler alone.
-
-C++: `openpqc::mlkem::MLKEM768` (`ML/KEM/mlkem.hpp`), `openpqc::mldsa::MLDSA65` (`ML/DSA/mldsa.hpp`),
-`openpqc::slhdsa::SLHDSA_SHA2_128f` (`SLH/DSA/slhdsa.hpp`), `openpqc::fips202` and `openpqc::sha2` (`Core/hash.hpp`),
+C++ (`openpqc/openpqc.hpp`): the class templates `openpqc::mlkem::MLKEM<N>`, `openpqc::mldsa::MLDSA<N>` and
+`openpqc::slhdsa::SLHDSA<set>` under the names of the standards (`openpqc::ML_KEM_768`, `openpqc::ML_DSA_65`,
+`openpqc::SLH_DSA_SHA2_128f`, ...), `openpqc::status`, `openpqc::secret<N>`, `visit_kem` and `visit_sig`;
+`openpqc::fips202` and `openpqc::sha2` (`Core/hash.hpp`),
 or, in the source tree (they are not installed), the algorithms of the standards themselves as templates
 (`ML/KEM/scheme/ml_kem.hpp`, `ML/DSA/scheme/ml_dsa.hpp`, `SLH/DSA/scheme/slh_dsa.hpp`). A program that
 instantiates these compiles copies of its own, in its own build configuration: what a build of the library
@@ -268,8 +290,9 @@ on one laptop are in [include/ML/DSA/README.md](include/ML/DSA/README.md#perform
 on GPUs. It is version 0.3.0: there are no releases yet, and the API and ABI may change. It is not a validated
 cryptographic module and has not been submitted for FIPS 140-3 validation. It has no approved random bit generator,
 no self-tests when the library is loaded (the ML-KEM and ML-DSA GPU contexts run a known-answer test when they are
-created), no integrity test, no error state, no service indicator and no defined module boundary, and its libraries
-always contain the testing interfaces (`_derand`, `_internal`). FIPS 140-3 support is planned as an opt-in build flag
+created), no integrity test, no error state, no service indicator and no defined module boundary. The CPU library
+`openpqc` contains no testing interface (they are in `OpenPQC::testing`, which is never installed); the GPU library
+`openpqc_sycl` still has its `_derand` functions. FIPS 140-3 support is planned as an opt-in build flag
 (SECURITY.md, Known issues). Where FIPS 140-3 is required, use a validated module;
 OpenPQC can serve as an independent implementation to cross-check it. Passing NIST's published ACVP vectors is not a
 CAVP certificate.

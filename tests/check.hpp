@@ -3,6 +3,14 @@
 
 #include <iostream>
 
+// openpqc::status (openpqc/common.hpp) in the messages of CHECK_EQ: its value, as in openpqc/common.h
+namespace openpqc {
+enum class status : int;
+inline std::ostream& operator<<(std::ostream& os, status s) {
+    return os << static_cast<int>(s);
+}
+} // namespace openpqc
+
 namespace check {
 
 inline int failures = 0;

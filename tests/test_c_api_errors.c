@@ -12,7 +12,8 @@
  * buffers filled with 0xAA beforehand, and the result code and the buffers are checked:
  *
  *   unchanged  a failure found before the internal algorithm runs (an argument, a key check,
- *              no randomness): every output still 0xAA
+ *              no randomness, a NULL where a testing interface of openpqc/testing.h takes the
+ *              randomness): every output still 0xAA
  *   zero       a failure of the internal algorithm (ML-DSA's Sign_internal with a malformed sk):
  *              every byte of the output 0
  *
@@ -37,6 +38,7 @@
 #include "ML/DSA/openpqc_mldsa.h"
 #include "ML/KEM/openpqc_mlkem.h"
 #include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/testing.h"
 
 /* ---- the randomness ------------------------------------------------------------------------- */
 
@@ -97,34 +99,54 @@ static void check(int ok, const char *set, const char *what, int rc, int want) {
 #define KEM(N)                                                                                     \
     do {                                                                                        \
         const char *s_ = "ML-KEM-" #N;                                                          \
-        const size_t PK = MLKEM##N##_PUBLICKEYBYTES, SK = MLKEM##N##_SECRETKEYBYTES,            \
-                     CT = MLKEM##N##_CIPHERTEXTBYTES;                                           \
+        const size_t PK = OPENPQC_MLKEM##N##_PUBLICKEYBYTES, SK = OPENPQC_MLKEM##N##_SECRETKEYBYTES,            \
+                     CT = OPENPQC_MLKEM##N##_CIPHERTEXTBYTES;                                           \
         /* positive control: a call that succeeds writes its outputs */                         \
         prefill();                                                                              \
-        check(openpqc_mlkem##N##_keypair(out1, out2) == 0 && !unchanged(out1, PK) &&            \
+        check(openpqc_mlkem##N##_keygen(out1, out2) == 0 && !unchanged(out1, PK) &&            \
                       !unchanged(out2, SK) && !zero(out1, PK),                                  \
               s_, "control: keypair writes pk and sk", 0, 0);                                   \
         rng_fails = 1;                                                                          \
         EXPECT_UNCHANGED(s_, "keypair, no randomness: pk, sk unchanged",                        \
-                         openpqc_mlkem##N##_keypair(out1, out2), OPENPQC_MLKEM_ERR_RNG_FAIL,    \
+                         openpqc_mlkem##N##_keygen(out1, out2), OPENPQC_ERR_RNG,    \
                          out1, PK, out2, SK);                                                   \
         memset(in_key, 0x11, PK); /* not reached: the RNG fails first */                       \
         EXPECT_UNCHANGED(s_, "enc, no randomness: ct, ss unchanged",                            \
-                         openpqc_mlkem##N##_enc(out1, out2, in_key), OPENPQC_MLKEM_ERR_RNG_FAIL, \
-                         out1, CT, out2, MLKEM_BYTES);                                          \
+                         openpqc_mlkem##N##_encaps(out1, out2, in_key), OPENPQC_ERR_RNG, \
+                         out1, CT, out2, OPENPQC_MLKEM_BYTES);                                          \
         rng_fails = 0;                                                                          \
         memset(in_key, 0xFF, PK); /* every coefficient 4095 >= q */                             \
         EXPECT_UNCHANGED(s_, "enc, pk fails its check: ct, ss unchanged",                       \
-                         openpqc_mlkem##N##_enc(out1, out2, in_key), OPENPQC_MLKEM_ERR_INVALID_PK, \
-                         out1, CT, out2, MLKEM_BYTES);                                          \
+                         openpqc_mlkem##N##_encaps(out1, out2, in_key), OPENPQC_ERR_INVALID_PUBLIC_KEY, \
+                         out1, CT, out2, OPENPQC_MLKEM_BYTES);                                          \
         EXPECT_UNCHANGED(s_, "enc_derand, pk fails its check: ct, ss unchanged",                \
-                         openpqc_mlkem##N##_enc_derand(out1, out2, in_key, rnd),                \
-                         OPENPQC_MLKEM_ERR_INVALID_PK, out1, CT, out2, MLKEM_BYTES);            \
+                         openpqc_testing_mlkem##N##_encaps_derand(out1, out2, in_key, rnd),                \
+                         OPENPQC_ERR_INVALID_PUBLIC_KEY, out1, CT, out2, OPENPQC_MLKEM_BYTES);            \
+        EXPECT_UNCHANGED(s_, "enc_derand, m NULL: ct, ss unchanged",                            \
+                         openpqc_testing_mlkem##N##_encaps_derand(out1, out2, in_key, NULL),               \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, CT, out2, OPENPQC_MLKEM_BYTES);              \
         memset(in_key, 0x11, SK); /* H(ek) stored in sk does not match */                       \
         memset(msg, 0x22, sizeof msg);                                                          \
         EXPECT_UNCHANGED(s_, "dec, sk fails its check: ss unchanged",                           \
-                         openpqc_mlkem##N##_dec(out2, out1 + 32768, in_key),                    \
-                         OPENPQC_MLKEM_ERR_INVALID_SK, out2, MLKEM_BYTES, out2, 0);             \
+                         openpqc_mlkem##N##_decaps(out2, out1 + 32768, in_key),                    \
+                         OPENPQC_ERR_INVALID_SECRET_KEY, out2, OPENPQC_MLKEM_BYTES, out2, 0);             \
+        /* check_keypair (FIPS 203, Section 7.1): each check, and the seed's pair */             \
+        uint8_t pk_[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], sk_[OPENPQC_MLKEM##N##_SECRETKEYBYTES];    \
+        uint8_t seed_[OPENPQC_MLKEM_SEEDBYTES];                                                   \
+        memset(seed_, 0x5C, sizeof seed_);                                                        \
+        check(openpqc_mlkem##N##_keygen_from_seed(pk_, sk_, seed_) == OPENPQC_OK &&              \
+                      openpqc_mlkem##N##_check_keypair(pk_, sk_, NULL) == OPENPQC_OK &&          \
+                      openpqc_mlkem##N##_check_keypair(pk_, sk_, seed_) == OPENPQC_OK,           \
+              s_, "control: check_keypair of a pair, with and without its seed", 0, 0);         \
+        memset(in_key, 0xFF, PK);                                                                 \
+        check(openpqc_mlkem##N##_check_keypair(in_key, sk_, NULL) == OPENPQC_ERR_INVALID_PUBLIC_KEY, \
+              s_, "check_keypair, pk fails its check", 0, OPENPQC_ERR_INVALID_PUBLIC_KEY);        \
+        memset(in_key, 0x11, SK);                                                                 \
+        check(openpqc_mlkem##N##_check_keypair(pk_, in_key, NULL) == OPENPQC_ERR_INVALID_SECRET_KEY, \
+              s_, "check_keypair, sk fails its check", 0, OPENPQC_ERR_INVALID_SECRET_KEY);        \
+        seed_[0] ^= 1;                                                                            \
+        check(openpqc_mlkem##N##_check_keypair(pk_, sk_, seed_) == OPENPQC_ERR_INVALID_SECRET_KEY, \
+              s_, "check_keypair, another seed", 0, OPENPQC_ERR_INVALID_SECRET_KEY);              \
     } while (0)
 
 /* ---- ML-DSA --------------------------------------------------------------------------------- */
@@ -139,83 +161,113 @@ static void malformed_mldsa_sk(size_t sklen) {
 #define DSA(N)                                                                                     \
     do {                                                                                        \
         const char *s_ = "ML-DSA-" #N;                                                          \
-        const size_t PK = MLDSA##N##_PUBLICKEYBYTES, SK = MLDSA##N##_SECRETKEYBYTES,            \
-                     SIG = MLDSA##N##_BYTES;                                                    \
+        const size_t PK = OPENPQC_MLDSA##N##_PUBLICKEYBYTES, SK = OPENPQC_MLDSA##N##_SECRETKEYBYTES,            \
+                     SIG = OPENPQC_MLDSA##N##_BYTES;                                                    \
         prefill();                                                                              \
-        check(openpqc_mldsa##N##_keypair(out1, out2) == 0 && !unchanged(out1, PK) &&            \
+        check(openpqc_mldsa##N##_keygen(out1, out2) == 0 && !unchanged(out1, PK) &&            \
                       !unchanged(out2, SK) && !zero(out2, SK),                                  \
               s_, "control: keypair writes pk and sk", 0, 0);                                   \
         memcpy(in_key, out2, SK); /* a good sk */                                               \
         memcpy(good_sk, out2, SK);                                                              \
         rng_fails = 1;                                                                          \
         EXPECT_UNCHANGED(s_, "keypair, no randomness: pk, sk unchanged",                        \
-                         openpqc_mldsa##N##_keypair(out1, out2), OPENPQC_MLDSA_ERR_RNG_FAIL,    \
+                         openpqc_mldsa##N##_keygen(out1, out2), OPENPQC_ERR_RNG,    \
                          out1, PK, out2, SK);                                                   \
         EXPECT_UNCHANGED(s_, "sign, no randomness: sig unchanged",                              \
                          openpqc_mldsa##N##_sign(out1, msg, 8, NULL, 0, in_key),                \
-                         OPENPQC_MLDSA_ERR_RNG_FAIL, out1, SIG, out1, 0);                       \
+                         OPENPQC_ERR_RNG, out1, SIG, out1, 0);                       \
         EXPECT_UNCHANGED(s_, "prehash_sign, no randomness: sig unchanged",                      \
                          openpqc_mldsa##N##_prehash_sign(out1, msg, 8, NULL, 0,                 \
-                                                         OPENPQC_MLDSA_PREHASH_SHA2_512, in_key), \
-                         OPENPQC_MLDSA_ERR_RNG_FAIL, out1, SIG, out1, 0);                       \
+                                                         OPENPQC_PREHASH_SHA2_512, in_key), \
+                         OPENPQC_ERR_RNG, out1, SIG, out1, 0);                       \
         EXPECT_UNCHANGED(s_, "sign_mu, no randomness: sig unchanged",                           \
-                         openpqc_mldsa##N##_sign_mu(out1, msg, in_key), OPENPQC_MLDSA_ERR_RNG_FAIL, \
+                         openpqc_mldsa##N##_sign_mu(out1, msg, in_key), OPENPQC_ERR_RNG, \
                          out1, SIG, out1, 0);                                                   \
         rng_fails = 0;                                                                          \
         EXPECT_UNCHANGED(s_, "sign, ctx of 256 bytes: sig unchanged",                           \
                          openpqc_mldsa##N##_sign(out1, msg, 8, ctx256, 256, in_key),            \
-                         OPENPQC_MLDSA_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
         EXPECT_UNCHANGED(s_, "sign_derand, ctx of 256 bytes: sig unchanged",                    \
-                         openpqc_mldsa##N##_sign_derand(out1, msg, 8, ctx256, 256, rnd, in_key), \
-                         OPENPQC_MLDSA_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+                         openpqc_testing_mldsa##N##_sign_derand(out1, msg, 8, ctx256, 256, rnd, in_key), \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+        EXPECT_UNCHANGED(s_, "sign_deterministic, ctx of 256 bytes: sig unchanged",             \
+                         openpqc_mldsa##N##_sign_deterministic(out1, msg, 8, ctx256, 256, in_key), \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+        EXPECT_UNCHANGED(s_, "sign_derand, rnd NULL: sig unchanged",                            \
+                         openpqc_testing_mldsa##N##_sign_derand(out1, msg, 8, NULL, 0, NULL, in_key), \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+        EXPECT_UNCHANGED(s_, "prehash_sign_derand, rnd NULL: sig unchanged",                    \
+                         openpqc_testing_mldsa##N##_prehash_sign_derand(out1, msg, 8, NULL, 0,  \
+                                                                OPENPQC_PREHASH_SHA2_512, NULL, in_key), \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+        EXPECT_UNCHANGED(s_, "sign_mu_derand, rnd NULL: sig unchanged",                         \
+                         openpqc_testing_mldsa##N##_sign_mu_derand(out1, msg, NULL, in_key),    \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+        EXPECT_UNCHANGED(s_, "sign_internal, rnd NULL: sig unchanged",                          \
+                         openpqc_testing_mldsa##N##_sign_internal(out1, msg, 8, NULL, in_key),  \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
         EXPECT_UNCHANGED(s_, "prehash_sign, ctx of 256 bytes: sig unchanged",                   \
                          openpqc_mldsa##N##_prehash_sign(out1, msg, 8, ctx256, 256,             \
-                                                         OPENPQC_MLDSA_PREHASH_SHA2_512, in_key), \
-                         OPENPQC_MLDSA_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+                                                         OPENPQC_PREHASH_SHA2_512, in_key), \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+        EXPECT_UNCHANGED(s_, "prehash_sign_deterministic, ctx of 256 bytes: sig unchanged",     \
+                         openpqc_mldsa##N##_prehash_sign_deterministic(out1, msg, 8, ctx256, 256, \
+                                                                       OPENPQC_PREHASH_SHA2_512, in_key), \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
         EXPECT_UNCHANGED(s_, "prehash_sign_derand, ctx of 256 bytes: sig unchanged",            \
-                         openpqc_mldsa##N##_prehash_sign_derand(out1, msg, 8, ctx256, 256,      \
-                                                                OPENPQC_MLDSA_PREHASH_SHA2_512, \
+                         openpqc_testing_mldsa##N##_prehash_sign_derand(out1, msg, 8, ctx256, 256,      \
+                                                                OPENPQC_PREHASH_SHA2_512, \
                                                                 rnd, in_key),                   \
-                         OPENPQC_MLDSA_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);               \
         for (int ph_ = 0; ph_ <= 13; ph_ += 13) {                                               \
             EXPECT_UNCHANGED(s_, "prehash_sign, unknown ph: sig unchanged",                     \
                              openpqc_mldsa##N##_prehash_sign(out1, msg, 8, NULL, 0, ph_, in_key), \
-                             OPENPQC_MLDSA_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);           \
+                             OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);           \
             EXPECT_UNCHANGED(s_, "prehash_sign_derand, unknown ph: sig unchanged",              \
-                             openpqc_mldsa##N##_prehash_sign_derand(out1, msg, 8, NULL, 0, ph_, \
+                             openpqc_testing_mldsa##N##_prehash_sign_derand(out1, msg, 8, NULL, 0, ph_, \
                                                                     rnd, in_key),               \
-                             OPENPQC_MLDSA_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);           \
+                             OPENPQC_ERR_INVALID_ARGUMENT, out1, SIG, out1, 0);           \
         }                                                                                       \
         EXPECT_UNCHANGED(s_, "external_mu, ctx of 256 bytes: mu unchanged",                     \
                          openpqc_mldsa##N##_external_mu(out1, msg, 8, ctx256, 256, out2 + 32768), \
-                         OPENPQC_MLDSA_ERR_INVALID_ARGUMENT, out1, MLDSA_CRHBYTES, out1, 0);    \
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, OPENPQC_MLDSA_CRHBYTES, out1, 0);    \
         malformed_mldsa_sk(SK);                                                                 \
         EXPECT_ZERO(s_, "sign, malformed sk: sig zero",                                         \
                     openpqc_mldsa##N##_sign(out1, msg, 8, NULL, 0, in_key),                     \
-                    OPENPQC_MLDSA_ERR_INVALID_KEY, out1, SIG);                                  \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
         EXPECT_ZERO(s_, "sign_derand, malformed sk: sig zero",                                  \
-                    openpqc_mldsa##N##_sign_derand(out1, msg, 8, NULL, 0, rnd, in_key),         \
-                    OPENPQC_MLDSA_ERR_INVALID_KEY, out1, SIG);                                  \
+                    openpqc_testing_mldsa##N##_sign_derand(out1, msg, 8, NULL, 0, rnd, in_key),         \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
         EXPECT_ZERO(s_, "prehash_sign, malformed sk: sig zero",                                 \
                     openpqc_mldsa##N##_prehash_sign(out1, msg, 8, NULL, 0,                      \
-                                                    OPENPQC_MLDSA_PREHASH_SHA2_512, in_key),    \
-                    OPENPQC_MLDSA_ERR_INVALID_KEY, out1, SIG);                                  \
+                                                    OPENPQC_PREHASH_SHA2_512, in_key),    \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
         EXPECT_ZERO(s_, "prehash_sign_derand, malformed sk: sig zero",                          \
-                    openpqc_mldsa##N##_prehash_sign_derand(out1, msg, 8, NULL, 0,               \
-                                                           OPENPQC_MLDSA_PREHASH_SHA2_512, rnd, \
+                    openpqc_testing_mldsa##N##_prehash_sign_derand(out1, msg, 8, NULL, 0,               \
+                                                           OPENPQC_PREHASH_SHA2_512, rnd, \
                                                            in_key),                             \
-                    OPENPQC_MLDSA_ERR_INVALID_KEY, out1, SIG);                                  \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
         EXPECT_ZERO(s_, "sign_mu, malformed sk: sig zero", openpqc_mldsa##N##_sign_mu(out1, msg, in_key), \
-                    OPENPQC_MLDSA_ERR_INVALID_KEY, out1, SIG);                                  \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
+        EXPECT_ZERO(s_, "sign_deterministic, malformed sk: sig zero",                           \
+                    openpqc_mldsa##N##_sign_deterministic(out1, msg, 8, NULL, 0, in_key),       \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
+        EXPECT_ZERO(s_, "prehash_sign_deterministic, malformed sk: sig zero",                   \
+                    openpqc_mldsa##N##_prehash_sign_deterministic(out1, msg, 8, NULL, 0,        \
+                                                                  OPENPQC_PREHASH_SHA2_512, in_key), \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
+        EXPECT_ZERO(s_, "sign_mu_deterministic, malformed sk: sig zero",                        \
+                    openpqc_mldsa##N##_sign_mu_deterministic(out1, msg, in_key),                \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
         EXPECT_ZERO(s_, "sign_mu_derand, malformed sk: sig zero",                               \
-                    openpqc_mldsa##N##_sign_mu_derand(out1, msg, rnd, in_key),                  \
-                    OPENPQC_MLDSA_ERR_INVALID_KEY, out1, SIG);                                  \
+                    openpqc_testing_mldsa##N##_sign_mu_derand(out1, msg, rnd, in_key),                  \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
         EXPECT_ZERO(s_, "sign_internal, malformed sk: sig zero",                                \
-                    openpqc_mldsa##N##_sign_internal(out1, msg, 8, rnd, in_key),                \
-                    OPENPQC_MLDSA_ERR_INVALID_KEY, out1, SIG);                                  \
+                    openpqc_testing_mldsa##N##_sign_internal(out1, msg, 8, rnd, in_key),                \
+                    OPENPQC_ERR_INVALID_SECRET_KEY, out1, SIG);                                  \
         /* positive control: a signature that succeeds is written and not all zero */           \
         prefill();                                                                              \
-        check(openpqc_mldsa##N##_sign_derand(out1, msg, 8, NULL, 0, rnd, good_sk) == 0 &&       \
+        check(openpqc_testing_mldsa##N##_sign_derand(out1, msg, 8, NULL, 0, rnd, good_sk) == 0 &&       \
                       !unchanged(out1, SIG) && !zero(out1, SIG),                                \
               s_, "control: sign_derand with a good sk writes sig", 0, 0);                      \
     } while (0)
@@ -225,26 +277,41 @@ static void malformed_mldsa_sk(size_t sklen) {
 typedef struct {
     const char *name;
     size_t pk, sk, sig, n;
-    int (*keypair)(uint8_t *, uint8_t *);
-    int (*sign)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *);
-    int (*sign_derand)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *,
-                       const uint8_t *);
-    int (*prehash_sign)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, int, const uint8_t *);
-    int (*prehash_sign_derand)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, int,
-                               const uint8_t *, const uint8_t *);
+    openpqc_status (*keypair)(uint8_t *, uint8_t *);
+    openpqc_status (*sign)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *);
+    openpqc_status (*sign_derand)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *,
+                                  const uint8_t *);
+    openpqc_status (*sign_deterministic)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t,
+                                         const uint8_t *);
+    openpqc_status (*prehash_sign)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, int,
+                                   const uint8_t *);
+    openpqc_status (*prehash_sign_derand)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, int,
+                                          const uint8_t *, const uint8_t *);
+    openpqc_status (*prehash_sign_deterministic)(uint8_t *, const uint8_t *, size_t, const uint8_t *, size_t, int,
+                                                 const uint8_t *);
+    openpqc_status (*sign_internal)(uint8_t *, const uint8_t *, size_t, const uint8_t *, const uint8_t *);
+    openpqc_status (*keygen_derand)(uint8_t *, uint8_t *, const uint8_t *);
+    openpqc_status (*check_sk)(const uint8_t *);
+    openpqc_status (*check_keypair)(const uint8_t *, const uint8_t *);
 } SlhSet;
 
 #define SLH(S, M)                                                                                  \
     {"SLH-DSA-" #S,                                                                             \
-     SLHDSA_##M##_PUBLICKEYBYTES,                                                               \
-     SLHDSA_##M##_SECRETKEYBYTES,                                                               \
-     SLHDSA_##M##_BYTES,                                                                        \
-     SLHDSA_##M##_N,                                                                            \
-     openpqc_slhdsa_##S##_keypair,                                                              \
+     OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES,                                                               \
+     OPENPQC_SLHDSA_##M##_SECRETKEYBYTES,                                                               \
+     OPENPQC_SLHDSA_##M##_BYTES,                                                                        \
+     OPENPQC_SLHDSA_##M##_N,                                                                            \
+     openpqc_slhdsa_##S##_keygen,                                                              \
      openpqc_slhdsa_##S##_sign,                                                                 \
-     openpqc_slhdsa_##S##_sign_derand,                                                          \
+     openpqc_testing_slhdsa_##S##_sign_derand,                                                  \
+     openpqc_slhdsa_##S##_sign_deterministic,                                                   \
      openpqc_slhdsa_##S##_prehash_sign,                                                         \
-     openpqc_slhdsa_##S##_prehash_sign_derand}
+     openpqc_testing_slhdsa_##S##_prehash_sign_derand,                                          \
+     openpqc_slhdsa_##S##_prehash_sign_deterministic,                                           \
+     openpqc_testing_slhdsa_##S##_sign_internal,                                                \
+     openpqc_testing_slhdsa_##S##_keygen_derand,                                                \
+     openpqc_slhdsa_##S##_check_sk,                                                             \
+     openpqc_slhdsa_##S##_check_keypair}
 
 static const SlhSet slh_sets[] = {
         SLH(sha2_128s, SHA2_128S), SLH(shake_128s, SHAKE_128S), SLH(sha2_128f, SHA2_128F),
@@ -258,35 +325,63 @@ static void slh(const SlhSet *t) {
     memset(in_key, 0x33, t->sk);
     rng_fails = 1;
     EXPECT_UNCHANGED(s, "keypair, no randomness: pk, sk unchanged", t->keypair(out1, out2),
-                     OPENPQC_SLHDSA_ERR_RNG_FAIL, out1, t->pk, out2, t->sk);
+                     OPENPQC_ERR_RNG, out1, t->pk, out2, t->sk);
     EXPECT_UNCHANGED(s, "sign, no randomness: sig unchanged", t->sign(out1, msg, 8, NULL, 0, in_key),
-                     OPENPQC_SLHDSA_ERR_RNG_FAIL, out1, t->sig, out1, 0);
+                     OPENPQC_ERR_RNG, out1, t->sig, out1, 0);
     EXPECT_UNCHANGED(s, "prehash_sign, no randomness: sig unchanged",
-                     t->prehash_sign(out1, msg, 8, NULL, 0, OPENPQC_SLHDSA_PREHASH_SHA2_256, in_key),
-                     OPENPQC_SLHDSA_ERR_RNG_FAIL, out1, t->sig, out1, 0);
+                     t->prehash_sign(out1, msg, 8, NULL, 0, OPENPQC_PREHASH_SHA2_256, in_key),
+                     OPENPQC_ERR_RNG, out1, t->sig, out1, 0);
     rng_fails = 0;
     EXPECT_UNCHANGED(s, "sign, ctx of 256 bytes: sig unchanged", t->sign(out1, msg, 8, ctx256, 256, in_key),
-                     OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
-    EXPECT_UNCHANGED(s, "sign_derand (NULL), ctx of 256 bytes: sig unchanged",
-                     t->sign_derand(out1, msg, 8, ctx256, 256, NULL, in_key), OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT,
+                     OPENPQC_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
+    EXPECT_UNCHANGED(s, "sign_deterministic, ctx of 256 bytes: sig unchanged",
+                     t->sign_deterministic(out1, msg, 8, ctx256, 256, in_key), OPENPQC_ERR_INVALID_ARGUMENT,
                      out1, t->sig, out1, 0);
+    EXPECT_UNCHANGED(s, "sign_derand, addrnd NULL: sig unchanged",
+                     t->sign_derand(out1, msg, 8, NULL, 0, NULL, in_key), OPENPQC_ERR_INVALID_ARGUMENT,
+                     out1, t->sig, out1, 0);
+    EXPECT_UNCHANGED(s, "prehash_sign_derand, addrnd NULL: sig unchanged",
+                     t->prehash_sign_derand(out1, msg, 8, NULL, 0, OPENPQC_PREHASH_SHA2_256, NULL, in_key),
+                     OPENPQC_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
+    EXPECT_UNCHANGED(s, "sign_internal, addrnd NULL: sig unchanged",
+                     t->sign_internal(out1, msg, 8, NULL, in_key), OPENPQC_ERR_INVALID_ARGUMENT,
+                     out1, t->sig, out1, 0);
+    EXPECT_UNCHANGED(s, "keygen_derand, seed NULL: pk, sk unchanged", t->keygen_derand(out1, out2, NULL),
+                     OPENPQC_ERR_INVALID_ARGUMENT, out1, t->pk, out2, t->sk);
     EXPECT_UNCHANGED(s, "sign_derand (addrnd), ctx of 256 bytes: sig unchanged",
-                     t->sign_derand(out1, msg, 8, ctx256, 256, rnd, in_key), OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT,
+                     t->sign_derand(out1, msg, 8, ctx256, 256, rnd, in_key), OPENPQC_ERR_INVALID_ARGUMENT,
                      out1, t->sig, out1, 0);
     EXPECT_UNCHANGED(s, "prehash_sign, ctx of 256 bytes: sig unchanged",
-                     t->prehash_sign(out1, msg, 8, ctx256, 256, OPENPQC_SLHDSA_PREHASH_SHA2_256, in_key),
-                     OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
+                     t->prehash_sign(out1, msg, 8, ctx256, 256, OPENPQC_PREHASH_SHA2_256, in_key),
+                     OPENPQC_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
     EXPECT_UNCHANGED(s, "prehash_sign_derand, ctx of 256 bytes: sig unchanged",
-                     t->prehash_sign_derand(out1, msg, 8, ctx256, 256, OPENPQC_SLHDSA_PREHASH_SHA2_256, NULL, in_key),
-                     OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
+                     t->prehash_sign_derand(out1, msg, 8, ctx256, 256, OPENPQC_PREHASH_SHA2_256, rnd, in_key),
+                     OPENPQC_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
+    EXPECT_UNCHANGED(s, "prehash_sign_deterministic, ctx of 256 bytes: sig unchanged",
+                     t->prehash_sign_deterministic(out1, msg, 8, ctx256, 256, OPENPQC_PREHASH_SHA2_256, in_key),
+                     OPENPQC_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
     for (int ph = 0; ph <= 13; ph += 13) {
         EXPECT_UNCHANGED(s, "prehash_sign, unknown ph: sig unchanged",
-                         t->prehash_sign(out1, msg, 8, NULL, 0, ph, in_key), OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT,
+                         t->prehash_sign(out1, msg, 8, NULL, 0, ph, in_key), OPENPQC_ERR_INVALID_ARGUMENT,
                          out1, t->sig, out1, 0);
         EXPECT_UNCHANGED(s, "prehash_sign_derand, unknown ph: sig unchanged",
                          t->prehash_sign_derand(out1, msg, 8, NULL, 0, ph, rnd, in_key),
-                         OPENPQC_SLHDSA_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
+        EXPECT_UNCHANGED(s, "prehash_sign_deterministic, unknown ph: sig unchanged",
+                         t->prehash_sign_deterministic(out1, msg, 8, NULL, 0, ph, in_key),
+                         OPENPQC_ERR_INVALID_ARGUMENT, out1, t->sig, out1, 0);
     }
+    /* check_sk and check_keypair (FIPS 205, Section 3.1): a key that is not one, and a pk of another key */
+    check(t->check_sk(in_key) == OPENPQC_ERR_INVALID_SECRET_KEY, s, "check_sk, a key that is not one", 0,
+          OPENPQC_ERR_INVALID_SECRET_KEY);
+    uint8_t seed[96];
+    memset(seed, 0x4D, sizeof seed);
+    check(t->keygen_derand(out1, out2, seed) == OPENPQC_OK && t->check_sk(out2) == OPENPQC_OK &&
+                  t->check_keypair(out1, out2) == OPENPQC_OK,
+          s, "control: check_sk and check_keypair of a key pair", 0, 0);
+    out1[0] ^= 1;
+    check(t->check_keypair(out1, out2) == OPENPQC_ERR_INVALID_SECRET_KEY, s, "check_keypair, another pk", 0,
+          OPENPQC_ERR_INVALID_SECRET_KEY);
 }
 
 int main(void) {
@@ -302,7 +397,7 @@ int main(void) {
     for (size_t i = 0; i < sizeof slh_sets / sizeof slh_sets[0]; i++) slh(&slh_sets[i]);
     /* positive control for SLH-DSA: the fastest key generation writes pk and sk */
     prefill();
-    check(openpqc_slhdsa_sha2_128f_keypair(out1, out2) == 0 && !unchanged(out1, 32) && !unchanged(out2, 64), "SLH-DSA",
+    check(openpqc_slhdsa_sha2_128f_keygen(out1, out2) == 0 && !unchanged(out1, 32) && !unchanged(out2, 64), "SLH-DSA",
           "control: keypair writes pk and sk", 0, 0);
     printf("%d checks, %d failed: %s\n", checks, failures, failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;

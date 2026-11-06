@@ -9,16 +9,14 @@
  * The CPU schemes are compiled without exceptions and RTTI (cmake/OpenPQCLibrary.cmake), so the library needs
  * nothing of the C++ runtime: this program is built with LINKER_LANGUAGE C and would fail to link with an
  * undefined __gxx_personality_v0 otherwise (review finding S018). It runs one ML-KEM-768 encapsulation, one
- * ML-DSA-44 and one SLH-DSA-SHA2-128f signature, checks the results, and the version of the library.
+ * ML-DSA-44 and one SLH-DSA-SHA2-128f signature, the same through the APIs that choose the parameter set at run
+ * time (openpqc/kem.h, openpqc/sig.h), checks the results, and the version of the library.
  */
 
 #include <stdio.h>
 #include <string.h>
 
-#include "Core/openpqc_version.h"
-#include "ML/DSA/openpqc_mldsa.h"
-#include "ML/KEM/openpqc_mlkem.h"
-#include "SLH/DSA/openpqc_slhdsa.h"
+#include "openpqc/openpqc.h"
 
 static int failures = 0;
 
@@ -35,18 +33,18 @@ int main(void) {
     printf("  OpenPQC %s\n", openpqc_version());
 
     {
-        uint8_t pk[MLKEM768_PUBLICKEYBYTES], sk[MLKEM768_SECRETKEYBYTES], ct[MLKEM768_CIPHERTEXTBYTES];
-        uint8_t ss[MLKEM_BYTES], ss2[MLKEM_BYTES];
-        rc = openpqc_mlkem768_keypair(pk, sk);
+        uint8_t pk[OPENPQC_MLKEM768_PUBLICKEYBYTES], sk[OPENPQC_MLKEM768_SECRETKEYBYTES], ct[OPENPQC_MLKEM768_CIPHERTEXTBYTES];
+        uint8_t ss[OPENPQC_MLKEM_BYTES], ss2[OPENPQC_MLKEM_BYTES];
+        rc = openpqc_mlkem768_keygen(pk, sk);
         check(rc == 0, "ML-KEM-768 keypair");
-        rc = openpqc_mlkem768_enc(ct, ss, pk);
+        rc = openpqc_mlkem768_encaps(ct, ss, pk);
         check(rc == 0, "ML-KEM-768 enc");
-        rc = openpqc_mlkem768_dec(ss2, ct, sk);
+        rc = openpqc_mlkem768_decaps(ss2, ct, sk);
         check(rc == 0 && memcmp(ss, ss2, sizeof ss) == 0, "ML-KEM-768 dec gives the encapsulated secret");
     }
     {
-        static uint8_t pk[MLDSA44_PUBLICKEYBYTES], sk[MLDSA44_SECRETKEYBYTES], sig[MLDSA44_BYTES];
-        rc = openpqc_mldsa44_keypair(pk, sk);
+        static uint8_t pk[OPENPQC_MLDSA44_PUBLICKEYBYTES], sk[OPENPQC_MLDSA44_SECRETKEYBYTES], sig[OPENPQC_MLDSA44_BYTES];
+        rc = openpqc_mldsa44_keygen(pk, sk);
         check(rc == 0, "ML-DSA-44 keypair");
         rc = openpqc_mldsa44_sign(sig, msg, sizeof msg, NULL, 0, sk);
         check(rc == 0, "ML-DSA-44 sign");
@@ -54,12 +52,12 @@ int main(void) {
         check(rc == 0, "ML-DSA-44 verify");
         sig[0] ^= 1;
         rc = openpqc_mldsa44_verify(sig, sizeof sig, msg, sizeof msg, NULL, 0, pk);
-        check(rc == OPENPQC_MLDSA_ERR_INVALID_SIGNATURE, "ML-DSA-44 rejects a changed signature");
+        check(rc == OPENPQC_ERR_INVALID_SIGNATURE, "ML-DSA-44 rejects a changed signature");
     }
     {
-        static uint8_t pk[SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[SLHDSA_SHA2_128F_SECRETKEYBYTES];
-        static uint8_t sig[SLHDSA_SHA2_128F_BYTES];
-        rc = openpqc_slhdsa_sha2_128f_keypair(pk, sk);
+        static uint8_t pk[OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES], sk[OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES];
+        static uint8_t sig[OPENPQC_SLHDSA_SHA2_128F_BYTES];
+        rc = openpqc_slhdsa_sha2_128f_keygen(pk, sk);
         check(rc == 0, "SLH-DSA-SHA2-128f keypair");
         rc = openpqc_slhdsa_sha2_128f_sign(sig, msg, sizeof msg, NULL, 0, sk);
         check(rc == 0, "SLH-DSA-SHA2-128f sign");
@@ -67,7 +65,27 @@ int main(void) {
         check(rc == 0, "SLH-DSA-SHA2-128f verify");
         sig[0] ^= 1;
         rc = openpqc_slhdsa_sha2_128f_verify(sig, sizeof sig, msg, sizeof msg, NULL, 0, pk);
-        check(rc == OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE, "SLH-DSA-SHA2-128f rejects a changed signature");
+        check(rc == OPENPQC_ERR_INVALID_SIGNATURE, "SLH-DSA-SHA2-128f rejects a changed signature");
+    }
+    {
+        /* the parameter set chosen at run time (openpqc/kem.h, openpqc/sig.h), by its name */
+        static uint8_t pk[8192], sk[8192], ct[8192], ss[64], ss2[64], sig[65536];
+        const openpqc_alg_info *info;
+        openpqc_alg kem, dsa;
+        check(openpqc_alg_from_name("ML-KEM-1024", &kem) == OPENPQC_OK && (info = openpqc_alg_info_get(kem)) != NULL &&
+                      info->ciphertext_bytes == OPENPQC_MLKEM1024_CIPHERTEXTBYTES,
+              "ML-KEM-1024 by name, and its sizes");
+        check(openpqc_kem_keygen(kem, pk, sk) == OPENPQC_OK && openpqc_kem_encaps(kem, ct, ss, pk) == OPENPQC_OK &&
+                      openpqc_kem_decaps(kem, ss2, ct, sk) == OPENPQC_OK && memcmp(ss, ss2, 32) == 0,
+              "ML-KEM-1024 through openpqc/kem.h");
+        const openpqc_sign_opts opts = {(const uint8_t *)"context", 7, OPENPQC_PREHASH_SHA3_256, 0};
+        check(openpqc_alg_from_name("ML-DSA-87", &dsa) == OPENPQC_OK && openpqc_sig_keygen(dsa, pk, sk) == OPENPQC_OK &&
+                      openpqc_sig_sign(dsa, sig, msg, sizeof msg, &opts, sk) == OPENPQC_OK &&
+                      openpqc_sig_verify(dsa, sig, OPENPQC_MLDSA87_BYTES, msg, sizeof msg, &opts, pk) == OPENPQC_OK,
+              "HashML-DSA-87 through openpqc/sig.h");
+        check(openpqc_sig_keygen(kem, pk, sk) == OPENPQC_ERR_UNSUPPORTED, "a KEM is not a signature scheme");
+        check(strcmp(openpqc_status_string(OPENPQC_ERR_INVALID_SIGNATURE), "invalid signature") == 0,
+              "openpqc_status_string");
     }
 
     if (failures != 0) {

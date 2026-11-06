@@ -59,6 +59,7 @@
 #include <vector>
 
 #include "../../include/SLH/DSA/openpqc_slhdsa.h"
+#include "../../include/openpqc/testing.h"
 #include "../../include/SLH/DSA/sycl/openpqc_slhdsa_sycl.h"
 #include "../bench_common.hpp"
 
@@ -72,16 +73,16 @@ struct Set {
     const char* name;
     bool small;   // an "s" set
     std::size_t n, pk, sk, sig, seed;
-    int (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
-    int (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
-    int (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
+    openpqc_status (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
+    openpqc_status (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
+    openpqc_status (*verify)(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*);
 };
 
 #define SET(ID, NAME, S, M, SMALL)                                                                            \
     Set {                                                                                                     \
-        ID, NAME, SMALL, SLHDSA_##M##_N, SLHDSA_##M##_PUBLICKEYBYTES, SLHDSA_##M##_SECRETKEYBYTES,            \
-                SLHDSA_##M##_BYTES, SLHDSA_##M##_SEEDBYTES, openpqc_slhdsa_##S##_keypair_derand,              \
-                openpqc_slhdsa_##S##_sign_derand, openpqc_slhdsa_##S##_verify                                 \
+        ID, NAME, SMALL, OPENPQC_SLHDSA_##M##_N, OPENPQC_SLHDSA_##M##_PUBLICKEYBYTES, OPENPQC_SLHDSA_##M##_SECRETKEYBYTES,            \
+                OPENPQC_SLHDSA_##M##_BYTES, OPENPQC_SLHDSA_##M##_SEEDBYTES, openpqc_testing_slhdsa_##S##_keygen_derand,              \
+                openpqc_testing_slhdsa_##S##_sign_derand, openpqc_slhdsa_##S##_verify                                 \
     }
 const Set all_sets[] = {
         SET(1, "SLH-DSA-SHA2-128s", sha2_128s, SHA2_128S, true),

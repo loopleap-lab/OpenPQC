@@ -7,7 +7,8 @@
  * mlkem_test_target_common.h -- mlkem-native's test programs on OpenPQC ML-KEM:
  * the macros they take from mlkem-native's src/common.h (see ../README.md)
  *
- *   API names      test_namespace.h builds openpqc_mlkem<level>_<function>
+ *   API names      test_namespace.h builds openpqc_harness_mlkem<level>_<function> from mlkem-native's
+ *                  function names, which mlkem_test_target_api.h maps to OpenPQC's
  *   sizes          MLKEM_PUBLICKEYBYTES(level), ..., MLKEM_BYTES, MLKEM_SYMBYTES
  *   return codes   MLK_ERR_*
  *   attributes     MLK_ALIGN, MLK_NOINLINE, MLK_INLINE
@@ -22,25 +23,27 @@
 
 #include "../../../../include/ML/KEM/openpqc_mlkem.h"
 
-#define MLK_CONFIG_NAMESPACE_PREFIX openpqc_mlkem
+#define MLK_CONFIG_NAMESPACE_PREFIX openpqc_harness_mlkem
 #if !defined(MLK_CONFIG_MULTILEVEL_BUILD)
 #define MLK_CONFIG_MULTILEVEL_BUILD
 #endif
 
-#define MLKEM_PUBLICKEYBYTES_(level) MLKEM##level##_PUBLICKEYBYTES
+#define MLKEM_PUBLICKEYBYTES_(level) OPENPQC_MLKEM##level##_PUBLICKEYBYTES
 #define MLKEM_PUBLICKEYBYTES(level) MLKEM_PUBLICKEYBYTES_(level)
-#define MLKEM_SECRETKEYBYTES_(level) MLKEM##level##_SECRETKEYBYTES
+#define MLKEM_SECRETKEYBYTES_(level) OPENPQC_MLKEM##level##_SECRETKEYBYTES
 #define MLKEM_SECRETKEYBYTES(level) MLKEM_SECRETKEYBYTES_(level)
-#define MLKEM_CIPHERTEXTBYTES_(level) MLKEM##level##_CIPHERTEXTBYTES
+#define MLKEM_CIPHERTEXTBYTES_(level) OPENPQC_MLKEM##level##_CIPHERTEXTBYTES
 #define MLKEM_CIPHERTEXTBYTES(level) MLKEM_CIPHERTEXTBYTES_(level)
+#define MLKEM_BYTES OPENPQC_MLKEM_BYTES
+#define MLKEM_SYMBYTES OPENPQC_MLKEM_SYMBYTES
 
 /* mlkem-native's codes; OpenPQC never returns -1 or -2 */
 #define MLK_ERR_FAIL (-1)
 #define MLK_ERR_OUT_OF_MEMORY (-2)
-#define MLK_ERR_RNG_FAIL OPENPQC_MLKEM_ERR_RNG_FAIL
-#define MLK_ERR_INVALID_PK OPENPQC_MLKEM_ERR_INVALID_PK
-#define MLK_ERR_INVALID_SK OPENPQC_MLKEM_ERR_INVALID_SK
-#define MLK_ERR_PCT_FAIL OPENPQC_MLKEM_ERR_PCT_FAIL
+#define MLK_ERR_RNG_FAIL OPENPQC_ERR_RNG
+#define MLK_ERR_INVALID_PK OPENPQC_ERR_INVALID_PUBLIC_KEY
+#define MLK_ERR_INVALID_SK OPENPQC_ERR_INVALID_SECRET_KEY
+#define MLK_ERR_PCT_FAIL OPENPQC_ERR_PCT
 
 #if defined(__GNUC__) || defined(__clang__)
 #define MLK_ALIGN __attribute__((aligned(32)))

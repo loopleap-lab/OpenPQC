@@ -7,7 +7,7 @@ is marked "(inferred)".
 > ML-DSA; the implementation that followed uses CRYSTALS-Dilithium as its oracle, not mldsa-native, and is described in
 > [include/ML/DSA/README.md](../../include/ML/DSA/README.md). Points of it that this catalog does not cover, as of
 > November 2026: every signing function refuses a private key whose s1 or s2 lies outside [−η, η]
-> (`OPENPQC_MLDSA_ERR_INVALID_KEY`, -6, with an all-zero signature; FIPS 204 §7.2 runs skDecode only on trusted input),
+> (`OPENPQC_ERR_INVALID_SECRET_KEY`, -5, with an all-zero signature; FIPS 204 §7.2 runs skDecode only on trusted input),
 > and `openpqc_mldsaNN_check_sk` / `check_secret_key` and `openpqc_mldsaNN_check_keypair` / `check_key_pair` check a
 > stored key by regenerating it; the documented stack per C call (KeyGen 52/80/122 KiB, with the pair-wise consistency
 > test 87/130/190, the key checks 56/86/129, Sign 85/127/186, Verify 64/99/147 KiB for ML-DSA-44/65/87) and per thread
@@ -18,7 +18,11 @@ is marked "(inferred)".
 > and AArch64 not checked) compiles `H` as a tail jump to `openpqc::sponge`, so that no clearing follows its squeeze;
 > the pair-wise consistency test (`OPENPQC_MLDSA_KEYGEN_PCT`) is a property of the compiled library, as key generation
 > lives in an inline namespace named after its configuration (`keygen_no_pct`, `keygen_pct`,
-> `keygen_pct_breakage_test`), tested by `mldsa_pct`, `mldsa_pct_fail` and `mldsa_pct_odr`.
+> `keygen_pct_breakage_test`), tested by `mldsa_pct`, `mldsa_pct_fail` and `mldsa_pct_odr`. The interfaces that FIPS 204
+> §6 keeps for testing (rnd given, the internal functions) are not in the library but in `OpenPQC::testing`
+> (`openpqc/testing.h`, `openpqc_testing_mldsaNN_*`); the library has the deterministic variant as
+> `openpqc_mldsaNN_sign_deterministic`, `prehash_sign_deterministic` and `sign_mu_deterministic`, and its status codes
+> are those of every scheme (`openpqc/common.h`).
 
 ## 0. Sources, conventions, classification legend
 

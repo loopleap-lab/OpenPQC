@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "ML/DSA/openpqc_mldsa.h"
+#include "openpqc/testing.h"   // signing with rnd given, as the references are measured (OpenPQC::testing)
 
 extern "C" {
 // the reference's API (reference/dilithium), with rnd given to the internal signing function
@@ -73,18 +74,22 @@ struct Api {
 
 #define OPENPQC(N)                                                                                         \
     Api {                                                                                                  \
-        "openpqc", N, MLDSA##N##_PUBLICKEYBYTES, MLDSA##N##_SECRETKEYBYTES, MLDSA##N##_BYTES,               \
-                openpqc_mldsa##N##_keypair_derand,                                                         \
+        "openpqc", N, OPENPQC_MLDSA##N##_PUBLICKEYBYTES, OPENPQC_MLDSA##N##_SECRETKEYBYTES,                 \
+                OPENPQC_MLDSA##N##_BYTES,                                                                  \
+                [](uint8_t* pk, uint8_t* sk, const uint8_t* seed) {                                        \
+                    return static_cast<int>(openpqc_mldsa##N##_keygen_from_seed(pk, sk, seed));            \
+                },                                                                                         \
                 [](uint8_t* sig, const uint8_t* m, size_t mlen, const uint8_t* rnd, const uint8_t* sk) {   \
-                    return openpqc_mldsa##N##_sign_derand(sig, m, mlen, nullptr, 0, rnd, sk);               \
+                    return static_cast<int>(                                                               \
+                            openpqc_testing_mldsa##N##_sign_derand(sig, m, mlen, nullptr, 0, rnd, sk));    \
                 },                                                                                         \
                 [](const uint8_t* sig, size_t siglen, const uint8_t* m, size_t mlen, const uint8_t* pk) {  \
-                    return openpqc_mldsa##N##_verify(sig, siglen, m, mlen, nullptr, 0, pk);                \
+                    return static_cast<int>(openpqc_mldsa##N##_verify(sig, siglen, m, mlen, nullptr, 0, pk)); \
                 }                                                                                          \
     }
 #define REFERENCE(name, mode, impl, N)                                                                     \
     Api {                                                                                                  \
-        name, N, MLDSA##N##_PUBLICKEYBYTES, MLDSA##N##_SECRETKEYBYTES, MLDSA##N##_BYTES,                    \
+        name, N, OPENPQC_MLDSA##N##_PUBLICKEYBYTES, OPENPQC_MLDSA##N##_SECRETKEYBYTES, OPENPQC_MLDSA##N##_BYTES,                  \
                 [](uint8_t* pk, uint8_t* sk, const uint8_t*) {                                             \
                     return pqcrystals_dilithium##mode##_##impl##_keypair(pk, sk);                          \
                 },                                                                                         \

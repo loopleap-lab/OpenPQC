@@ -1142,7 +1142,7 @@ void verify_ht(sycl::queue& q, const Workspace& ws, const std::uint8_t* sig, Key
         std::uint64_t diff = 0;
 #pragma unroll
         for (unsigned k = 0; k < N / 8; k++) diff |= node.v[k] ^ root.v[k];
-        status[op] = diff == 0 ? 0 : OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE;
+        status[op] = diff == 0 ? 0 : OPENPQC_ERR_INVALID_SIGNATURE;
     });
 }
 
@@ -1516,7 +1516,7 @@ struct CallMessages {
     Form form;
     const std::uint8_t* msg;        // M, PH(M) or M'
     const std::uint64_t* offsets;   // pure and internal
-    int ph;                         // pre-hash: the OPENPQC_SLHDSA_PREHASH_* value
+    int ph;                         // pre-hash: the OPENPQC_PREHASH_* value
     const std::uint8_t* ctxstr;
     std::size_t ctxlen;
 };
@@ -1607,7 +1607,7 @@ int sign_any(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const CallMessages& m, co
 }
 
 // Fail closed (openpqc_slhdsa_sycl.h, Status): queues the fill of the n results of a verification call with
-// OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE (Core's fill_status), also on a context that has failed, as far as the
+// OPENPQC_ERR_INVALID_SIGNATURE (Core's fill_status), also on a context that has failed, as far as the
 // device still accepts work. A status buffer that cannot be used (NULL, or not 4-byte aligned: -1) is left
 // alone, and so is one that is not USM memory of the context, which verify_any passes as NULL. `done`: also
 // waits for the fill, and so for the work queued before it, so that a refused or failed call leaves no write
@@ -1615,7 +1615,7 @@ int sign_any(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const CallMessages& m, co
 // (sycl::free does not wait, and on a host device a pending fill would write into freed memory). Called with
 // the lock held. An exception fails the context, and check() then zeroizes the whole workspace once.
 int fail_closed(opqc_sycl_slhdsa* ctx, std::int32_t* status, std::size_t n, bool done) {
-    int rc = openpqc::gpu::fill_status(ctx, status, std::int32_t{OPENPQC_SLHDSA_ERR_INVALID_SIGNATURE}, n);
+    int rc = openpqc::gpu::fill_status(ctx, status, std::int32_t{OPENPQC_ERR_INVALID_SIGNATURE}, n);
     if (rc == 0 && done && status && n > 0) {
         rc = ctx->guard([&] {
             ctx->queue.wait();
@@ -1761,7 +1761,7 @@ namespace {
 template <class F>
 int with_random_coins(opqc_sycl_slhdsa* ctx, std::size_t coin_bytes, std::size_t n, F f) {
     if (!ctx) return -1;
-    return openpqc::gpu::with_random_coins(ctx, n, coin_bytes, ctx->ws.coins, OPENPQC_SLHDSA_ERR_RNG_FAIL, 0, f,
+    return openpqc::gpu::with_random_coins(ctx, n, coin_bytes, ctx->ws.coins, OPENPQC_ERR_RNG, 0, f,
                                            [&](std::size_t m) { ctx->queue.memset(ctx->ws.coins, 0, coin_bytes * m); });
 }
 

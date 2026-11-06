@@ -226,8 +226,8 @@ Bytes random_bytes(std::size_t n) {
 
 // A server with one ML-KEM-768 key decapsulates the ciphertexts of n clients
 struct KemRace {
-    static constexpr std::size_t n = 65536, chunk = 16384, PK = MLKEM768_PUBLICKEYBYTES,
-                                 SK = MLKEM768_SECRETKEYBYTES, CT = MLKEM768_CIPHERTEXTBYTES, SS = MLKEM_BYTES;
+    static constexpr std::size_t n = 65536, chunk = 16384, PK = OPENPQC_MLKEM768_PUBLICKEYBYTES,
+                                 SK = OPENPQC_MLKEM768_SECRETKEYBYTES, CT = OPENPQC_MLKEM768_CIPHERTEXTBYTES, SS = OPENPQC_MLKEM_BYTES;
     opqc_sycl_mlkem* gpu = nullptr;
     Bytes pk = Bytes(PK), sks = Bytes(SK * n);  // the server's key; the GPU call takes a key per operation
     Bytes ct = Bytes(CT * n), ss_client = Bytes(SS * n), ss_server = Bytes(SS * n);
@@ -237,12 +237,12 @@ struct KemRace {
 
     explicit KemRace(int device) {
         Bytes sk(SK);
-        check(openpqc_mlkem768_keypair(pk.data(), sk.data()), "keypair");
+        check(openpqc_mlkem768_keygen(pk.data(), sk.data()), "keypair");
         for (std::size_t i = 0; i < n; i++) std::memcpy(&sks[SK * i], sk.data(), SK);
         // the clients' side, before the race: each encapsulates a secret to the server's key
         std::size_t failed = 0;
         cpu_run(n, [&](std::size_t i, std::uint8_t*) {
-            return openpqc_mlkem768_enc(&ct[CT * i], &ss_client[SS * i], pk.data());
+            return openpqc_mlkem768_encaps(&ct[CT * i], &ss_client[SS * i], pk.data());
         }, nullptr, failed);
         if (failed != 0) {
             std::fprintf(stderr, "\nerror: %zu of %zu calls of enc failed\n", failed, n);
@@ -264,7 +264,7 @@ struct KemRace {
         gpu = nullptr;
     }
 
-    int cpu(std::size_t i, std::uint8_t* out) const { return openpqc_mlkem768_dec(out, &ct[CT * i], &sks[SK * i]); }
+    int cpu(std::size_t i, std::uint8_t* out) const { return openpqc_mlkem768_decaps(out, &ct[CT * i], &sks[SK * i]); }
     void run_gpu(std::size_t s, std::size_t m) {
         check(opqc_sycl_mlkem_memcpy_async(gpu, d_ct + CT * s, &ct[CT * s], CT * m), "copy");
         check(opqc_sycl_mlkem_memcpy_async(gpu, d_sk + SK * s, &sks[SK * s], SK * m), "copy");
@@ -279,8 +279,8 @@ struct KemRace {
 
 // A server signs n responses with its ML-DSA-65 key
 struct DsaRace {
-    static constexpr std::size_t n = 16384, chunk = 4096, PK = MLDSA65_PUBLICKEYBYTES, SK = MLDSA65_SECRETKEYBYTES,
-                                 SIG = MLDSA65_BYTES;
+    static constexpr std::size_t n = 16384, chunk = 4096, PK = OPENPQC_MLDSA65_PUBLICKEYBYTES, SK = OPENPQC_MLDSA65_SECRETKEYBYTES,
+                                 SIG = OPENPQC_MLDSA65_BYTES;
     opqc_sycl_mldsa* gpu = nullptr;
     Bytes pk = Bytes(PK), sk = Bytes(SK), msg = random_bytes(msg_bytes * n), sig = Bytes(SIG * n);
     std::vector<std::uint64_t> offsets = message_offsets(n);
@@ -290,7 +290,7 @@ struct DsaRace {
     std::int32_t* d_status = nullptr;
 
     explicit DsaRace(int device) {
-        check(openpqc_mldsa65_keypair(pk.data(), sk.data()), "keypair");
+        check(openpqc_mldsa65_keygen(pk.data(), sk.data()), "keypair");
         if (device < -1 || opqc_sycl_mldsa_create(&gpu, 65, chunk, device) != 0) return;
         const auto alloc = [&](std::size_t b) { return static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(gpu, b)); };
         d_pk = alloc(PK), d_sk = alloc(SK), d_msg = alloc(msg.size()), d_sig = alloc(sig.size());
@@ -335,8 +335,8 @@ struct DsaRace {
 
 // A vendor signs n software updates with its SLH-DSA-SHA2-128f key
 struct SlhRace {
-    static constexpr std::size_t n = 1024, chunk = 512, PK = SLHDSA_SHA2_128F_PUBLICKEYBYTES,
-                                 SK = SLHDSA_SHA2_128F_SECRETKEYBYTES, SIG = SLHDSA_SHA2_128F_BYTES;
+    static constexpr std::size_t n = 1024, chunk = 512, PK = OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES,
+                                 SK = OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES, SIG = OPENPQC_SLHDSA_SHA2_128F_BYTES;
     opqc_sycl_slhdsa* gpu = nullptr;
     Bytes pk = Bytes(PK), sk = Bytes(SK), msg = random_bytes(msg_bytes * n), sig = Bytes(SIG * n);
     std::vector<std::uint64_t> offsets = message_offsets(n);
@@ -346,7 +346,7 @@ struct SlhRace {
     std::int32_t* d_status = nullptr;
 
     explicit SlhRace(int device) {
-        check(openpqc_slhdsa_sha2_128f_keypair(pk.data(), sk.data()), "keypair");
+        check(openpqc_slhdsa_sha2_128f_keygen(pk.data(), sk.data()), "keypair");
         // a build may leave this set out of the GPU backend (OPENPQC_SLHDSA_SYCL_SETS): no GPU then
         if (device < -1 || opqc_sycl_slhdsa_create(&gpu, OPENPQC_SLHDSA_SHA2_128F, chunk, device) != 0) return;
         const auto alloc = [&](std::size_t b) { return static_cast<std::uint8_t*>(opqc_sycl_slhdsa_malloc(gpu, b)); };
@@ -428,38 +428,38 @@ template <class Race> void race(Race& r, const std::string& title, const std::st
 void scene_mlkem() {
     scene("1 · ML-KEM-768 (FIPS 203): agreeing on a secret key",
           "replaces the RSA / elliptic-curve key exchange of TLS, SSH and VPNs");
-    Bytes pk(MLKEM768_PUBLICKEYBYTES), sk(MLKEM768_SECRETKEYBYTES), ct(MLKEM768_CIPHERTEXTBYTES);
-    std::uint8_t ss_bob[MLKEM_BYTES], ss_alice[MLKEM_BYTES], ss_eve[MLKEM_BYTES];
+    Bytes pk(OPENPQC_MLKEM768_PUBLICKEYBYTES), sk(OPENPQC_MLKEM768_SECRETKEYBYTES), ct(OPENPQC_MLKEM768_CIPHERTEXTBYTES);
+    std::uint8_t ss_bob[OPENPQC_MLKEM_BYTES], ss_alice[OPENPQC_MLKEM_BYTES], ss_eve[OPENPQC_MLKEM_BYTES];
 
-    check(openpqc_mlkem768_keypair(pk.data(), sk.data()), "keypair");
+    check(openpqc_mlkem768_keygen(pk.data(), sk.data()), "keypair");
     std::printf("  %sAlice%s  makes a key pair, sends the public key      %s%s bytes%s\n", cyan(), reset(), yellow(),
                 commas(pk.size()).c_str(), reset());
-    check(openpqc_mlkem768_enc(ct.data(), ss_bob, pk.data()), "enc");
+    check(openpqc_mlkem768_encaps(ct.data(), ss_bob, pk.data()), "enc");
     std::printf("  %sBob%s    encapsulates a fresh secret, sends it        %s%s bytes%s\n", magenta(), reset(),
                 yellow(), commas(ct.size()).c_str(), reset());
     std::printf("         Bob's secret    %s%s%s\n", bold(), hex(ss_bob).c_str(), reset());
-    check(openpqc_mlkem768_dec(ss_alice, ct.data(), sk.data()), "dec");
+    check(openpqc_mlkem768_decaps(ss_alice, ct.data(), sk.data()), "dec");
     std::printf("  %sAlice%s  decapsulates with her secret key\n", cyan(), reset());
     std::printf("         Alice's secret  %s%s%s\n\n", bold(), hex(ss_alice).c_str(), reset());
-    expect(std::memcmp(ss_bob, ss_alice, MLKEM_BYTES) == 0, "the same 32-byte key on both sides; it never crossed the network");
+    expect(std::memcmp(ss_bob, ss_alice, OPENPQC_MLKEM_BYTES) == 0, "the same 32-byte key on both sides; it never crossed the network");
     next();
 
     ct[100] ^= 1;
-    check(openpqc_mlkem768_dec(ss_eve, ct.data(), sk.data()), "dec");
+    check(openpqc_mlkem768_decaps(ss_eve, ct.data(), sk.data()), "dec");
     std::printf("\n  %sEve%s    flips one bit of the ciphertext on the way\n", red(), reset());
     std::printf("         Alice's secret  %s%s%s\n\n", bold(), hex(ss_eve).c_str(), reset());
-    expect(std::memcmp(ss_bob, ss_eve, MLKEM_BYTES) != 0,
+    expect(std::memcmp(ss_bob, ss_eve, OPENPQC_MLKEM_BYTES) != 0,
            "Alice gets an unrelated key: the tampered connection is useless");
 }
 
 void scene_mldsa() {
     scene("2 · ML-DSA-65 (FIPS 204): digital signatures",
           "replaces RSA / ECDSA signatures: certificates, documents, transactions");
-    Bytes pk(MLDSA65_PUBLICKEYBYTES), sk(MLDSA65_SECRETKEYBYTES), sig(MLDSA65_BYTES);
+    Bytes pk(OPENPQC_MLDSA65_PUBLICKEYBYTES), sk(OPENPQC_MLDSA65_SECRETKEYBYTES), sig(OPENPQC_MLDSA65_BYTES);
     std::string order = "Pay 100 coins to Bob";
     const auto m = [&] { return reinterpret_cast<const std::uint8_t*>(order.data()); };
 
-    check(openpqc_mldsa65_keypair(pk.data(), sk.data()), "keypair");
+    check(openpqc_mldsa65_keygen(pk.data(), sk.data()), "keypair");
     std::printf("  %sBank%s     makes a key pair                         public key %s%s bytes%s\n", cyan(), reset(),
                 yellow(), commas(pk.size()).c_str(), reset());
     const auto t0 = Clock::now();
@@ -480,10 +480,10 @@ void scene_mldsa() {
 void scene_slhdsa() {
     scene("3 · SLH-DSA-SHA2-128f (FIPS 205): signatures from a hash function alone",
           "security from SHA-256 alone: the cautious choice for firmware and root keys");
-    Bytes pk(SLHDSA_SHA2_128F_PUBLICKEYBYTES), sk(SLHDSA_SHA2_128F_SECRETKEYBYTES), sig(SLHDSA_SHA2_128F_BYTES);
+    Bytes pk(OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES), sk(OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES), sig(OPENPQC_SLHDSA_SHA2_128F_BYTES);
     Bytes firmware = random_bytes(64 * 1024);  // stands in for a firmware image
 
-    check(openpqc_slhdsa_sha2_128f_keypair(pk.data(), sk.data()), "keypair");
+    check(openpqc_slhdsa_sha2_128f_keygen(pk.data(), sk.data()), "keypair");
     std::printf("  %sVendor%s   makes a key pair                         public key %s%zu bytes%s\n", cyan(),
                 reset(), yellow(), pk.size(), reset());
     const auto t0 = Clock::now();

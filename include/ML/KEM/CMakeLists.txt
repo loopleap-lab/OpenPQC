@@ -5,7 +5,8 @@
 #
 #   math/              C11 math core, header-only (CPU code and SYCL kernels)
 #   scheme/            the algorithms of FIPS 203, C++20 header-only templates
-#   mlkem.cpp          the C API (openpqc_mlkem.h), the only compiled file
+#   mlkem.cpp          the C API (openpqc_mlkem.h), in the library openpqc
+#   mlkem_testing.cpp  its testing interfaces (openpqc/testing.h), for the tests only
 #   mlkem.hpp          C++ API over the C API
 #   sycl/              batched ML-KEM on GPUs and other SYCL devices (optional)
 #
@@ -25,8 +26,17 @@ target_compile_features(openpqc_mlkem_objects PUBLIC cxx_std_20)
 target_link_libraries(openpqc_mlkem_objects PRIVATE openpqc_strict_warnings)
 openpqc_library_objects(openpqc_mlkem_objects NO_CXX_RUNTIME)   # cmake/OpenPQCLibrary.cmake
 
+# The testing interfaces (openpqc/testing.h), only in a build with the tests or benchmarks
+# (OPENPQC_TESTING_LIBRARY, top-level CMakeLists.txt): in the libraries below, which they link, and in
+# OpenPQC::testing, never in the library openpqc
+set(_openpqc_mlkem_lib_objects $<TARGET_OBJECTS:openpqc_mlkem_objects>)
+if(OPENPQC_TESTING_LIBRARY)
+    openpqc_testing_objects(mlkem mlkem_testing.cpp)   # cmake/OpenPQCLibrary.cmake
+    list(APPEND _openpqc_mlkem_lib_objects $<TARGET_OBJECTS:openpqc_mlkem_testing_objects>)
+endif()
+
 foreach(variant "" ${OPENPQC_TESTRNG_VARIANT})   # _testrng only with the tests (top-level CMakeLists.txt)
-    add_library(openpqc_mlkem${variant} STATIC EXCLUDE_FROM_ALL $<TARGET_OBJECTS:openpqc_mlkem_objects>)
+    add_library(openpqc_mlkem${variant} STATIC EXCLUDE_FROM_ALL ${_openpqc_mlkem_lib_objects})
     target_include_directories(openpqc_mlkem${variant} PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
         $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
