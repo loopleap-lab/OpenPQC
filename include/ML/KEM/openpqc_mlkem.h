@@ -82,9 +82,12 @@
  * 13-15), for study and testing: K-PKE "shall not be used as a stand-alone
  * cryptographic scheme" (Section 3.3).
  *
- * Randomness. keypair and enc take their randomness from the operating system
- * (Core/opqc_platform.h). The variant openpqc_mlkem_testrng of the library
- * calls the application's randombytes() instead and exists for the tests only
+ * Randomness. keypair and enc take their randomness from opqc_randombytes
+ * (Core/opqc_platform.h): from the source that the application registered with
+ * opqc_set_randombytes, or else from the operating system, or, in a library
+ * built with the CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the
+ * application's opqc_external_randombytes. The variant openpqc_mlkem_testrng of
+ * the library is built as with that option and exists for the tests only
  * (Core/openpqc_core.h).
  *
  * Pair-wise consistency test (FIPS 140-3). If mlkem.cpp is compiled with the
@@ -93,8 +96,8 @@
  * tests/ML-KEM), keypair and keypair_derand
  * check every new key pair as FIPS 203, Section 7.1, item 4 describes: a key
  * encapsulated to pk with a random m must decapsulate with sk to the same key.
- * keypair_derand then takes 32 bytes from the operating system as well, for
- * that m. If they are not available (OPENPQC_MLKEM_ERR_RNG_FAIL) or the check
+ * keypair_derand then takes 32 bytes from opqc_randombytes as well, for that
+ * m. If they are not available (OPENPQC_MLKEM_ERR_RNG_FAIL) or the check
  * fails (OPENPQC_MLKEM_ERR_PCT_FAIL), pk and sk are zeroized. A key pair that
  * passes is not changed: keypair_derand gives the same keys for the same coins
  * with and without the check. The check is a property of the compiled library:
@@ -106,19 +109,29 @@
  * keypair_derand, enc, enc_derand and dec destroy their intermediate values
  * before they return: the code zeroizes what it names, and then the stack the
  * operation used is overwritten with zeros, which removes what the compiler
- * kept in stack slots of its own. Registers are not cleared. ML/KEM/README.md
- * says what that covers.
+ * kept in stack slots of its own (the stack burn). A library built with the
+ * CMake option OPENPQC_MLKEM_STACK_BURN=OFF leaves the burn out: it still
+ * zeroizes what the code names, but the copies that the compiler kept in stack
+ * slots of its own stay on the stack until something overwrites them. The
+ * setting is part of the names of the scheme templates (ML/KEM/scheme), so an
+ * application's own copies of them, compiled with the other setting, cannot
+ * take the place of the library's. Registers are not cleared.
+ * ML/KEM/README.md says what that covers.
  *
  * Stack. For that, keypair, keypair_derand, enc, enc_derand and dec need about
  * 48, 58 and 68 KiB of stack below their caller for ML-KEM-512, -768 and -1024
  * (the 44, 54 and 64 KiB they overwrite, and the frames above it; 56, 68 and
  * 79 KiB with AddressSanitizer); check_pk and check_sk need at most about 9 KiB.
  * Unoptimized builds (-O0, GCC 16 and Clang 23) stay within these sizes too, by
- * a small margin (ML-KEM-1024 with Clang 23: 69,512 of the 69,632 bytes). The
- * library is compiled with -fstack-clash-protection where the compiler has it
+ * a small margin (ML-KEM-1024 with Clang 23: 69,512 of the 69,632 bytes). Built
+ * with OPENPQC_MLKEM_STACK_BURN=OFF, the functions need only what their frames
+ * use, at -O3 on x86-64 at most about 17, 24 and 33 KiB with GCC 16 and 21, 30
+ * and 39 KiB with Clang 23 (with or without the pair-wise consistency test), and
+ * the sizes above remain an upper bound for such a library. The library is
+ * compiled with -fstack-clash-protection where the compiler has it
  * (cmake/OpenPQCWarnings.cmake), so that on a stack that is too small a call
  * ends in a fault at the guard page (tests/ML-KEM, mlkem_thread_stack). Built
- * without it, the frames of Encaps and Decaps of ML-KEM-768 and -1024 and of
+ * without that flag, the frames of Encaps and Decaps of ML-KEM-768 and -1024 and of
  * KeyGen of ML-KEM-1024, larger than a page, can write below the guard page
  * first: with Clang 23 at -O3, they changed memory up to about 15 KB below a
  * 4 KiB guard page with 16 KiB of stack left below the caller, and up to about

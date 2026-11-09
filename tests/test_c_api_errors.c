@@ -16,7 +16,7 @@
  *   zero       a failure of the internal algorithm (ML-DSA's Sign_internal with a malformed sk):
  *              every byte of the output 0
  *
- * The randomness comes from randombytes() below (the library variants *_testrng call it),
+ * The randomness comes from opqc_external_randombytes() below (the library variants *_testrng call it),
  * which can be made to fail; it then writes 0xEE, as garbage that a caller ignoring the
  * failure would use. Not covered here: the pair-wise consistency test (tests/ML-KEM
  * mlkem_pct_fail, tests/SLH-DSA slhdsa_pct, tests/ML-DSA mldsa_pct) and ML-DSA's signing limit
@@ -25,7 +25,7 @@
  * Positive controls: after a call that succeeds, the same checks must find its outputs
  * written ("unchanged" false, "zero" false), so that a check that cannot fail is noticed.
  *
- * Built as C11 against the *_testrng variants of the libraries, which call randombytes() below.
+ * Built as C11 against the *_testrng variants of the libraries, which call opqc_external_randombytes() below.
  * Exit status: 0 if every check holds.
  */
 
@@ -43,8 +43,8 @@
 static int rng_fails = 0;
 static uint8_t rng_counter = 0;
 
-int randombytes(uint8_t *out, size_t outlen);
-int randombytes(uint8_t *out, size_t outlen) {
+int opqc_external_randombytes(uint8_t *out, size_t outlen);
+int opqc_external_randombytes(uint8_t *out, size_t outlen) {
     if (rng_fails) {
         memset(out, 0xEE, outlen);
         return -1;

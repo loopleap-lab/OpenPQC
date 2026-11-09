@@ -54,9 +54,10 @@
 //   are accepted returns -2, and queues only its fail-closed writes (the fill of its status entries, in
 //   ML-KEM's Encaps and Decaps and in the verifications, and the zeroing of its outputs where the backend
 //   does that on failure) and, if it is the first to find the failure, the zeroization of the workspace
-//   (below); sync and the copies return -2 (a copy is still made, as far as the device allows: copy,
-//   below), and the only way on is destroy, then create (on CUDA, after a sticky fault, in a new process:
-//   see the workspace paragraph below).
+//   (below); a call refused with -1 (below) still queues the fill of its status entries where the status
+//   buffer itself passes the checks; sync and the copies return -2 (a copy is still made, as far as the
+//   device allows: copy, below), and the only way on is destroy, then create (on CUDA, after a sticky
+//   fault, in a new process: see the workspace paragraph below).
 //   -1 is an argument that a helper refuses before it queues anything (a null context, a null pointer
 //   to copy, a status buffer that is not 4-byte aligned); it does not fail the context, and a context
 //   that has failed returns it too (the backends check NULL and misaligned buffers before the failed
@@ -65,8 +66,9 @@
 //   error from a fault of the context's own work.
 //
 //   Where a failure is found: every call checks at its start and after queueing its work (Context::check,
-//   in chunked and with_random_coins); sync waits for all queued work and reports what the wait finds; a
-//   blocking copy waits for the copy and so, the queue being in order, for all the work queued before it.
+//   in chunked and with_random_coins); sync queues a command of its own, waits for all queued work and
+//   reports what the wait finds (sync, below); a blocking copy waits for the copy and so, the queue being
+//   in order, for all the work queued before it.
 //
 //   The workspace: the first call, sync or wait through the queue (wait_and_throw) that finds the context
 //   failed queues the zeroization of the whole workspace and waits for it (Context::check, under the
@@ -74,9 +76,10 @@
 //   and frees it in separate steps, so that a failed wait does not skip the zeroization, nor a failed
 //   zeroization the free. Both run as far as the device still accepts work: after a fault that leaves
 //   the device unusable (on CUDA an invalid address is sticky: every later command of the process on
-//   that device fails, so every other context on it fails too and a new create on it returns -1; only
-//   a new process can use the device again) no zeroization of device memory can run, and what the
-//   kernels wrote stays in device memory until the driver reuses it.
+//   that device fails, so every other context on it fails too, at its next call or its next sync, which
+//   queues a command of its own, and a new create on it returns -1; only a new process can use the device
+//   again) no zeroization of device memory can run, and what the kernels wrote stays in device memory
+//   until the driver reuses it.
 //
 //   Status: a verification call fills its status entries with the backend's failure code (fill_status)
 //   before its first kernel, so that an entry the kernels never reach reads as a failure, and again when
@@ -148,7 +151,36 @@
 
 namespace openpqc::gpu {
 
+// OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS (tests only) counts the USM allocations of the helpers below
+// (count_usm). It also puts everything in this file into an inline namespace of its own, so that the
+// names the linker sees are not the library's (as ml_kem.hpp does for its configurations): a test
+// program compiled with it and a backend library compiled without it each keep their own copies,
+// instead of the linker taking one of them for both. The library's targets never define it.
+#if defined(OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS)
+inline namespace test_count_allocations {
+#endif
+
 using Lock = std::lock_guard<std::recursive_mutex>;
+
+// The bytes at the end of every workspace that sync writes (Context::sync_word)
+inline constexpr std::size_t SYNC_WORD_BYTES = 4;
+
+// The USM allocations that the helpers of this file hold, in the whole process: the workspaces
+// (Context::allocate, until release), the coin buffers (coin_buffer, until free_coin_buffer) and what
+// device_malloc and host_malloc handed out and device_free has not freed yet. Counted only where this
+// header is compiled with OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS: a test then sees an allocation that a
+// failed create or a destroy leaves behind on every device, also on devices whose runtime reports no
+// free memory (AdaptiveCpp's OpenMP host device among them) and where the leak is too small for that
+// figure to show. In every other build count_usm is empty and there is no counter.
+#if defined(OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS)
+inline std::atomic<long> usm_allocations_held{0};
+inline long usm_allocations() noexcept { return usm_allocations_held.load(std::memory_order_relaxed); }
+inline void count_usm(const void* p, long change) noexcept {
+    if (p) usm_allocations_held.fetch_add(change, std::memory_order_relaxed);
+}
+#else
+inline void count_usm(const void*, long) noexcept {}
+#endif
 
 // Whether a context has failed, and the first message: written by the async handler of the context's
 // queue (in the thread that waits, or in the queue's destructor) and by the helpers that catch an
@@ -310,7 +342,7 @@ struct Context {
     ContextQueue queue;                    // in order, with recording_handler; whether the context has failed
     std::size_t max_batch;                 // operations per launch
     std::string device_name;
-    std::uint8_t* mem = nullptr;           // the workspace (WORKSPACE_ALIGN)
+    std::uint8_t* mem = nullptr;           // the workspace (WORKSPACE_ALIGN), with sync's word at its end
     std::size_t mem_bytes = 0;
     std::size_t offset[Sections] = {};     // per section: its offset in mem,
     std::size_t bytes[Sections] = {};      // and its bytes per operation (or per other unit, see zeroize)
@@ -330,9 +362,10 @@ struct Context {
     ~Context() { release(); }
 
     // Lays out the sections, per_op[i] bytes per operation for max_batch operations each, every one
-    // WORKSPACE_ALIGN-aligned, followed by `extra` bytes (per-call data, such as the context string);
-    // allocates the workspace and fills it with zeros. Returns the start of the extra bytes, or nullptr
-    // if the device memory could not be allocated or zeroed. May throw (SYCL runtime). Takes the lock.
+    // WORKSPACE_ALIGN-aligned, followed by `extra` bytes (per-call data, such as the context string)
+    // and by the SYNC_WORD_BYTES that only sync writes (sync_word); allocates the workspace and fills
+    // it with zeros. Returns the start of the extra bytes, or nullptr if the device memory could not be
+    // allocated or zeroed. May throw (SYCL runtime). Takes the lock.
     std::uint8_t* allocate(const std::array<std::size_t, Sections>& per_op, std::size_t extra) {
         const Lock lock(mutex);
         std::size_t total = 0;
@@ -342,9 +375,10 @@ struct Context {
             total += (per_op[i] * max_batch + WORKSPACE_ALIGN - 1) / WORKSPACE_ALIGN * WORKSPACE_ALIGN;
         }
         const std::size_t extra_offset = total;
-        total += extra;
+        total += extra + SYNC_WORD_BYTES;
         mem = sycl::aligned_alloc_device<std::uint8_t>(WORKSPACE_ALIGN, total, queue);
         if (!mem) return nullptr;
+        count_usm(mem, 1);
         mem_bytes = total;
         queue.memset(mem, 0, total).wait();
         queue.throw_asynchronous();   // AdaptiveCpp's wait does not throw: a failed fill is reported here
@@ -353,6 +387,9 @@ struct Context {
 
     // The start of section s
     std::uint8_t* section(unsigned s) const { return mem + offset[s]; }
+    // The last SYNC_WORD_BYTES of the workspace, after the extra bytes: sync writes zeros there, and
+    // nothing else uses them
+    std::uint8_t* sync_word() const { return mem + mem_bytes - SYNC_WORD_BYTES; }
 
     // Queues the zeroization of the sections whose bit is set in mask: section i for count(i) units
     // of bytes[i] (operations, or another unit that the backend counts, such as ML-DSA's slots).
@@ -434,6 +471,7 @@ struct Context {
         free_coin_buffer();
         coins_host = sycl::malloc_host<std::uint8_t>(size, queue);
         if (coins_host) coins_host_bytes = size;
+        count_usm(coins_host, 1);
         return coins_host;
     }
     void free_coin_buffer() noexcept {
@@ -444,6 +482,7 @@ struct Context {
             sycl::free(coins_host, queue);
             return 0;
         });
+        count_usm(coins_host, -1);
         coins_host = nullptr;
         coins_host_bytes = 0;
     }
@@ -474,6 +513,7 @@ struct Context {
                 sycl::free(mem, queue);
                 return 0;
             });
+            count_usm(mem, -1);
             mem = nullptr;
             mem_bytes = 0;
         }
@@ -501,11 +541,18 @@ void destroy(C* ctx) noexcept {
 // wait finds goes to the handler, and an exception that DPC++ throws for the device's error fails the
 // context). Returns 0, -1 for a null context, or -2 if the context has failed, before or during the wait
 // (the first time, the whole workspace is zeroized: check). Takes the lock.
+// Unless the context has failed already, it first queues a command of its own, the zeroing of the sync
+// word, so that the wait always has work of the context on the device to wait for: a queue whose commands
+// have all been waited for may wait without asking the device (DPC++'s CUDA backend then makes no call to
+// the driver), and the sync of a context that queued nothing since its last wait would return 0 on a
+// device that a sticky fault of another context has made unusable. The command fails there, as every
+// command does (the top of the file), and sync returns -2.
 template <unsigned Sections>
 int sync(Context<Sections>* ctx) noexcept {
     if (!ctx) return -1;
     const Lock lock(ctx->mutex);
     ctx->guard([&] {
+        if (ctx->mem && !ctx->failed()) ctx->queue.memset(ctx->sync_word(), 0, SYNC_WORD_BYTES);
         ctx->queue.wait_and_throw();
         return 0;
     });
@@ -535,21 +582,23 @@ int chunked(Context<Sections>* ctx, std::size_t n, unsigned mask, F f, Wipe wipe
     return ctx->check();
 }
 
-// The randomized calls: for every chunk of at most max_batch operations, coin_bytes x m bytes from the
-// operating system (opqc_randombytes) into the context's page-locked host buffer (coin_buffer), copied
-// to `coins` in the workspace (waiting for the copy) and wiped on the host at once; then f(off, m, coins)
-// runs the derandomized operation on them, and wipe_coins(m) queues the zeroization of the coins in the
-// workspace, whatever happened: randomness is as secret as what it becomes (FIPS 204, Section 3.6.1;
+// The randomized calls: for every chunk of at most max_batch operations, coin_bytes x m bytes from
+// opqc_randombytes (Core/opqc_platform.h: the source registered with opqc_set_randombytes if there is one,
+// else the application's opqc_external_randombytes in a build with OPENPQC_EXTERNAL_RANDOMBYTES, else the
+// operating system's generator, the default) into the context's page-locked host buffer (coin_buffer),
+// copied to `coins` in the workspace (waiting for the copy) and wiped on the host at once; then f(off, m,
+// coins) runs the derandomized operation on them, and wipe_coins(m) queues the zeroization of the coins in
+// the workspace, whatever happened: randomness is as secret as what it becomes (FIPS 204, Section 3.6.1;
 // FIPS 205, Section 3.1). The host buffer is wiped again at the end. It is page-locked so that the copy
 // reads it directly: a copy from pageable memory goes through a staging buffer of the driver (CUDA, for
 // one), which keeps the coins after the call and which the library cannot wipe. Even so, NVIDIA's driver
-// has been seen to keep copies of these small page-locked transfers as well (top of this file): the
-// wipes here reach every copy the library holds, not every copy that exists. Takes the context's
-// lock. A failed context draws no coins (-2), after each copy, whose wait finds the faults of the work
-// queued before it, the context is checked again before f runs, and it is checked at the end however the
-// chunks ended. Returns rng_fail if the RNG fails, -2 if the page-locked buffer cannot be allocated or
-// the context has failed; a result `sticky` of f (ML-DSA's signing limit; 0 for none) is remembered
-// while the other chunks go on, any other non-zero result of f stops the call and is returned.
+// has been seen to keep copies of these small page-locked transfers as well (top of this file): the wipes
+// here reach every copy the library holds, not every copy that exists. Takes the context's lock. A failed
+// context draws no coins (-2), after each copy, whose wait finds the faults of the work queued before it,
+// the context is checked again before f runs, and it is checked at the end however the chunks ended.
+// Returns rng_fail if the RNG fails, -2 if the page-locked buffer cannot be allocated or the context has
+// failed; a result `sticky` of f (ML-DSA's signing limit; 0 for none) is remembered while the other chunks
+// go on, any other non-zero result of f stops the call and is returned.
 template <unsigned Sections, class F, class WipeCoins>
 int with_random_coins(Context<Sections>* ctx, std::size_t n, std::size_t coin_bytes, std::uint8_t* coins,
                       int rng_fail, int sticky, F f, WipeCoins wipe_coins) {
@@ -628,6 +677,7 @@ inline void* device_malloc(sycl::queue& q, std::size_t bytes) noexcept {
         p = sycl::aligned_alloc_device(WORKSPACE_ALIGN, bytes, q);
         return 0;
     });
+    count_usm(p, 1);
     return p;
 }
 inline void* host_malloc(sycl::queue& q, std::size_t bytes) noexcept {
@@ -636,6 +686,7 @@ inline void* host_malloc(sycl::queue& q, std::size_t bytes) noexcept {
         p = sycl::aligned_alloc_host(WORKSPACE_ALIGN, bytes, q);
         return 0;
     });
+    count_usm(p, 1);
     return p;
 }
 inline void device_free(sycl::queue& q, void* p) noexcept {
@@ -644,6 +695,7 @@ inline void device_free(sycl::queue& q, void* p) noexcept {
         sycl::free(p, q);
         return 0;
     });
+    count_usm(p, -1);
 }
 
 // memcpy and memcpy_async: copies `bytes` bytes from src to dst behind the work queued on the context's
@@ -669,5 +721,9 @@ template <unsigned Sections>
 int copy(Context<Sections>* ctx, void* dst, const void* src, std::size_t bytes, bool wait) noexcept {
     return ctx ? openpqc::gpu::copy(ctx->queue, dst, src, bytes, wait) : -1;
 }
+
+#if defined(OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS)
+} // inline namespace test_count_allocations
+#endif
 
 } // namespace openpqc::gpu

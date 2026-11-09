@@ -8,9 +8,9 @@ that the CPU code and the GPU kernels share, plus a small compiled part that tal
 | Conventions of the math core: what C11, C++20 and SYCL device code all accept, `OPQC_UNROLL`, which value barrier a translation unit gets | `opqc_common.h` | |
 | Keccak-f[1600] (FIPS 202 §3: θ, ρ, π, χ, ι, 24 rounds) | `opqc_keccak.h` | lane (x, y) is `A[x + 5y]`; on CPUs the rounds run in a frame of their own, which is cleared afterwards (see [Hashing](#hashing-phases-errors-destruction)) |
 | The sponge, SHA3-224/256/384/512, SHAKE128, SHAKE256 (FIPS 202 §4–§6) | `opqc_sha3.h` | incremental `opqc_sponge_init/absorb/finalize/squeeze` for rates of 8 to 192 bytes, in FIPS 202's order (a sponge records its phase; a call out of order or with an invalid rate or suffix is refused and changes nothing); one-shot functions, which destroy their state and, on CPUs, clear the stack their computation used |
-| SHA-224, SHA-256, SHA-384, SHA-512, SHA-512/224, SHA-512/256 (FIPS 180-4) | `opqc_sha2.h` | the compression functions on a block of 16 words (`opqc_sha256_compress_words`, `opqc_sha512_compress_words`: the schedule as a ring of 16 words, rounds unrolled in passes of 16, so that GPU kernels keep block and state in registers) and on 64 or 128 bytes (`opqc_sha256_compress`, `opqc_sha512_compress`, which read the words and call them: one source for CPU and GPU); H(0) of the six functions (`opqc_sha256_H0`, `opqc_sha512_H0`, `opqc_sha224_H0`, ...); incremental absorb/finalize (finalize refuses an output longer than the digest), one-shot functions, which destroy their state and, on CPUs, what the compression left on the stack; big-endian loads and stores (`opqc_load32_be`, `opqc_load64_be`, `opqc_store32_be`, `opqc_store64_be`). `OPQC_SHA256_UNROLL_PASSES` / `OPQC_SHA512_UNROLL_PASSES` (`OPQC_SHA2_UNROLL_PASSES` sets both) unroll the passes too: by default all of SHA-256's, SHA-512's only in DPC++'s code for NVIDIA GPUs, the measured best (in the design notes, `docs/slhdsa-notes/experiments/H1.md`, which the repository does not track) |
+| SHA-224, SHA-256, SHA-384, SHA-512, SHA-512/224, SHA-512/256 (FIPS 180-4) | `opqc_sha2.h` | the compression functions on a block of 16 words (`opqc_sha256_compress_words`, `opqc_sha512_compress_words`: the schedule as a ring of 16 words, rounds unrolled in passes of 16, so that GPU kernels keep block and state in registers) and on 64 or 128 bytes (`opqc_sha256_compress`, `opqc_sha512_compress`, which read the words and call them: one source for CPU and GPU); H(0) of the six functions (`opqc_sha256_H0`, `opqc_sha512_H0`, `opqc_sha224_H0`, ...); incremental absorb/finalize (finalize refuses an output longer than the digest), one-shot functions, which destroy their state and, on CPUs, what the compression left on the stack; big-endian loads and stores (`opqc_load32_be`, `opqc_load64_be`, `opqc_store32_be`, `opqc_store64_be`). `OPQC_SHA256_UNROLL_PASSES` / `OPQC_SHA512_UNROLL_PASSES` (`OPQC_SHA2_UNROLL_PASSES` sets both) unroll the passes too: by default all of SHA-256's, SHA-512's only in DPC++'s code for NVIDIA GPUs, the measured best (October 2026: GCC 16 -O3 on an i7-11370H, and the DPC++ nightly of 2026-10-11 and AdaptiveCpp on an RTX 3050 Laptop and an Iris Xe; the gains are in the comment of `opqc_sha2.h`) |
 | Constant-time helpers: value barrier, 8- and 32-bit masks and selection, `opqc_ct_memcmp`, `opqc_ct_cmov`; valgrind hooks `OPQC_CT_SECRET` / `OPQC_CT_DECLASSIFY` | `opqc_ct.h` | the barrier is an empty asm statement (GCC, Clang), an XOR with a volatile variable (other compilers) or the identity (GPU code): see [Constant time](#constant-time) |
-| Randomness from the operating system, zeroization that the compiler cannot remove | `opqc_platform.h`, `opqc_platform.c` | `getrandom`, `arc4random_buf` or `BCryptGenRandom`; CPU only |
+| Randomness (`opqc_randombytes`: a source the application registers with `opqc_set_randombytes`, or else the operating system, or the application's `opqc_external_randombytes` in a build with `OPENPQC_EXTERNAL_RANDOMBYTES`), zeroization that the compiler cannot remove | `opqc_platform.h`, `opqc_platform.c` | the operating system's generator is `getrandom`, `arc4random_buf` or `BCryptGenRandom`; CPU only (the GPU backends draw their coins on the host through `opqc_randombytes`) |
 | C++: `openpqc::fips202` and `openpqc::sha2` (spans instead of pointer/length), `openpqc::ZeroizeOnExit` | `hash.hpp`, `zeroize.hpp` | the incremental functions return false for a refused call (`squeezeblocks` also for an output too short for the blocks); `keccak_state` destroys its state |
 | C++: hashing a list of byte strings as their concatenation (`openpqc::sponge`), an incremental XOF that zeroizes its state (`openpqc::Xof`) | `xof.hpp` | how the schemes write H(a ‖ b ‖ c) and FIPS 204's H.Init/Absorb/Squeeze; `Xof::absorb` after the first squeeze is refused (returns false) |
 | The pre-hash functions of HashML-DSA and HashSLH-DSA (FIPS 204 §5.4, FIPS 205 §10.2.2): the twelve that ACVP tests (`openpqc::PreHash`), the DER encodings of their OIDs (`prehash_oid`), digest lengths (`prehash_bytes`), PH(M) (`prehash`, which hashes with Core's one-shot functions, so that no hash state, message schedule or chaining value of the computation stays behind it: see [Hashing](#hashing-phases-errors-destruction)), the 255-byte limit on context strings (`max_context_bytes`); in C, the values of `ph` (`OPENPQC_PREHASH_*`, 1–12) | `prehash.hpp`, `openpqc_prehash.h` | C++20 and C; each scheme writes the two bytes of M′ before ctx (domain separator, \|ctx\|) itself, next to the line of its standard, and names the C values with its own prefix (`OPENPQC_MLDSA_PREHASH_*`) |
@@ -25,7 +25,7 @@ What the GPU backends of all schemes share (`sycl/`, SYCL 2020):
 | The sponge in GPU kernels: absorb and pad whole 64-bit words at compile-time positions (fixed-length inputs), or block by block for inputs whose length is known only at run time (messages), on top of `opqc_keccak_f1600` | `sycl/opqc_sycl_sponge.hpp` | every index into the state is a constant, so the state stays in registers |
 | SHA-256 and SHA-512 in GPU kernels, the analogue of the sponge helpers on top of `opqc_sha256_compress_words` / `opqc_sha512_compress_words`: `Sha256`, `Sha512` (sizes, H(0), the compression), `sha2_block`, `sha2_fixed<Sha, PrefixBytes, Bytes>` (data, padding and length at compile-time positions, continuing from a midstate), `sha2_absorb_and_pad` (run-time lengths), `Concat` (byte strings that do not end on a word boundary, joined with constant shifts), HMAC (FIPS 198-1: `hmac_init`, `hmac_finish`), MGF1 (RFC 8017 B.2.1: `mgf1`), `trunc_lanes` (Trunc_n as 64-bit lanes), big-endian loads | `sycl/opqc_sycl_sha2.hpp` | big-endian words; keys up to the block size |
 | The messages of a batched signature call (`Messages`: one buffer and n + 1 offsets) and the formatted message M′ of FIPS 204 and FIPS 205 read in place, never copied (`FormattedMessage<true>`: domain ‖ \|ctx\| ‖ ctx ‖ OID ‖ M, pure or pre-hash; `FormattedMessage<false>`: M′ given whole, for the internal functions), as bytes, SHAKE lanes or big-endian SHA-2 words; `put_context` copies ctx (and an OID) into the workspace | `sycl/opqc_sycl_messages.hpp` | used by the ML-DSA and SLH-DSA backends (SLH-DSA reads M′ as bytes and builds its SHAKE lanes and SHA-2 words itself) |
-| The host side of a backend context: `Context<Sections>` (in-order queue, one workspace divided into sections, the lock, a recursive mutex that every helper here which uses the workspace, the page-locked coin buffer or the record of the zeroization after a failure takes itself, so that no helper's work runs between the steps of another thread's call, while a backend still holds it across each whole call, which nothing checks; an async handler that records the device errors given to the queue instead of ending the process, after which the context has failed for good: `failed`, `check`, `guard`; not covered are errors that the runtime gives to the SYCL context's handler, whose default ends the process, and failures inside the runtime itself, such as DPC++ on CUDA aborting in an event's destructor after a sticky fault; the queue is a `ContextQueue`, whose `wait_and_throw` also throws once the context has failed, so that any wait through it reports the failure), `chunked` (calls split into launches, secret sections zeroized after each; a failed context runs nothing, and the first call or sync that finds the failure zeroizes the whole workspace), `with_random_coins` (coins from the OS RNG, wiped on host and device), the C APIs' `sync`, `destroy` and `copy` (memcpy), which report a failed context as −2 and a null pointer to copy as −1, `fill_status` (a verification's status entries set to the failure code before its first kernel, and again after a refusal or failure, which the call then waits for, so that it leaves no write into the caller's status buffer behind it), and the memory functions (`device_malloc`, `host_malloc`, `device_free`). The top of the header states the error contract: what −2 and −1 mean, what becomes of the workspace and of status after a device fault (on CUDA a sticky fault leaves the device unusable for the process: every context on it fails, a new create on it fails (ML-KEM's and ML-DSA's returned −1), and only a new process can use it again), what a backend calls where, and what AdaptiveCpp's one list of errors per process implies (an error fails every context, and the contexts also take the asynchronous errors of the application's own queues) | `sycl/opqc_sycl_context.hpp` | the ML-KEM, ML-DSA and SLH-DSA backends derive their contexts from it, so that a change here is checked by the tests of all three and by `core_sycl` |
+| The host side of a backend context: `Context<Sections>` (in-order queue, one workspace divided into sections, the lock, a recursive mutex that every helper here which uses the workspace, the page-locked coin buffer or the record of the zeroization after a failure takes itself, so that no helper's work runs between the steps of another thread's call, while a backend still holds it across each whole call, which nothing checks; an async handler that records the device errors given to the queue instead of ending the process, after which the context has failed for good: `failed`, `check`, `guard`; not covered are errors that the runtime gives to the SYCL context's handler, whose default ends the process, and failures inside the runtime itself, such as DPC++ on CUDA aborting in an event's destructor after a sticky fault; the queue is a `ContextQueue`, whose `wait_and_throw` also throws once the context has failed, so that any wait through it reports the failure), `chunked` (calls split into launches, secret sections zeroized after each; a failed context runs nothing, and the first call or sync that finds the failure zeroizes the whole workspace), `with_random_coins` (coins from `opqc_randombytes`, so from a registered source too, wiped on host and device), the C APIs' `sync`, `destroy` and `copy` (memcpy), which report a failed context as −2 and a null pointer to copy as −1, `fill_status` (a verification's status entries set to the failure code before its first kernel, and again after a refusal or failure, which the call then waits for, so that it leaves no write into the caller's status buffer behind it), and the memory functions (`device_malloc`, `host_malloc`, `device_free`). Compiled with `OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS` (tests only; no library target defines it, and it moves the header's entities into an inline namespace of their own), the header counts the USM allocations its helpers hold (`usm_allocations()`: workspaces, coin buffers and what the memory functions handed out), so that a test sees a leaked allocation on every device; in every other build there is no count. The top of the header states the error contract: what −2 and −1 mean, what becomes of the workspace and of status after a device fault (on CUDA a sticky fault leaves the device unusable for the process: every context on it fails, a new create on it fails (ML-KEM's and ML-DSA's returned −1), and only a new process can use it again), what a backend calls where, and what AdaptiveCpp's one list of errors per process implies (an error fails every context, and the contexts also take the asynchronous errors of the application's own queues) | `sycl/opqc_sycl_context.hpp` | the ML-KEM, ML-DSA and SLH-DSA backends derive their contexts from it, so that a change here is checked by the tests of all three and by `core_sycl` |
 
 The C API of `sycl/openpqc_sycl.h` parses `OPENPQC_SYCL_DEVICE` strictly for every backend: a value other than a
 decimal index, an index out of range, or a device index below −1 makes `create` fail with −1;
@@ -55,10 +55,11 @@ opqc_zeroize(&s, sizeof s);
 if (rc != OPQC_SPONGE_OK) { /* a call was refused: a bug in the caller */ }
 ```
 
-The functions of the schemes' C APIs, and `opqc_randombytes`, are declared `OPQC_MUST_CHECK` (`opqc_common.h`), so
-that a compiler warns about a result that is not used; Core's other functions that return a status (the sponge and
-the SHA-2 finalize functions) are not, because OpenPQC's own code calls the sponge in an order the standards fix and
-does not look at the status. A caller with an order of its own checks the status, as above.
+The functions of the schemes' C APIs, `opqc_randombytes`, `opqc_set_randombytes` and `opqc_external_randombytes` are
+declared `OPQC_MUST_CHECK` (`opqc_common.h`), so that a compiler warns about a result that is not used; Core's other
+functions that return a status (the sponge and the SHA-2 finalize functions) are not, because OpenPQC's own code calls
+the sponge in an order the standards fix and does not look at the status. A caller with an order of its own checks the
+status, as above.
 
 ```cpp
 #include "Core/hash.hpp"
@@ -164,26 +165,51 @@ operating system is tested, and no code runs on another processor.
 
 ## Randomness
 
-`opqc_randombytes` asks the operating system. If no randomness is available, it sets the buffer to zero and returns
-nonzero, and the schemes' C APIs return their RNG failure code (-3). On Linux it calls `getrandom` until the buffer is
-full: EINTR is retried, and an error, or an answer that a working `getrandom` never gives (0 bytes, as from a seccomp
-filter that returns 0, or more bytes than were asked for), is such a failure rather than a loop without end. A library
-built with `OPQC_CONFIG_EXTERNAL_RANDOMBYTES` calls the application's `int randombytes(uint8_t *out, size_t outlen)`
-instead. The CMake target `openpqc_core_testrng` is built this way: the tests link it with a deterministic generator
-(`tests/ML-KEM/notrandombytes`), which must never be used in production. The same holds for
-`openpqc_mlkem_testrng`, `openpqc_mldsa_testrng` and `openpqc_slhdsa_testrng`, which link it. Never link a test
-variant into a program together with a production library: both define `opqc_randombytes`, and the linker keeps the
-first definition it finds, without an error, for every scheme. `opqc_randombytes` is declared `OPQC_MUST_CHECK`: after
-a failure the buffer holds zeros, not random bytes. On Windows, `opqc_zeroize` calls `SecureZeroMemory` in both
-variants; no test builds the Windows code.
+`opqc_randombytes` takes its bytes from the first of three sources that the program has (`opqc_platform.h`):
+
+1. a source registered with `opqc_set_randombytes(fn, ctx)`, which every later draw of the program uses;
+   `opqc_set_randombytes(NULL, NULL)` restores the default;
+2. in a library built with the CMake option `OPENPQC_EXTERNAL_RANDOMBYTES` (compile definition
+   `OPQC_CONFIG_EXTERNAL_RANDOMBYTES`), the application's `int opqc_external_randombytes(uint8_t *out, size_t len)`;
+3. the operating system. On Linux it calls `getrandom` until the buffer is full: EINTR is retried, and an error, or an
+   answer that a working `getrandom` never gives (0 bytes, as from a seccomp filter that returns 0, or more bytes than
+   were asked for), is a failure rather than a loop without end.
+
+Every randomized function of the three schemes draws through it, and so do the GPU backends for their coins. If the
+source fails (returns nonzero), `opqc_randombytes` sets the buffer to zero, whatever the source wrote, and returns
+nonzero, and the schemes' C APIs return their RNG failure code (-3); `opqc_randombytes` is declared `OPQC_MUST_CHECK`,
+as after a failure the buffer holds zeros, not random bytes. A source, registered or linked, fills all `len` bytes and
+returns 0, or returns nonzero; it never writes outside `out`, it is called from every thread that draws, at once, and
+it must not call `opqc_randombytes` itself (or `opqc_set_randombytes`). Any number of threads may draw while the
+registration is read: a sequence counter makes each draw see the `fn` and `ctx` of one registration, never a mix, and
+registrations from several threads take turns. Register before other threads draw all the same: a draw that read the
+old pair just before a new registration still calls the old `fn` with the old `ctx` after `opqc_set_randombytes` has
+returned, so the old source and its `ctx` stay valid until no draw that may have read them can still be running.
+Neither function may run in a signal handler that can interrupt a registration. The library gives a registered source
+no way to reach the operating system's generator, so a DRBG registered there brings its own entropy input. The
+registration uses C11 atomics (`<stdatomic.h>`; cl.exe gets `/experimental:c11atomics` for it, clang-cl needs no
+switch); on a processor without lock-free 32-bit and pointer atomics (Armv6-M, RV32 without the A extension: neither
+is a tested target) the toolchain must provide the `__atomic_*` functions, and Clang warns about every atomic
+operation there, which `-Werror` turns into an error.
+
+The CMake target `openpqc_core_testrng` is built as with the option: the tests link it with deterministic generators,
+which must never be used in production. The same holds for `openpqc_mlkem_testrng`, `openpqc_mldsa_testrng` and
+`openpqc_slhdsa_testrng`, which link it. Test programs whose generator is the `randombytes()` of vendored code
+(`tests/ML-KEM/notrandombytes`, NIST's `rng.c`) or of code shared with a reference implementation reach it through a
+forwarder that only test builds have (`openpqc_core_testrng_forward`, `tests/Core/testrng_forward.c`); no OpenPQC
+library calls an unprefixed `randombytes()`. Configuring with `OPENPQC_EXTERNAL_RANDOMBYTES=ON` stops with an error
+unless `OPENPQC_BUILD_TESTS`, `OPENPQC_BUILD_BENCHMARKS` and `OPENPQC_BUILD_EXAMPLES` are OFF, since the project's own
+programs define no `opqc_external_randombytes`. Never link a test variant into a program together with a production
+library: both define `opqc_randombytes`, and the linker keeps the first definition it finds, without an error, for
+every scheme. On Windows, `opqc_zeroize` calls `SecureZeroMemory` in both variants; no test builds the Windows code.
 
 The operating system's generator is not what the standards ask of a validated module: FIPS 203 §3.3, FIPS 204 §3.6.1
 and FIPS 205 §3.1 require the random values of key generation (and ML-KEM's m) to come from an approved random bit
 generator (SP 800-90A, B and C) of the parameter set's security strength, and Core has no DRBG and no health tests.
-An integrator who has one supplies it through the hook above: build the library with
-`OPQC_CONFIG_EXTERNAL_RANDOMBYTES` and define `randombytes()` to draw from the approved DRBG, returning 0 only for a
-full buffer (top-level README, [Security notes](../../README.md#security-notes)). The hook is a global symbol without a
-prefix, and no CMake target builds a production library that uses it.
+An integrator who has one registers it with `opqc_set_randombytes`, or builds the libraries with
+`OPENPQC_EXTERNAL_RANDOMBYTES` and defines `opqc_external_randombytes()` to draw from the approved DRBG, returning 0
+only for a full buffer (top-level README, [Security notes](../../README.md#security-notes)). The `int` result of
+`opqc_set_randombytes` (always 0 today) leaves room for a module that refuses any source but its approved DRBG.
 
 ## Tests
 
@@ -191,7 +217,7 @@ prefix, and no CMake target builds a production library that uses it.
   answers for SHA3-256, SHA3-512, SHAKE128 and SHAKE256 (Python's `hashlib`; for SHA3-256 also the inputs of one
   block minus one byte and of one block; SHA3-224 and SHA3-384 are in `test_core_sha2.c`), and incremental absorbing
   and squeezing in every chunk size from 1 to 200 bytes. The padding boundaries of SHA3-512, SHAKE128 and SHAKE256
-  are covered by the incremental comparison and by ACVP, not by known answers.
+  are covered by the incremental comparison and by ACVP (`core_hash_acvp`), not by known answers.
 - `tests/Core/test_core_sha2.c`: the six SHA-2 functions, and SHA3-224 and SHA3-384, against known answers (Python's
   `hashlib`): the FIPS 180-4 examples, a million times "a", and the message lengths on both sides of every padding
   boundary; absorbing in pieces of every size from 1 to 200 bytes, and in pieces of random sizes from 0 to 300 bytes,
@@ -220,6 +246,24 @@ prefix, and no CMake target builds a production library that uses it.
   and more bytes than asked for, each with guard bytes around the buffer; the buffer must be filled, or the call must
   fail with the buffer zeroized after a bounded number of calls, never asking for a byte outside the buffer; then the
   real `getrandom`.
+- `tests/Core/test_rng_hook.c` (`core_rng_hook`, `core_rng_hook_external`): a source registered with
+  `opqc_set_randombytes` is what `opqc_randombytes` returns, with its `ctx`; ML-KEM's and ML-DSA's keypair, and ML-DSA's
+  hedged sign, equal their `_derand` forms on its bytes; a failing source gives -3 with the outputs unchanged and the
+  buffer zeroized; NULL restores the default (the operating system, or the program's `opqc_external_randombytes` in the
+  variant built against the `*_testrng` libraries); with threads, draws made while the registration changes (at least
+  200,000 registrations, and until each of two sources was called 1,000 times) always pass a source its own `ctx`.
+  Mutants of `opqc_platform.c` fail it, among them one that ignores the registration, one that keeps it after NULL, one
+  that skips the zeroization, one that reports a failure as success, one that reads `fn` and `ctx` without the sequence
+  counter, one that drops the `ctx`, one that zeroizes half the buffer, and (in the external variant) one that ignores
+  `opqc_external_randombytes`.
+- `tests/Core/acvp_hash.py` and `tests/Core/acvp_hash_driver.c` (`core_hash_acvp`, label `network`): NIST's ACVP
+  vectors of SHA2-224, SHA2-256, SHA2-384, SHA2-512, SHA2-512/224, SHA2-512/256, SHA3-224, SHA3-256, SHA3-384,
+  SHA3-512, SHAKE128 and SHAKE256 (14 files of ACVP-Server 975de31e, pinned by SHA-256 and number of cases) through
+  Core's one-shot functions: the 4,258 AFT cases whose message is a whole number of bytes, SHAKE's 1,024 VOT cases and
+  the 12 Monte Carlo tests (100 results of 1,000 chained calls each), 5,294 in all. The 7,980 cases whose message is
+  not a whole number of bytes, which the byte API cannot take, and the 40 large-data tests (messages of 1 to 8 GiB)
+  are counted and not run. A changed vector file, a driver run that fails, crashes or writes to stderr, and a number
+  of results other than the pinned one fail the test; `core_hash_acvp_control` shows that each of these is reported.
 - `bench/gpu/bench_primitives_sycl.cpp` checks every helper of `sycl/opqc_sycl_sha2.hpp` and
   `sycl/opqc_sycl_messages.hpp` (and `clear_local_words`) on the device against the C11 code before it measures
   anything (row `sha2_helpers`; run `bench_primitives_sycl <device> 0 check` for the checks alone): run-time lengths
@@ -259,7 +303,10 @@ prefix, and no CMake target builds a production library that uses it.
   wait for it; on AdaptiveCpp's OpenMP host device `release`'s lock is seen only on its return), and the device
   selection by `OPENPQC_SYCL_DEVICE`; `core_sycl_sticky` makes a real fault on an NVIDIA GPU in a process of its own.
 - `tests/test_c_api_errors.c` and `tests/check_must_check.py` (`c_api_errors`, `c_api_must_check`): every error path
-  of the three schemes' C APIs with the state of every output buffer, and the must-check attribute on every function
-  of their headers.
+  of the three schemes' C APIs with the state of every output buffer; and the must-check attribute on every function
+  that returns a status in the eight C headers (the three schemes', `Core/openpqc_core.h` with `opqc_randombytes`,
+  `opqc_set_randombytes` and `opqc_external_randombytes`, and the four headers of the GPU backends), compiled as C11,
+  C23, C++14 and C++20 with GCC and with Clang, and that the libraries of the build export exactly the functions of
+  their headers.
 - Every ML-KEM and ML-DSA test also exercises Core: the hash functions of both standards, HashML-DSA's twelve pre-hash
   functions (ACVP), and on the GPU the sponge helpers, and for ML-DSA the message, store and host helpers of `sycl/`.

@@ -15,7 +15,7 @@
  * start at any byte. A call with n > 0 refuses (-1) a buffer that is NULL,
  * misaligned or not USM memory of the context's SYCL context (from
  * opqc_sycl_mldsa_malloc or _malloc_host; pageable host memory would make the
- * device fault, or, as on Intel GPUs under Level Zero, be read as zeros). The
+ * device fault, or, as under DPC++'s Level Zero backend, be read as zeros). The
  * results are byte-identical to the CPU library:
  *
  *   opqc_sycl_mldsa_keypair_derand   = openpqc_mldsaNN_keypair_derand, seeds xi (32 B/op)
@@ -51,10 +51,14 @@
  *
  * Private keys. sk must come from keypair or keypair_derand, or from storage the
  * application trusts (FIPS 204, Section 7.2: skDecode is run only on input from a
- * trusted source). Unlike the CPU library, the device's signer does not check that
- * s1 and s2 lie in [-eta, eta], and signs with a malformed key; check a key that
- * was imported or read from storage with the CPU library's openpqc_mldsaNN_check_sk
- * (or openpqc_mldsaNN_check_keypair) before signing with it here.
+ * trusted source). As the CPU library does, the device's signer checks that s1
+ * and s2 lie in [-eta, eta] (FIPS 204, Algorithm 25, lines 3 and 6), examining
+ * every coefficient without a branch on it: an operation whose key is malformed
+ * gets an all-zero signature and OPENPQC_MLDSA_ERR_INVALID_KEY (Status, below),
+ * and the other operations of the call are signed. Whether a key is well formed
+ * is the one public bit of the check, as on the CPU. Other changes of sk are
+ * signed with, as on the CPU; check a key that was imported or read from storage
+ * with openpqc_mldsaNN_check_sk (or openpqc_mldsaNN_check_keypair).
  *
  * Messages. The n messages lie back to back in one device buffer `msg`; message i
  * is msg[offsets[i] .. offsets[i + 1]), with offsets a device buffer of n + 1
@@ -63,10 +67,13 @@
  * share one context string ctx of ctxlen <= 255 bytes, given in HOST memory.
  *
  * Randomness. opqc_sycl_mldsa_keypair, opqc_sycl_mldsa_sign and
- * opqc_sycl_mldsa_sign_one_key draw xi and rnd from the operating system's RNG on
- * the host (FIPS 204, Section 3.6.1: the module, not the caller, generates the
- * randomness), 32 bytes per operation and launch, into page-locked host memory of
- * the context, from which they are copied to the device and wiped at once; in
+ * opqc_sycl_mldsa_sign_one_key draw xi and rnd on the host from Core's
+ * opqc_randombytes (Core/opqc_platform.h: a source that the application
+ * registered with opqc_set_randombytes, or else the default, the operating
+ * system's RNG unless the libraries are built with OPENPQC_EXTERNAL_RANDOMBYTES;
+ * FIPS 204, Section 3.6.1: the module, not the caller, generates the
+ * randomness), 32 bytes per operation and launch, into page-locked host memory
+ * of the context, from which they are copied to the device and wiped at once; in
  * device memory they are wiped after the launch, whatever happened. They never
  * pass through pageable memory, whose copies the CUDA driver stages through
  * buffers of its own, out of the library's reach (NVIDIA's driver has been seen to
@@ -80,11 +87,16 @@
  * Status. `status` is a device buffer of n int32_t, 4-byte aligned (as the
  * buffers of opqc_sycl_mldsa_malloc are; a misaligned one returns -1). It receives
  * per operation 0 or an OPENPQC_MLDSA_ERR_* code of openpqc_mldsa.h:
- *   signing (status optional, may be NULL): OPENPQC_MLDSA_ERR_SIGNING_LIMIT if no
- *     attempt succeeded within 821 (the signature is then zero). A signing call
- *     without a status buffer returns OPENPQC_MLDSA_ERR_SIGNING_LIMIT itself if
- *     any of its signatures reached the limit (FIPS 204, Appendix C: an error, and
- *     no other output).
+ *   signing (status optional, may be NULL): OPENPQC_MLDSA_ERR_INVALID_KEY if the
+ *     operation's private key has a coefficient of s1 or s2 outside [-eta, eta]
+ *     (Private keys, above), OPENPQC_MLDSA_ERR_SIGNING_LIMIT if no attempt
+ *     succeeded within 821 (FIPS 204, Appendix C: an error, and no other
+ *     output); the signature is then zero. A signing call without a status
+ *     buffer signs all its operations and then returns the error itself:
+ *     OPENPQC_MLDSA_ERR_INVALID_KEY if it refused any key, even if another of
+ *     its signatures reached the limit, and otherwise
+ *     OPENPQC_MLDSA_ERR_SIGNING_LIMIT if any of its signatures reached the limit;
+ *     pass a status buffer to learn which operation failed, and why.
  *   verification (status required: NULL returns -1): 0 for a valid signature and
  *     OPENPQC_MLDSA_ERR_INVALID_SIGNATURE otherwise. The verdicts exist only
  *     here: the result of a verification call is never one (the call is
@@ -110,6 +122,9 @@
  *       pass through cannot be allocated; or the context has failed (Device
  *       failures, below)
  *   OPENPQC_MLDSA_ERR_RNG_FAIL       randomized calls: the RNG failed
+ *   OPENPQC_MLDSA_ERR_INVALID_KEY    signing without a status buffer: a private
+ *                                    key was refused (Status, above); it comes
+ *                                    before OPENPQC_MLDSA_ERR_SIGNING_LIMIT
  *   OPENPQC_MLDSA_ERR_SIGNING_LIMIT  signing without a status buffer (above)
  *   OPENPQC_MLDSA_ERR_PCT_FAIL       KeyGen built with OPENPQC_MLDSA_KEYGEN_PCT: a
  *                                    key pair failed the pair-wise consistency
@@ -144,7 +159,9 @@
  * (outputs may be missing, partial or stale, also those of calls that returned
  * 0); destroy it and create a new one. On CUDA an invalid address is sticky:
  * every later command of the process on that device fails, so every other
- * context on it fails too, and a new create on it returns -1: only a new process
+ * context on it fails too, at its next call or sync (sync queues a command of its
+ * own, so that it reaches the device also when the context has queued nothing
+ * since its last wait), and a new create on it returns -1: only a new process
  * can use the device again. A device error found through the context's queue
  * does not end the process: the queue's handler records it
  * (Core/sycl/opqc_sycl_context.hpp). Three cases are outside the library's reach:
@@ -163,12 +180,26 @@
  *
  * Zeroization (FIPS 204, Section 3.6.3). Secret intermediate values kept in
  * device memory between the stages of a call are zeroized when the call ends, and
- * the arithmetic stages clear their local memory; when the context fails, the
- * whole workspace is zeroized once, by the first call or sync that finds the
- * failure (a memcpy that finds it does not zeroize), and again by destroy -- each
- * as far as the device still accepts work (after a sticky fault, no zeroization
- * of device memory can run; what the kernels wrote then stays in device memory
- * until the driver reuses it). The caller's buffers are the caller's to clear.
+ * the arithmetic stages clear their local memory. A signing call also zeroizes
+ * mu of every operation, which is computed from the message, and its workspace
+ * copy of the context string, which is part of M' (Section 3.6.3: a confidential
+ * message; the CPU library destroys mu after Sign), also when a key is refused
+ * or a signature reaches the signing limit; it leaves the challenges c of its
+ * attempts, and their flags, until later calls overwrite them or destroy
+ * zeroizes the workspace (the CPU library destroys c at the end of each attempt).
+ * A verification call zeroizes what it computed as well, since the inputs of a
+ * verification may have to stay confidential (Section 3.6.3: a signature used as
+ * a bearer token, a confidential message): every value except the matrix A^,
+ * which Section 3.6.3 lets an implementation keep, the workspace copy of the
+ * context string included. Both queue these zeroizations behind their kernels
+ * before they return, so that they run before any later work on the context
+ * (sync waits for them).
+ * When the context fails, the whole workspace is zeroized once, by the first
+ * call or sync that finds the failure (a memcpy that finds it does not
+ * zeroize), and again by destroy -- each as far as the device still accepts
+ * work (after a sticky fault, no zeroization of device memory can run; what the
+ * kernels wrote then stays in device memory until the driver reuses it). The
+ * caller's buffers are the caller's to clear.
  *
  * Self-test. opqc_sycl_mldsa_create runs, on the device, a KeyGen, a
  * deterministic signature, and the verification of that signature and of a
@@ -178,12 +209,14 @@
  * compile it at run time, on the machine that runs it). A device that computes a
  * wrong result gets no context. It costs one call of each, and on a device whose
  * code is compiled at run time (Intel GPUs, AdaptiveCpp) that compilation happens
- * in create.
+ * in create. Create zeroizes the whole workspace after the self-test, so that a
+ * new context holds none of its values (they are public, but lie in sections
+ * that hold secrets otherwise); a context that fails there gives -2 and no
+ * context.
  *
- * Pair-wise consistency test. Built with OPENPQC_MLDSA_KEYGEN_PCT (a compile
- * definition of the openpqc_mldsa_sycl library, which no CMake option sets: the
- * CMake option OPENPQC_MLDSA_KEYGEN_PCT gives it to the CPU library only; FIPS
- * 140-3 asks the test of validated modules), KeyGen signs the empty message with
+ * Pair-wise consistency test. Built with the CMake option
+ * OPENPQC_MLDSA_KEYGEN_PCT (which also sets it for the CPU libraries; FIPS 140-3
+ * asks the test of validated modules), KeyGen signs the empty message with
  * each key pair it makes (deterministically, with an empty context string) and
  * verifies the signature under its public key, all on the device. The pk and sk
  * of a pair that fails are overwritten with zeros, and the call returns
@@ -242,11 +275,12 @@ const char *opqc_sycl_mldsa_device_name(const opqc_sycl_mldsa *ctx);
  * runs more (or fewer) attempts at once without slowing down wants a larger (smaller)
  * fill. sign_stats reports the rounds and the attempts computed by the last signing
  * call, and for a randomized call (sign, sign_one_key) of more than max_batch
- * operations those of its last launch of max_batch only; a signing call that is
- * refused (-1), and a randomized one that makes no launch (n = 0, a context that has
- * failed, or before the first launch a failure of the RNG, of the allocation of the
- * page-locked coin buffer or of the copy of the coins), leave them unchanged, so they
- * are then still those of the call before it.
+ * operations those of its last launch that ran, of max_batch operations at most.
+ * Every signing call clears them first, so that a call that is refused (-1) or
+ * that makes no launch (n = 0, a context that has failed, or, for a randomized
+ * call, a failure of the RNG, of the allocation of the page-locked coin buffer or
+ * of the copy of the coins before its first launch) reports 0 rounds and 0
+ * attempts; a call that stops at a device fault reports the rounds it made.
  */
 OPQC_MUST_CHECK int opqc_sycl_mldsa_set_speculation(opqc_sycl_mldsa *ctx, unsigned max_attempts, size_t fill);
 OPQC_MUST_CHECK int opqc_sycl_mldsa_sign_stats(const opqc_sycl_mldsa *ctx, size_t *rounds, size_t *attempts);
@@ -288,8 +322,10 @@ OPQC_MUST_CHECK int opqc_sycl_mldsa_verify_one_key(opqc_sycl_mldsa *ctx, const u
                                                    const uint64_t *offsets, const uint8_t *ctxstr, size_t ctxlen,
                                                    const uint8_t *pk, int32_t *status, size_t n);
 
-/* Waits until all queued work of the context is done: 0, or -2 if the context has
- * failed, before or during the wait (Device failures). */
+/* Queues a 4-byte write of zeros into the context's own device memory, unless the
+ * context has failed, so that the wait reaches the device also when nothing else
+ * is queued; then waits until all queued work of the context is done: 0, or -2 if
+ * the context has failed, before or during the wait (Device failures). */
 OPQC_MUST_CHECK int opqc_sycl_mldsa_sync(opqc_sycl_mldsa *ctx);
 
 /* Memory: device memory on the context's device, and page-locked host memory

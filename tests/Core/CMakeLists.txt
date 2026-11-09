@@ -33,6 +33,32 @@ else()
     message(STATUS "opqc_randombytes test (core_rng) needs Linux, GCC or Clang and a linker with --wrap: disabled")
 endif()
 
+# --- the source of randomness (Core/opqc_platform.h: opqc_set_randombytes), test_rng_hook.c -------
+#   core_rng_hook           against the libraries as built: a source registered with opqc_set_randombytes
+#                           is what opqc_randombytes returns and what the randomized functions of ML-KEM
+#                           and ML-DSA use (keypair and sign equal their _derand forms on its bytes); a
+#                           failing one gives their RNG failure code with the outputs unchanged; NULL
+#                           restores the default, the operating system; with threads, draws made while the
+#                           registration changes always pass a source its own ctx
+#   core_rng_hook_external  the same against the test variants (openpqc_*_testrng), which are built as with
+#                           the CMake option OPENPQC_EXTERNAL_RANDOMBYTES: the default is the program's
+#                           opqc_external_randombytes
+foreach(variant "" _external)
+    add_executable(test_core_rng_hook${variant} test_rng_hook.c)
+    target_link_libraries(test_core_rng_hook${variant} PRIVATE openpqc_strict_warnings)
+    if(Threads_FOUND AND CMAKE_USE_PTHREADS_INIT)
+        target_link_libraries(test_core_rng_hook${variant} PRIVATE Threads::Threads)
+        target_compile_definitions(test_core_rng_hook${variant} PRIVATE OPENPQC_TEST_THREADS)
+    endif()
+    set_target_properties(test_core_rng_hook${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11
+                                                                  C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    add_test(NAME core_rng_hook${variant} COMMAND test_core_rng_hook${variant})
+    set_tests_properties(core_rng_hook${variant} PROPERTIES TIMEOUT 120)
+endforeach()
+target_link_libraries(test_core_rng_hook PRIVATE openpqc_mlkem openpqc_mldsa)
+target_link_libraries(test_core_rng_hook_external PRIVATE openpqc_mlkem_testrng openpqc_mldsa_testrng)
+target_compile_definitions(test_core_rng_hook_external PRIVATE OPENPQC_TEST_EXTERNAL)
+
 # --- constant-time helpers (Core/opqc_ct.h), test_core_ct.c --------------------------------------
 #   core_ct_values          the value of every helper, built like the other tests
 #   core_<barrier>_<O>_ct   the same program with OPQC_CT_TESTING, under valgrind, built at -O0, -O1, -O2,

@@ -34,16 +34,23 @@
 //              write below it. (Here the thread library's share comes out of the 128 KiB; musl adds it.)
 //
 // Built with OPENPQC_TEST_PCT, the test links the library built with the pair-wise consistency test
-// (OPENPQC_MLDSA_KEYGEN_PCT), whose KeyGen also signs and verifies; the documented sizes cover it too.
+// (OPENPQC_MLDSA_KEYGEN_PCT), whose KeyGen also signs and verifies; the documented sizes cover it too. KeyGen
+// must then also need more stack below its caller than the table's KeyGen without the test, which is less
+// than signing needs: a library that the option did not reach (its KeyGen does not sign) fails there, since
+// no call of the C API shows the test otherwise (it draws no randomness and its results are the same).
 // Unoptimized builds need more stack than the header documents: there the depths are printed, the
 // documented-size runs use twice the documented size, and nothing is compared. AddressSanitizer moves
 // and enlarges frames, so under it the test reports itself skipped (exit code 77). Linux only (it
-// forks, and lays the canary, the guard page and the stack out in one mapping).
+// forks, and lays the canary, the guard page and the stack out in one mapping). The children that may die
+// of SIGSEGV make themselves not dumpable, with a core size limit of 0, first: the expected faults leave no
+// core dump (systemd-coredump would store every one of them).
 #include "check.hpp"
 #include "ML/DSA/openpqc_mldsa.h"
 
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -254,6 +261,15 @@ void prepare(const Api& a, Inputs& x) {
 
 // --- running an operation on a thread ----------------------------------------------------------------
 
+// In a child that may die of SIGSEGV, before the case runs: no core dump. A process that is not dumpable
+// gets none, whatever the core_pattern (a pipe to systemd-coredump included) and fs.suid_dumpable say; the
+// core size limit of 0 covers a core_pattern that writes a file.
+void no_core_dump() {
+    (void)prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+    const rlimit none{0, 0};
+    (void)setrlimit(RLIMIT_CORE, &none);
+}
+
 int (*thread_op)() = nullptr;
 volatile int thread_result = -100;
 volatile std::uintptr_t thread_frame = 0;   // the frame address of thread_main, the operation's caller
@@ -312,6 +328,7 @@ int on_thread_of_size(int (*fn)(), std::size_t size) {
     std::fflush(stderr);
     const pid_t pid = fork();
     if (pid == 0) {
+        no_core_dump();
         thread_op = fn;
         pthread_attr_t attr;
         pthread_t thread;
@@ -342,6 +359,7 @@ int on_short_stack(int (*fn)(), std::size_t stack_bytes) {
     std::fflush(stderr);
     const pid_t pid = fork();
     if (pid == 0) {
+        no_core_dump();
         if (mprotect(base + canary, guard, PROT_NONE) != 0) _exit(4);
         _exit(run_on_stack(fn, base + canary + guard, stack_bytes) == 0 ? 0 : 5);
     }
@@ -416,6 +434,16 @@ int main() {
                 ++check::failures;
             }
             if (optimized) CHECK(d.depth + margin_bytes <= a.stack_bytes);
+#if defined(OPENPQC_TEST_PCT)
+            // the pair-wise consistency test signs inside KeyGen: without it, KeyGen fits the smaller entry
+            if (optimized && o.kind == keygen && d.below <= documented_kib[level].keygen * KiB) {
+                std::fprintf(stderr, "  %s %s needs only %zu bytes below its caller, within the %zu KiB of KeyGen"
+                                     " without the pair-wise consistency test: the library was built without the"
+                                     " test (OPENPQC_MLDSA_KEYGEN_PCT did not reach it)\n",
+                             a.name, o.name, d.below, documented_kib[level].keygen);
+                ++check::failures;
+            }
+#endif
             if (d.depth > deepest) deepest = d.depth;
         }
         std::printf("  deepest: %zu bytes, %zu below the documented size\n", deepest,

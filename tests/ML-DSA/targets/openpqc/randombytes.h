@@ -6,10 +6,12 @@
 /* randombytes.h -- randombytes() of the test programs, for the OpenPQC target.
  *
  * The reference declares void randombytes(uint8_t *, size_t), and test_vectors.c
- * defines it. OpenPQC's test library (openpqc_core_testrng) calls
- * int randombytes(uint8_t *, size_t) and checks the result. The programs'
- * function is therefore renamed here, and randombytes_forward.c provides the
- * library's randombytes(), which calls it. */
+ * defines it. OpenPQC's test library (openpqc_core_testrng) draws through
+ * int opqc_external_randombytes(uint8_t *, size_t) and checks the result. The
+ * programs' function is therefore renamed here, and randombytes_forward.c
+ * provides the library's opqc_external_randombytes(), which calls it; renamed,
+ * it cannot be taken for the int randombytes() that the test-only forwarder of
+ * other test programs calls (tests/Core/testrng_forward.c). */
 
 #ifndef OPENPQC_TARGET_RANDOMBYTES_H
 #define OPENPQC_TARGET_RANDOMBYTES_H

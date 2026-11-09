@@ -549,10 +549,12 @@ This section describes OpenPQC as it is now (November 2026), not the vendored ml
 [include/ML/KEM/README.md](../include/ML/KEM/README.md) ("Using ML-KEM in an application") give them in full.
 
 1. **RBG.** The random values must come from an approved RBG (SP 800-90A/B/C), with at least 128, 192 or 256 bits of
-   security strength for ML-KEM-512, -768 or -1024 (§3.3). OpenPQC's `opqc_randombytes` asks the operating system,
-   which is not such an RBG within a module boundary. A library built with `OPQC_CONFIG_EXTERNAL_RANDOMBYTES` calls the
-   application's `int randombytes(uint8_t *out, size_t outlen)` instead, which can draw from an approved DRBG; no
-   CMake target builds a production library that way (the `*_testrng` targets are for the tests).
+   security strength for ML-KEM-512, -768 or -1024 (§3.3). By default OpenPQC's `opqc_randombytes` asks the operating
+   system, which is not such an RBG within a module boundary. An application supplies an approved DRBG by registering
+   it with `opqc_set_randombytes(fn, ctx)` at run time, or by building the libraries with the CMake option
+   `OPENPQC_EXTERNAL_RANDOMBYTES` and defining `int opqc_external_randombytes(uint8_t *out, size_t len)`
+   (`Core/opqc_platform.h`); the GPU backend's coins come through the same function. The `*_testrng` targets are built
+   as with that option, for the tests.
 2. **Type checks.** The FIPS 203 type (length) checks of §7.2 and §7.3 are met by the API's fixed-size arrays.
    Callers must pass buffers of exactly the declared sizes and refuse keys or ciphertexts of other lengths themselves
    (`openpqc_mlkem.h`, Sizes).

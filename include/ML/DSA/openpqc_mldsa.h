@@ -113,11 +113,15 @@
  * computes (Algorithm 7, line 6), external_mu, sign_mu and verify_mu: mu must
  * then be computed as external_mu does, with the public key of the signer.
  *
- * Randomness. The randomized functions take their randomness from the
- * operating system (Core/opqc_platform.h). The variant openpqc_mldsa_testrng
- * of the library calls the application's randombytes() instead and exists for
- * the tests only (Core/openpqc_core.h). The implementation is
- * ML/DSA/mldsa.cpp, with the algorithms in ML/DSA/scheme.
+ * Randomness. The randomized functions take their randomness from
+ * opqc_randombytes (Core/opqc_platform.h): from the source that the
+ * application registered with opqc_set_randombytes, or else from the operating
+ * system, or, in a library built with the CMake option
+ * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
+ * opqc_external_randombytes. The variant openpqc_mldsa_testrng of the library
+ * is built as with that option and exists for the tests only
+ * (Core/openpqc_core.h). The implementation is ML/DSA/mldsa.cpp, with the
+ * algorithms in ML/DSA/scheme.
  *
  * Private keys. sk must come from keypair or keypair_derand, or from storage
  * or a party that is trusted: FIPS 204 decodes sk without checking it and runs

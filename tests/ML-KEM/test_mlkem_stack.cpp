@@ -6,10 +6,10 @@
 // "Implementers shall ensure that intermediate data is destroyed as soon as it is no longer needed. In
 // particular, for ML-KEM.KeyGen, ML-KEM.Encaps, and ML-KEM.Decaps, only the designated output can be
 // retained in memory after the algorithm terminates." The test runs the library as built
-// (openpqc_mlkem_testrng, through the C API: its randombytes() is the test's, so that d || z and m are
-// known) -- keypair and keypair_derand, enc and enc_derand, dec of the ciphertext and dec of the
-// ciphertext with one bit of c2 changed, which decrypts to another message and is implicitly rejected --
-// and copies the stack below its own frame right after each call returns. Two checks follow.
+// (openpqc_mlkem_testrng, through the C API: its opqc_external_randombytes() is the test's, so that
+// d || z and m are known) -- keypair and keypair_derand, enc and enc_derand, dec of the ciphertext and
+// dec of the ciphertext with one bit of c2 changed, which decrypts to another message and is implicitly
+// rejected -- and copies the stack below its own frame right after each call returns. Two checks follow.
 //
 // 1. The copies are searched, 32 bytes at a time, for the secret values of the calls, recomputed
 //    afterwards from FIPS 203 with the math core (not with the scheme layer under test):
@@ -28,7 +28,7 @@
 //    compute them: as controls, they must never be found.
 //
 //    If the library runs the pair-wise consistency test in KeyGen (OPENPQC_MLKEM_KEYGEN_PCT; this test
-//    finds out from keypair_derand's use of randombytes(), and mlkem_stack_pct, built with
+//    finds out from keypair_derand's use of the test's source, and mlkem_stack_pct, built with
 //    OPENPQC_TEST_PCT, requires it), the Encaps and Decaps of that test are searched for as well: its m
 //    (drawn after d || z), K, r, the values of its encryption, its ciphertext, and those of its
 //    decryption.
@@ -58,19 +58,19 @@
 // test also against the library compiled at -O0, -O1, -O2 and -Os (mlkem_stack_O0, ...), whatever the
 // build type.
 //
-// Without the stack burn (mlkem_stack_noburn, mlkem_stack_noburn_pct; OPENPQC_TEST_NO_STACK_BURN). The burn
-// overwrites every frame in which the named wipes (ZeroizeOnExit) and the destructor of Poly run, so
+// Without the stack burn (mlkem_stack_noburn, mlkem_stack_noburn_pct; OPENPQC_TEST_NO_STACK_BURN). The
+// burn overwrites every frame in which the named wipes (ZeroizeOnExit) and the destructor of Poly run, so
 // against the library as built, check 1 cannot tell whether they still destroy what they guard. These
 // variants run check 1 against a copy of the library compiled without the burn
-// (OPENPQC_MLKEM_TEST_NO_STACK_BURN, scheme/ml_kem.hpp), where only the named wipes and Poly's destructor
-// stand between the secrets and the search. With GCC 16 and Clang 23 at -O3, deleting the zeroization in
-// ~Poly, the 8 ZeroizeOnExit of the scheme layer, or any one of them makes them fail (the one of the
-// pair-wise consistency test only in the variant with the test, the one of sigma in K-PKE.KeyGen only in
-// the variant without it); the one-byte implicit-rejection flag is too short for the search (above). With
-// Core's hashes as they are, check 1 finds nothing else there, with the library at -O0 to -O3 and -Os.
-// Check 2 is left out: the compiler's own spill slots, which it sees, only the burn clears. As a control,
-// every call must have left nothing that is not zero as deep as the burn would reach: with the burn, its
-// own frames leave bytes there.
+// (OPENPQC_MLKEM_NO_STACK_BURN, scheme/ml_kem.hpp, as the CMake option OPENPQC_MLKEM_STACK_BURN=OFF
+// builds the library), where only the named wipes and Poly's destructor stand between the secrets and the
+// search. With GCC 16 and Clang 23 at -O3, deleting the zeroization in ~Poly, the 8 ZeroizeOnExit of the
+// scheme layer, or any one of them makes them fail (the one of the pair-wise consistency test only in the
+// variant with the test, the one of sigma in K-PKE.KeyGen only in the variant without it); the one-byte
+// implicit-rejection flag is too short for the search (above). With Core's hashes as they are, check 1
+// finds nothing else there, with the library at -O0 to -O3 and -Os. Check 2 is left out: the compiler's
+// own spill slots, which it sees, only the burn clears. As a control, every call must have left nothing
+// that is not zero as deep as the burn would reach: with the burn, its own frames leave bytes there.
 #include "check.hpp"
 #include "Core/opqc_sha3.h"
 #include "Core/xof.hpp"
@@ -122,7 +122,8 @@ void queue_randomness(std::initializer_list<std::span<const std::uint8_t>> parts
 
 } // namespace
 
-extern "C" int randombytes(std::uint8_t* out, std::size_t outlen) {
+// The source of the test variant of the library (openpqc_*_testrng, Core/opqc_platform.h)
+extern "C" int opqc_external_randombytes(std::uint8_t* out, std::size_t outlen) {
     if (outlen > rng_queued - rng_taken) return -1;
     std::memcpy(out, rng_queue.data() + rng_taken, outlen);
     rng_taken += outlen;
@@ -840,8 +841,8 @@ struct Run {
 } // namespace
 
 int main() {
-    // With the pair-wise consistency test, keypair_derand draws the test's m from randombytes() and fails
-    // when there is none
+    // With the pair-wise consistency test, keypair_derand draws the test's m from the test's source, and
+    // fails when there is none
     queue_randomness({});
     library_pct = Run<512>::keypair_derand_status() == OPENPQC_MLKEM_ERR_RNG_FAIL;
     std::printf("the library %s the pair-wise consistency test in KeyGen\n", library_pct ? "runs" : "does not run");

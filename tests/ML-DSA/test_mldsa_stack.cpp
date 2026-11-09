@@ -7,17 +7,18 @@
 // as soon as it is no longer needed"; the seed xi "is sensitive data and shall be treated with the same
 // safeguards as a private key"; and "the data used internally by verification algorithms is similarly
 // sensitive for some applications" (Section 3.6.3). The test runs the library as built, through the C API
-// (its _testrng variant, whose randombytes() is the test's: so the xi of the randomized KeyGen and the
-// rnd of hedged signing are known), copies the stack below its own frame right after each call returns,
-// and searches the copy for every secret value of the call, recomputed afterwards with the scheme layer:
+// (its _testrng variant, whose opqc_external_randombytes() is the test's: so the xi of the randomized
+// KeyGen and the rnd of hedged signing are known), copies the stack below its own frame right after each
+// call returns, and searches the copy for every secret value of the call, recomputed afterwards with the
+// scheme layer:
 //
-//   KeyGen (keypair_derand, and keypair with xi from randombytes) and the key checks (check_sk,
+//   KeyGen (keypair_derand, and keypair with xi from the test's source) and the key checks (check_sk,
 //   check_keypair)
 //       xi; rho' and K, and the final state of the sponge of H(xi || k || l, 128); s1, s2, NTT(s1), the
 //       64-bit sums of A^ o NTT(s1), A^ o NTT(s1) and A s1 (which give s2 = t - A s1); the final state of
 //       every RejBoundedPoly sponge of ExpandS; s1 and s2 as sk packs them. The key checks: the same
 //       without xi and the seeds.
-//   Sign (sign_derand; sign, prehash_sign and sign_mu with rnd from randombytes)
+//   Sign (sign_derand; sign, prehash_sign and sign_mu with rnd from the test's source)
 //       rnd; K; rho'' and the final state of its sponge; s1, s2, NTT(s1), NTT(s2) and their packed form;
 //       mu and the final state of its sponge; PH(M) for prehash_sign; and for every attempt the library
 //       made: the output v of each ExpandMask call (y in the packed form of BitPack) and the final state
@@ -122,7 +123,8 @@ void queue(std::span<const std::uint8_t, 32> bytes) {
 
 } // namespace
 
-extern "C" int randombytes(std::uint8_t* out, std::size_t n) {
+// The source of the test variant of the library (openpqc_*_testrng, Core/opqc_platform.h)
+extern "C" int opqc_external_randombytes(std::uint8_t* out, std::size_t n) {
     if (queued_pos + n > queued_len) return -1;
     for (std::size_t i = 0; i < n; i++) out[i] = queued[queued_pos + i];
     queued_pos += n;
@@ -892,7 +894,7 @@ struct Run {
             CHECK_EQ(search_after("check_keypair", op_check_keypair, 0, s), 0u);
         }
 
-        // Sign: deterministic in rnd, and hedged (rnd from randombytes)
+        // Sign: deterministic in rnd, and hedged (rnd from the test's source)
         {
             Secrets s;
             std::array<std::uint8_t, 64> m;
@@ -1003,7 +1005,7 @@ struct Run {
             CHECK(std::memcmp(mask_y.data(), y.data(), sizeof y) == 0);
         }
 
-        // KeyGen with xi from randombytes (last: it replaces the key of the checks above)
+        // KeyGen with xi from the test's source (last: it replaces the key of the checks above)
         {
             Seed seed;
             for (unsigned i = 0; i < 32; i++) seed[i] = static_cast<std::uint8_t>(0xC0 + trial * 11 + i * 7);

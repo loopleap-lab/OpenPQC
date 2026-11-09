@@ -68,6 +68,21 @@ target_link_libraries(test_mldsa_sk_check PRIVATE openpqc_mldsa openpqc_strict_w
 target_compile_features(test_mldsa_sk_check PRIVATE cxx_std_20)
 add_test(NAME mldsa_sk_check COMMAND test_mldsa_sk_check)
 
+#   mldsa_fresh          keypair and the hedged signing functions (sign, prehash_sign, sign_mu) of the library as
+#                        built draw fresh random values for every call (FIPS 204, Section 3.6.1): no pk, sk or
+#                        signature repeats, and none equals the output for all-zero randomness (keypair_derand
+#                        with xi = 0, the deterministic signature)
+#   mldsa_fresh_control  the same checks with a source registered through opqc_set_randombytes that gives the
+#                        same bytes on every call: they must report every repeat
+foreach(variant fresh fresh_control)
+    add_executable(test_mldsa_${variant} test_mldsa_fresh.c)
+    target_link_libraries(test_mldsa_${variant} PRIVATE openpqc_mldsa openpqc_strict_warnings)
+    set_target_properties(test_mldsa_${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                           C_EXTENSIONS OFF)
+    add_test(NAME mldsa_${variant} COMMAND test_mldsa_${variant})
+endforeach()
+target_compile_definitions(test_mldsa_fresh_control PRIVATE OPENPQC_FRESH_CONTROL)
+
 #   mldsa_stack   no secret intermediate values left on the stack after KeyGen, the key checks, Sign
 #                 (also hedged, HashML-DSA, external mu and at the bound of Appendix C) and Verify
 #                 (FIPS 204, Section 3.6.3), Keccak lanes included; the library as built, through the
@@ -80,9 +95,11 @@ add_test(NAME mldsa_sk_check COMMAND test_mldsa_sk_check)
 #                        documents, the stack each one uses (compared, in optimized builds, with
 #                        that size and with the function's entry in the header's table), and a
 #                        stack that is too small, which must end in a fault at the guard page
-#                        (with -fstack-clash-protection, cmake/OpenPQCWarnings.cmake);
-#                        mldsa_thread_stack_pct the same for the library built with the pair-wise
-#                        consistency test. Skipped (77) under AddressSanitizer. Linux only.
+#                        (with -fstack-clash-protection, cmake/OpenPQCWarnings.cmake), in a child
+#                        that leaves no core dump; mldsa_thread_stack_pct the same for the library
+#                        built with the pair-wise consistency test, whose KeyGen must also need
+#                        more stack than KeyGen without the test. Skipped (77) under
+#                        AddressSanitizer. Linux only.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_executable(test_mldsa_stack test_mldsa_stack.cpp)
     target_include_directories(test_mldsa_stack PRIVATE ${PROJECT_SOURCE_DIR}/tests)
@@ -238,17 +255,56 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(mldsa_acvp PROPERTIES LABELS network)
 endif()
 
+# --- Wycheproof vectors --------------------------------------------------------------------
+#   mldsa_wycheproof   the 1138 ML-DSA vectors of C2SP/wycheproof (sign with a seed or a private key, and
+#                      verify, for each parameter set; downloads them on first use into vector-data/ of this
+#                      directory; label "network"), through tests/ML-KEM/pinned_vectors.py: the files pinned
+#                      by SHA-256 and case count, every run of wp_mldsa_driver checked (no signal, nothing on
+#                      stderr) and counted. Valid vectors must give the vector's signature and mu; invalid ones
+#                      must be refused, a private key with s1 or s2 outside [-eta, eta] with
+#                      OPENPQC_MLDSA_ERR_INVALID_KEY and an all-zero signature. Its sign vectors are the only
+#                      ones of the suite that reach the rejection of ||<<c t0>>|| >= gamma2 (FIPS 204,
+#                      Algorithm 7, line 28).
+#   mldsa_wycheproof_control_crash, _sanitizer
+#                      positive controls: wp_mldsa_driver runs through a stand-in that turns a rejection into
+#                      a death by SIGSEGV, or into an AddressSanitizer report on stderr, and the test passes
+#                      only if pinned_vectors.py reports it (label "network": they need the pinned files)
+#   pinned_vectors_selfcheck
+#                      pinned_vectors.py's report of a failing driver run keeps the end of a long stderr,
+#                      where a driver names the reason after the argument (a stub driver; no network)
+add_executable(wp_mldsa_driver wp_mldsa_driver.c)
+target_link_libraries(wp_mldsa_driver PRIVATE openpqc_mldsa openpqc_strict_warnings)
+set_target_properties(wp_mldsa_driver PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                 C_EXTENSIONS OFF)
+if(Python3_Interpreter_FOUND)
+    set(_pinned ${PROJECT_SOURCE_DIR}/tests/ML-KEM/pinned_vectors.py)
+    add_test(NAME mldsa_wycheproof
+             COMMAND ${Python3_EXECUTABLE} ${_pinned} mldsa-wycheproof --driver $<TARGET_FILE:wp_mldsa_driver>
+                     --cache ${CMAKE_CURRENT_BINARY_DIR}/vector-data)
+    foreach(inject crash sanitizer)
+        add_test(NAME mldsa_wycheproof_control_${inject}
+                 COMMAND ${Python3_EXECUTABLE} ${_pinned} mldsa-wycheproof --driver $<TARGET_FILE:wp_mldsa_driver>
+                         --cache ${CMAKE_CURRENT_BINARY_DIR}/vector-data --inject ${inject})
+    endforeach()
+    set_tests_properties(mldsa_wycheproof mldsa_wycheproof_control_crash mldsa_wycheproof_control_sanitizer
+                         PROPERTIES LABELS network RESOURCE_LOCK mldsa_vector_data TIMEOUT 600)
+    add_test(NAME pinned_vectors_selfcheck COMMAND ${Python3_EXECUTABLE} ${_pinned} selfcheck)
+endif()
+
 # --- constant-time test (valgrind) ---------------------------------------------------------
-#   mldsa_ct   test_mldsa_ct.c under valgrind: randombytes() marks its output as secret, the
-#              library (built with OPQC_CT_TESTING) declassifies what FIPS 204 makes public,
-#              and valgrind fails on any branch or memory index that depends on a secret
+#   mldsa_ct   test_mldsa_ct.c under valgrind: its opqc_external_randombytes() (the randomness of
+#              openpqc_core_testrng) marks its output as secret, the library (built with
+#              OPQC_CT_TESTING) declassifies what FIPS 204 makes public, and valgrind fails on any
+#              branch or memory index that depends on a secret
 #   mldsa_O1_ct, mldsa_O2_ct, mldsa_O3_ct, mldsa_Os_ct
 #              the same with the library compiled at -O1, -O2, -O3 and -Os whatever the build
 #              type: whether an optimizer turns a mask of the constant-time code back into a
 #              branch depends on the level (and on the processor: Clang did so in Sign on
 #              AArch64 and RISC-V at -O2 and -O3), which a Debug build, -O0, never sees
 # Objects and programs are compiled without the x86-64 extensions that valgrind cannot
-# decode (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt).
+# decode (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt), and, as the library, with
+# -fstack-clash-protection where the compiler has it (cmake/OpenPQCWarnings.cmake), which
+# probes every page of the large frames of Sign and KeyGen in the code that valgrind runs.
 find_program(OPENPQC_VALGRIND valgrind)
 find_path(OPENPQC_VALGRIND_INCLUDE_DIR valgrind/memcheck.h)
 if(CMAKE_C_FLAGS MATCHES "-fsanitize" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize")
@@ -272,7 +328,8 @@ elseif(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
         target_compile_definitions(${_objects} PRIVATE OPQC_CT_TESTING)
         target_compile_features(${_objects} PRIVATE cxx_std_20)
         # a target's options come after those of the build type, so -${opt} wins
-        target_compile_options(${_objects} PRIVATE ${OPENPQC_CT_ISA_FLAGS} $<$<BOOL:${opt}>:-${opt}>)
+        target_compile_options(${_objects} PRIVATE ${OPENPQC_CT_ISA_FLAGS} $<$<BOOL:${opt}>:-${opt}>
+                               $<$<BOOL:${OPENPQC_CXX_HAS_STACK_CLASH_PROTECTION}>:-fstack-clash-protection>)
         add_executable(test_${_name} test_mldsa_ct.c $<TARGET_OBJECTS:${_objects}>)
         target_include_directories(test_${_name} PRIVATE ${OPENPQC_VALGRIND_INCLUDE_DIR})
         target_compile_options(test_${_name} PRIVATE ${OPENPQC_CT_ISA_FLAGS})
@@ -289,12 +346,63 @@ else()
     message(STATUS "valgrind or valgrind/memcheck.h not found: constant-time test (mldsa_ct) disabled")
 endif()
 
+# --- register clearing, from the machine code --------------------------------------------------
+#   mldsa_regs_asm   check_regs_asm.py reads the x86-64 code of every function that zeroes its call-used
+#                    registers when it returns (H, RejBoundedPoly, the message representative: scheme/
+#                    crypto_functions.hpp; Keccak-f's rounds and the one-shot hashes of Core): in the library's
+#                    object as built, and in mldsa.cpp compiled by the build's C++ compiler and by the other of
+#                    GCC and Clang where it is installed, at -O1, -O2, -O3 and -Os with both value barriers of
+#                    the math core. Each must leave through the clearing and ret, never through a jump to
+#                    another function (a tail call, which returns to the caller without the clearing); positive
+#                    controls show that it sees a jump and the clearing. Skipped (77) where there is no x86-64
+#                    object to read or no objdump. Registered where Python 3 is found and the C compiler is GCC or
+#                    Clang: the condition of the requirement "gnu" of tests/CMakeLists.txt, which the registry
+#                    checks (the C++ compiler that compiles mldsa.cpp is of the same family).
+if(COMMAND openpqc_expect_tests)   # tests/CMakeLists.txt: registered only on these conditions
+    openpqc_expect_tests(TESTS mldsa_regs_asm NEEDS python gnu)
+    openpqc_expect_tests(TESTS pinned_vectors_selfcheck NEEDS python)
+    openpqc_expect_tests(TESTS mldsa_wycheproof mldsa_wycheproof_control_crash mldsa_wycheproof_control_sanitizer
+                         NEEDS python LABELS network)
+endif()
+if(Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        find_program(OPENPQC_REGS_ASM_OTHER_CXX NAMES clang++)
+    else()
+        find_program(OPENPQC_REGS_ASM_OTHER_CXX NAMES g++)
+    endif()
+    set(_regs_compilers --compile ${CMAKE_CXX_COMPILER})
+    if(OPENPQC_REGS_ASM_OTHER_CXX)
+        list(APPEND _regs_compilers --compile ${OPENPQC_REGS_ASM_OTHER_CXX})
+    endif()
+    set(_regs_flags "-fPIC -DNDEBUG")
+    if(OPENPQC_CXX_HAS_STACK_CLASH_PROTECTION)
+        string(APPEND _regs_flags " -fstack-clash-protection")
+    endif()
+    # the library's object as built, unless a sanitizer instruments it
+    set(_regs_object "")
+    if(NOT CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+        set(_regs_object --object $<TARGET_OBJECTS:openpqc_mldsa_objects>)
+    endif()
+    add_test(NAME mldsa_regs_asm
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_regs_asm.py
+                     --source ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp --include ${PROJECT_SOURCE_DIR}/include
+                     --work ${CMAKE_CURRENT_BINARY_DIR}/regs_asm "--objdump=${CMAKE_OBJDUMP}" ${_regs_compilers}
+                     "--flags=${_regs_flags}" ${_regs_object})
+    set_tests_properties(mldsa_regs_asm PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900)
+else()
+    message(STATUS "assembly check of the register clearing (mldsa_regs_asm) needs Python 3 and GCC or Clang: "
+                   "disabled")
+endif()
+
 # In a build with the CMake option OPENPQC_MLDSA_KEYGEN_PCT (CMakeLists.txt) the library's own KeyGen runs the
 # pair-wise consistency test:
 #   mldsa_pct_library   the test of mldsa_pct against the library as built (openpqc_mldsa): keypair and
 #                       keypair_derand of every parameter set through the test, and keys that sign and verify
-#   mldsa_thread_stack  compares KeyGen's stack with the documented size of KeyGen with the test
-# Neither fails when the option does not reach the library: both pass against the library built without it.
+#   mldsa_thread_stack  in optimized builds, compares KeyGen's stack with the documented size of KeyGen with the
+#                       test, and requires more than the size of KeyGen without it: the test signs inside KeyGen
+# In optimized builds the second fails when the option does not reach the library (mldsa_pct_library passes
+# against a library without the test, since the test draws no randomness and changes no result); unoptimized
+# builds need more stack than the header documents, and there it compares nothing.
 if(OPENPQC_MLDSA_KEYGEN_PCT)
     add_executable(test_mldsa_pct_library test_mldsa_pct.c)
     target_link_libraries(test_mldsa_pct_library PRIVATE openpqc_mldsa openpqc_strict_warnings)

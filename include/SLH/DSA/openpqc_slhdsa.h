@@ -125,7 +125,7 @@
  *                             hedged variant "should be used on platforms where
  *                             side-channel attacks are a concern"; any addrnd
  *                             given: testing only, as sign and prehash_sign draw
- *                             it from the operating system.
+ *                             it themselves (Randomness, below).
  *   sign_internal,            testing only (ACVP): they sign and accept any M',
  *   verify_internal           without the prefix that separates SLH-DSA from
  *                             HashSLH-DSA and binds ctx (Algorithm 22, line 8;
@@ -137,13 +137,16 @@
  * NULL), and verify or prehash_verify.
  *
  * Randomness. The randomized functions (keypair, sign, prehash_sign) take
- * their randomness from the operating system (Core/opqc_platform.h); keypair
- * draws the three seeds with one call of 3n bytes, in the order SK.seed,
- * SK.prf, PK.seed. The variant openpqc_slhdsa_testrng of the library calls the
- * application's randombytes() instead and exists for the tests only
- * (Core/openpqc_core.h). The set ids OPENPQC_SLHDSA_<SET> number the parameter
- * sets in the order of Table 2. The implementation is SLH/DSA/slhdsa.cpp, with
- * the algorithms in SLH/DSA/scheme.
+ * their randomness from opqc_randombytes (Core/opqc_platform.h): from the
+ * source that the application registered with opqc_set_randombytes, or else
+ * from the operating system, or, in a library built with the CMake option
+ * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
+ * opqc_external_randombytes. keypair draws the three seeds with one call of 3n
+ * bytes, in the order SK.seed, SK.prf, PK.seed. The variant
+ * openpqc_slhdsa_testrng of the library is built as with that option and exists
+ * for the tests only (Core/openpqc_core.h). The set ids OPENPQC_SLHDSA_<SET>
+ * number the parameter sets in the order of Table 2. The implementation is
+ * SLH/DSA/slhdsa.cpp, with the algorithms in SLH/DSA/scheme.
  *
  * Linking. The library is C++20 inside: a C program links it with the C++
  * compiler driver (g++, clang++) or adds the C++ runtime (-lstdc++ with GCC's

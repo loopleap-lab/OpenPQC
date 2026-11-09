@@ -18,7 +18,11 @@ option(OPENPQC_REQUIRE_FULL_TESTS
 option(OPENPQC_MLKEM_KEYGEN_PCT
        "ML-KEM: KeyGen runs the pair-wise consistency test of FIPS 140-3 (FIPS 203, Section 7.1)" OFF)
 option(OPENPQC_MLDSA_KEYGEN_PCT
-       "ML-DSA: KeyGen of the CPU library runs the pair-wise consistency test of FIPS 140-3 (signs and verifies)" OFF)
+       "ML-DSA: KeyGen (CPU and SYCL) runs the pair-wise consistency test of FIPS 140-3 (signs and verifies)" OFF)
+option(OPENPQC_MLKEM_STACK_BURN
+       "ML-KEM: overwrite the stack below every call with zeros when it returns (FIPS 203, Section 3.3)" ON)
+option(OPENPQC_EXTERNAL_RANDOMBYTES
+       "Randomness from the application's opqc_external_randombytes() instead of the operating system" OFF)
 set(OPENPQC_SANITIZE "" CACHE STRING
     "Sanitizers for every target (GCC, Clang): the list of -fsanitize=, e.g. address,undefined; empty: none")
 
@@ -36,6 +40,18 @@ set(OPENPQC_CUPQC_DIR "" CACHE PATH
 # build's level are those of optimized code. -DCMAKE_BUILD_TYPE=Debug gives a debug build (-O0).
 if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# Randomness from the application (OPENPQC_EXTERNAL_RANDOMBYTES): openpqc_core, and with it every library,
+# calls the application's opqc_external_randombytes() where it would ask the operating system
+# (Core/opqc_platform.h, include/Core/CMakeLists.txt). The project's own tests, benchmarks and demos link
+# the libraries without such a function, so they are not built then; the tests cover this configuration
+# through the test variants openpqc_*_testrng, which are built that way.
+if(OPENPQC_EXTERNAL_RANDOMBYTES AND (OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHMARKS OR OPENPQC_BUILD_EXAMPLES))
+    message(FATAL_ERROR "OPENPQC_EXTERNAL_RANDOMBYTES=ON builds the libraries for an application that defines "
+                        "opqc_external_randombytes(), which the project's tests, benchmarks and demos do not: "
+                        "configure with -DOPENPQC_BUILD_TESTS=OFF -DOPENPQC_BUILD_BENCHMARKS=OFF "
+                        "-DOPENPQC_BUILD_EXAMPLES=OFF")
 endif()
 
 # Sanitizers: the flags go into CMAKE_C_FLAGS and CMAKE_CXX_FLAGS, with which every target (the
@@ -150,15 +166,26 @@ if(OPENPQC_MLKEM_KEYGEN_PCT)
 endif()
 message(STATUS "OpenPQC ML-KEM pair-wise consistency test after KeyGen: ${OPENPQC_MLKEM_KEYGEN_PCT}")
 
+# ML-KEM without the stack burn (OPENPQC_MLKEM_STACK_BURN=OFF), in the same way: the definition
+# OPENPQC_MLKEM_NO_STACK_BURN goes to the library's own objects only. Every call then still zeroizes the
+# values it names (ZeroizeOnExit, Poly's destructor), but no longer overwrites the stack below it, where
+# copies that the compiler made in stack slots of its own stay until something overwrites them
+# (scheme/ml_kem.hpp, burn_stack). A call then needs less stack and time.
+if(NOT OPENPQC_MLKEM_STACK_BURN)
+    target_compile_definitions(openpqc_mlkem_objects PRIVATE OPENPQC_MLKEM_NO_STACK_BURN)
+endif()
+message(STATUS "OpenPQC ML-KEM stack burn after every call: ${OPENPQC_MLKEM_STACK_BURN}")
+
 # ML-DSA with the pair-wise consistency test after KeyGen (FIPS 140-3; scheme/ml_dsa.hpp), in the same way:
-# the definition goes to the CPU library's own objects only (openpqc_mldsa and openpqc_mldsa_testrng), and
-# KeyGen then signs a fixed message with the new sk and verifies it with the new pk (deterministically: no
-# randomness is drawn). The GPU backend (openpqc_mldsa_sycl) reads the compile definition of the same name,
-# which this option does not give it.
+# the definition goes to the library's own objects only (openpqc_mldsa and openpqc_mldsa_testrng, and the
+# GPU backend openpqc_mldsa_sycl, include/ML/DSA/CMakeLists.txt), and KeyGen then signs a fixed message
+# with the new sk and verifies it with the new pk (deterministically: no randomness is drawn).
 if(OPENPQC_MLDSA_KEYGEN_PCT)
     target_compile_definitions(openpqc_mldsa_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
 endif()
-message(STATUS "OpenPQC ML-DSA pair-wise consistency test after KeyGen (CPU): ${OPENPQC_MLDSA_KEYGEN_PCT}")
+message(STATUS "OpenPQC ML-DSA pair-wise consistency test after KeyGen (CPU and SYCL): ${OPENPQC_MLDSA_KEYGEN_PCT}")
+
+message(STATUS "OpenPQC randomness from the application's opqc_external_randombytes(): ${OPENPQC_EXTERNAL_RANDOMBYTES}")
 
 # C++ umbrella library: Core, ML-KEM, ML-DSA and SLH-DSA, and the C++ learning
 # code for ML-KEM's arithmetic (ML/KEM/reduce, ML/KEM/ntt).

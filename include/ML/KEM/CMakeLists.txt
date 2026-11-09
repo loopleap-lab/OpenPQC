@@ -10,9 +10,9 @@
 #   sycl/              batched ML-KEM on GPUs and other SYCL devices (optional)
 #
 # Targets:
-#   openpqc_mlkem           the library; randomness from the operating system
+#   openpqc_mlkem           the library; randomness from Core (opqc_randombytes: by default the operating system)
 #   openpqc_mlkem_testrng   the same code, randomness from the application's
-#                           randombytes(), for the tests
+#                           opqc_external_randombytes(), for the tests
 #   openpqc_mlkem_sycl      the SYCL backend (OPENPQC_SYCL, see the top-level CMakeLists.txt)
 
 add_library(openpqc_mlkem_objects OBJECT mlkem.cpp)

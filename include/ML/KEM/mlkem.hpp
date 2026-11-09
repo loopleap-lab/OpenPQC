@@ -10,7 +10,7 @@
 //   using KEM = openpqc::mlkem::MLKEM768;
 //   KEM::public_key pk;  KEM::secret_key sk;
 //   KEM::ciphertext ct;  KEM::shared_secret ss, ss2;
-//   if (KEM::keypair(pk, sk) != 0 ||            // randomness from the operating system
+//   if (KEM::keypair(pk, sk) != 0 ||            // randomness from opqc_randombytes (below)
 //       KEM::encaps(ct, ss, pk) != 0 ||         // checks pk first (FIPS 203, Section 7.2)
 //       KEM::decaps(ss2, ct, sk) != 0)          // ss2 == ss
 //       return -1;                              // use none of the outputs
@@ -22,6 +22,12 @@
 // the seeds d || z and m from the caller: keypair_derand is for testing and for
 // expanding a seed stored in place of dk, encaps_derand for testing only (FIPS 203,
 // Section 3.3; "Testing interfaces" in openpqc_mlkem.h).
+//
+// keypair and encaps draw their random values through Core's opqc_randombytes
+// (Core/opqc_platform.h): from the source that the application registered with
+// opqc_set_randombytes, else, in a library built with the CMake option
+// OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes,
+// else from the operating system (the default).
 #pragma once
 
 #include <array>
@@ -89,14 +95,15 @@ struct MLKEM {
 
     // ML-KEM.KeyGen_internal(d, z), FIPS 203 Algorithm 16. If the library is built with
     // OPENPQC_MLKEM_KEYGEN_PCT, the pair-wise consistency test follows, which draws its m from
-    // randombytes() and can fail (see openpqc_mlkem.h); keys that pass it are the same as without it.
+    // opqc_randombytes (above) and can fail (see openpqc_mlkem.h); keys that pass it are the same as
+    // without it.
     [[nodiscard]] static int keypair_derand(std::span<std::uint8_t, public_key_bytes> pk,
                                             std::span<std::uint8_t, secret_key_bytes> sk,
                                             std::span<const std::uint8_t, keypair_coins_bytes> coins) {
         return api::keypair_derand(pk.data(), sk.data(), coins.data());
     }
 
-    // ML-KEM.KeyGen, FIPS 203 Algorithm 19 (coins from randombytes())
+    // ML-KEM.KeyGen, FIPS 203 Algorithm 19 (d and z from opqc_randombytes, above)
     [[nodiscard]] static int keypair(std::span<std::uint8_t, public_key_bytes> pk,
                                      std::span<std::uint8_t, secret_key_bytes> sk) {
         return api::keypair(pk.data(), sk.data());
@@ -110,7 +117,7 @@ struct MLKEM {
         return api::enc_derand(ct.data(), ss.data(), pk.data(), coins.data());
     }
 
-    // ML-KEM.Encaps, FIPS 203 Algorithm 20 (m from randombytes())
+    // ML-KEM.Encaps, FIPS 203 Algorithm 20 (m from opqc_randombytes, above)
     [[nodiscard]] static int encaps(std::span<std::uint8_t, ciphertext_bytes> ct,
                                     std::span<std::uint8_t, shared_secret_bytes> ss,
                                     std::span<const std::uint8_t, public_key_bytes> pk) {

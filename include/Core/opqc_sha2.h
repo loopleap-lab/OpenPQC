@@ -340,10 +340,10 @@ OPQC_INLINE void opqc_store64_be(uint8_t *p, uint64_t x)
  * that the round constants and the words that a caller knows at compile time
  * (padding, lengths) become constants of the code. More code is not always
  * faster (Keccak-f's 24 rounds unrolled made the GPU kernels slower,
- * opqc_keccak.h). The defaults are the measured best
- * (docs/slhdsa-notes/experiments/H1.md: GCC 16 -O3 on an i7-11370H, an RTX 3050
- * Laptop and an Iris Xe, with DPC++ and AdaptiveCpp): SHA-256 with all rounds
- * unrolled everywhere (6-11 % more compressions per second than with the
+ * opqc_keccak.h). The defaults are the measured best (October 2026: GCC 16
+ * -O3 on an i7-11370H, and the DPC++ nightly of 2026-10-11 and AdaptiveCpp on
+ * an RTX 3050 Laptop and an Iris Xe): SHA-256 with all rounds unrolled
+ * everywhere (6-11 % more compressions per second than with the
  * passes a loop); SHA-512 with the passes a loop (5-8 % more on the CPU, 10 %
  * more on the Iris Xe than all rounds), except in DPC++'s device code for NVIDIA
  * GPUs (__NVPTX__), where all rounds gained 7 %. AdaptiveCpp compiles one

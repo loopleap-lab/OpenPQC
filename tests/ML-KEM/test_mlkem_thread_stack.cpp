@@ -32,16 +32,32 @@
 //              not run on stacks that are too small: they need less than the smallest stack a thread can
 //              have (PTHREAD_STACK_MIN, 16 KiB), and none of their frames is larger than a page.
 //
+// The child processes of the last two are made non-dumpable, with a core-size limit of 0, before the call
+// runs: the SIGSEGV that ends most of them then leaves no core dump, and on systems that pipe crashes to a
+// handler (systemd-coredump) no record either, which the size limit alone does not prevent.
+//
 // Built with OPENPQC_TEST_PCT, the test links the library built with the pair-wise consistency test
 // (OPENPQC_MLKEM_KEYGEN_PCT), whose KeyGen also encapsulates and decapsulates; the documented sizes cover it
 // too. AddressSanitizer moves and enlarges frames (openpqc_mlkem.h gives other sizes for it), so under it
 // the test reports itself skipped (exit code 77). Linux only (it forks, and lays the canary, the guard page
 // and the stack out in one mapping).
+//
+// Built with OPENPQC_TEST_NO_STACK_BURN, the test is for a library built without the stack burn (the CMake
+// option OPENPQC_MLKEM_STACK_BURN=OFF, tests/ML-KEM/CMakeLists.txt). A call then needs only what its own
+// frames use (GCC 16 at -O3: 10.8 to 30.6 KiB), and the documented sizes, which the burn sets, are an upper
+// bound. Besides the depth and the documented size, the test then checks that every call needs less than the
+// burn overwrites (44, 54 and 64 KiB, scheme/ml_kem.hpp), so that it cannot pass against a library that burns
+// the stack after all; and, on the same short stacks, that a call never writes below the guard page, ends in
+// a fault at it where the room is smaller than what the call was measured to use, and otherwise returns or
+// faults (the probes of -fstack-clash-protection can touch a page of a frame below the lowest byte that the
+// call changes).
 #include "check.hpp"
 #include "ML/KEM/openpqc_mlkem.h"
 
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -75,6 +91,15 @@ constexpr std::size_t KiB = 1024;
 // own frame of a few words is included).
 constexpr std::size_t documented_kib[] = {48, 58, 68};
 constexpr std::size_t documented_check_kib = 9;
+
+// scheme/ml_kem.hpp, stack_burn_bytes: what the stack burn overwrites below its caller, (24 + 10 k) KiB
+constexpr std::size_t burn_kib[] = {44, 54, 64};
+
+#if defined(OPENPQC_TEST_NO_STACK_BURN)
+constexpr bool no_burn = true;    // the library is built without the stack burn
+#else
+constexpr bool no_burn = false;
+#endif
 
 // --- the operations: one C API function each, on inputs prepared by the main thread ----------------
 
@@ -229,7 +254,7 @@ const char* outcome_name(Outcome o) {
 
 // Runs fn on a stack that leaves `below` bytes (to 64) below the thread function's frame, or more if the
 // stack would be smaller than PTHREAD_STACK_MIN, directly above a PROT_NONE guard page, below which a canary
-// region of 512 KiB holds 0xC3, in a child process.
+// region of 512 KiB holds 0xC3, in a child process that cannot dump core.
 // fault_at_guard: the call ended in SIGSEGV and the canary is intact; returned: it returned 0; and
 // wrote_below_guard if any byte of the canary changed, whatever happened to the call.
 Outcome on_guarded_stack(int (*fn)(), std::size_t below) {
@@ -247,6 +272,13 @@ Outcome on_guarded_stack(int (*fn)(), std::size_t below) {
     std::fflush(stderr);
     const pid_t pid = fork();
     if (pid == 0) {
+        // The call is expected to end in SIGSEGV. A process that is not dumpable gets no core dump, and no
+        // record of a core-dump handler that the kernel pipes crashes to; the size limit of 0 covers a kernel
+        // that writes core files itself. If either call fails, the crash is dumped as it would be otherwise,
+        // and the outcome is the same.
+        const rlimit no_core{0, 0};
+        (void)prctl(PR_SET_DUMPABLE, 0UL, 0UL, 0UL, 0UL);
+        (void)setrlimit(RLIMIT_CORE, &no_core);
         if (mprotect(base + canary, guard, PROT_NONE) != 0) _exit(4);
         _exit(run_on_stack(fn, base + canary + guard, stack_bytes) == 0 ? 0 : 5);
     }
@@ -283,6 +315,10 @@ int main() {
 #if defined(OPENPQC_TEST_PCT)
     std::printf("the library with the pair-wise consistency test after KeyGen (OPENPQC_MLKEM_KEYGEN_PCT)\n");
 #endif
+    if (no_burn) {
+        std::printf("the library without the stack burn (OPENPQC_MLKEM_STACK_BURN=OFF): every call must need less"
+                    " than the burn would overwrite, and on a stack too small for the burn it may return\n");
+    }
     if (const long page = sysconf(_SC_PAGESIZE); page > 0) page_bytes = static_cast<std::size_t>(page);
     if (const long min = sysconf(_SC_THREAD_STACK_MIN); min > 0) {
         thread_stack_min = std::max(thread_stack_min, static_cast<std::size_t>(min));
@@ -307,10 +343,13 @@ int main() {
         const std::size_t documented = documented_kib[level] * KiB;
         std::printf("%s, documented stack %zu KiB (check_pk and check_sk %zu KiB):\n", a.name, documented_kib[level],
                     documented_check_kib);
-        for (const Op& o : ops) {
+        std::size_t used[std::size(ops)] = {};   // what each call was measured to use below its caller
+        for (std::size_t i = 0; i < std::size(ops); i++) {
+            const Op& o = ops[i];
             const std::size_t need = o.check ? documented_check_kib * KiB : documented;
             int result = -1;
             const Depth d = measure(o.fn, result);
+            used[i] = d.below;
             CHECK_EQ(result, 0);
             const Outcome at_documented = on_guarded_stack(o.fn, need);
             std::printf("  %-16s %7zu bytes below the thread function (%5.1f KiB; documented %2zu KiB); on a stack of"
@@ -324,18 +363,31 @@ int main() {
                              a.name, o.name, d.below, need / KiB);
                 ++check::failures;
             }
+            if (no_burn && d.below >= burn_kib[level] * KiB) {
+                std::fprintf(stderr, "  %s %s needs %zu bytes below its caller, as much as the stack burn overwrites"
+                                     " (%zu KiB): the library burns the stack after all\n",
+                             a.name, o.name, d.below, burn_kib[level]);
+                ++check::failures;
+            }
         }
 #if defined(OPENPQC_TEST_STACK_CLASH_PROTECTION)
         // stacks that are too small: a fault at the guard page, never a write below it
         std::vector<std::size_t> short_sizes;
         for (std::size_t s = 16 * KiB; s + 4 * KiB < documented; s += 4 * KiB) short_sizes.push_back(s);
         short_sizes.push_back(documented - 4 * KiB);
-        for (const Op& o : ops) {
+        for (std::size_t i = 0; i < std::size(ops); i++) {
+            const Op& o = ops[i];
             if (o.check) continue;
             std::printf("  %-16s with", o.name);
             for (const std::size_t s : short_sizes) {
                 const Outcome outcome = on_guarded_stack(o.fn, s);
                 std::printf(" %zu", s / KiB);
+                // With the burn every one of these stacks is too small. Without it, a call may return where the
+                // room below the thread function (s to s + 64 bytes) holds what it was measured to use.
+                if (no_burn && outcome == returned && s + 64 >= used[i]) {
+                    std::printf(" (returned)");
+                    continue;
+                }
                 if (outcome != fault_at_guard) {
                     std::printf(" (%s)", outcome_name(outcome));
                     std::fprintf(stderr, "  %s %s with %zu KiB below the thread function: %s\n", a.name, o.name,

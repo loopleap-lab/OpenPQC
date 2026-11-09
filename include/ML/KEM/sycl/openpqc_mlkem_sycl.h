@@ -22,9 +22,11 @@
  * opqc_sycl_mlkem_keypair_derand is meant for testing and for expanding stored seeds
  * d || z (FIPS 203, Section 3.3); opqc_sycl_mlkem_enc_derand for testing only: anybody
  * who knows m knows K (openpqc_mlkem.h, "Testing interfaces").
- * opqc_sycl_mlkem_keypair and opqc_sycl_mlkem_enc draw the coins from the operating
- * system's RNG on the host (FIPS 203, Section 3.3: the module, not the caller,
- * generates the randomness).
+ * opqc_sycl_mlkem_keypair and opqc_sycl_mlkem_enc draw the coins on the host from
+ * Core's opqc_randombytes (Core/opqc_platform.h: a source that the application
+ * registered with opqc_set_randombytes, or else the default, the operating system's
+ * RNG unless the libraries are built with OPENPQC_EXTERNAL_RANDOMBYTES; FIPS 203,
+ * Section 3.3: the module, not the caller, generates the randomness).
  *
  * Status. Encaps and Decaps (enc, enc_derand, dec) require `status`, a device buffer
  * of n int32_t (NULL: the call returns -1), and write the result of each operation

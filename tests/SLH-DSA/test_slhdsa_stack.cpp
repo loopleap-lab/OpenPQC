@@ -5,10 +5,10 @@
 //
 // "Implementations of SLH-DSA shall ensure that any local copies of the inputs and any potentially
 // sensitive intermediate data are destroyed as soon as they are no longer needed." The test runs the
-// library as built (openpqc_slhdsa_testrng, through the C API: its randombytes() is the test's, so that
-// the seeds of the randomized KeyGen and the addrnd of hedged signing are known), copies the stack below
-// its own frame right after each call returns, and searches the copy for every secret value of the
-// call, recomputed afterwards with the scheme layer:
+// library as built (openpqc_slhdsa_testrng, through the C API: its opqc_external_randombytes() is the
+// test's, so that the seeds of the randomized KeyGen and the addrnd of hedged signing are known), copies
+// the stack below its own frame right after each call returns, and searches the copy for every secret
+// value of the call, recomputed afterwards with the scheme layer:
 //
 //   KeyGen (keypair_derand, keypair) and, for the f sets, the key check check_secret_key (Section 3.1, which
 //   regenerates the key in a frame of its own)
@@ -39,13 +39,13 @@
 // values at or above the signed positions), are public and not searched; the test checks its recomputation
 // against the signature.
 //
-// How the copy is searched. Byte strings: in 13 views, as it is, with every 4-byte group reversed (4 phases)
-// and with every 8-byte group reversed (8 phases), since a SHA-2 word is big-endian and a word in memory is
-// not (DESIGN D4). The fingerprints of all n-byte and all 8-byte windows of every view (at every byte offset)
-// go into a sorted table; each secret is looked up by its n bytes and by its 8-byte pieces (every piece of a
-// byte string, the aligned pieces of an n-byte value), so that half of a value overwritten still counts, and
-// a hit is confirmed byte for byte. A single confirmed hit fails. This scales to the millions of chain values
-// of the s sets.
+// How the copy is searched. Byte strings: in 13 views, as it is, with every 4-byte group reversed (4 phases) and
+// with every 8-byte group reversed (8 phases), since a SHA-2 word is big-endian and a word in memory is not: the
+// SHA-2 compressions keep the block they hash in their frames as such words (W[], Core/opqc_sha2.h). The
+// fingerprints of all n-byte and all 8-byte windows of every view (at every byte offset) go into a sorted table;
+// each secret is looked up by its n bytes and by its 8-byte pieces (every piece of a byte string, the aligned
+// pieces of an n-byte value), so that half of a value overwritten still counts, and a hit is confirmed byte for
+// byte. A single confirmed hit fails. This scales to the millions of chain values of the s sets.
 //
 // SHA-2 compressions. Core's compression functions keep the message schedule in a ring of 16 words and the
 // working variables in registers (Core/opqc_sha2.h); the block itself is overwritten in turn by W_16 .. W_63
@@ -76,12 +76,12 @@
 // build for SLH-DSA-SHA2-128s, -192s and -256s with Clang 23, and saw the 128f and 256f sets only through
 // message digests.
 //
-// Two more checks. The scheme layer's own destruction: the burn hides whether the n-byte values and the
-// hash states destroy themselves (DESIGN D4), so PRF, F, H, PRF_msg and H_msg run once more directly, without
-// the burn, and the stack as it is must hold none of their secret inputs and outputs (SchemeLayer below); the
-// same for Core's prehash, which HashSLH-DSA calls above the burn (prehash_destruction below). Short stacks:
-// on a thread stack that is too short for the burn, an operation must end in a fault at the guard page, not
-// write the memory below it (short_stacks below).
+// Two more checks. The scheme layer's own destruction: the burn hides whether the n-byte values and the hash
+// states destroy themselves (scheme/crypto_functions.hpp), so PRF, F, H, PRF_msg and H_msg run once more
+// directly, without the burn, and the stack as it is must hold none of their secret inputs and outputs
+// (SchemeLayer below); the same for Core's prehash, which HashSLH-DSA calls above the burn (prehash_destruction
+// below). Short stacks: on a thread stack that is too short for the burn, an operation must end in a fault at the
+// guard page, not write the memory below it (short_stacks below).
 //
 // Built with OPENPQC_TEST_KEYGEN_PCT (slhdsa_stack_pct, test_slhdsa_stack_pct.cpp) against the library built
 // with the pair-wise consistency test after KeyGen (OPENPQC_SLHDSA_KEYGEN_PCT, scheme/slh_dsa.hpp), and with
@@ -106,6 +106,8 @@
 
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -159,7 +161,8 @@ std::size_t queued_len = 0, queued_pos = 0;
 
 } // namespace
 
-extern "C" int randombytes(std::uint8_t* out, std::size_t n) {
+// The source of the test variant of the library (openpqc_*_testrng, Core/opqc_platform.h)
+extern "C" int opqc_external_randombytes(std::uint8_t* out, std::size_t n) {
     if (queued_pos + n > queued_len) return -1;
     for (std::size_t i = 0; i < n; i++) out[i] = queued[queued_pos + i];
     queued_pos += n;
@@ -1256,12 +1259,13 @@ void test_set(const CApi& a, bool fast, bool verbose, bool keygen_only = false) 
 // --- the scheme layer's own destruction, without the burn -------------------------------------------------
 //
 // The burn at the end of every operation overwrites whatever the operation's frames left, so the checks above
-// cannot see whether the n-byte values (Value<n>) and the hash states destroy themselves (DESIGN D4). Here the
-// hash functions of the scheme layer run directly, without any burn, on secret inputs, and the stack is
-// searched as it is (not in the swapped views: the SHA-2 compression functions leave W[] in their dead frames by
-// design, byte-swapped, and only the burn removes it) for SK.seed, SK.prf and the message (which a SHA-2 or HMAC
-// state holds in plain text after absorbing them), for HMAC's key blocks SK.prf xor ipad and xor opad and its
-// inner hash, and for the outputs, which Values hold and a SHAKE state holds at its start.
+// cannot see whether the n-byte values (Value<n>) and the hash states destroy themselves
+// (scheme/crypto_functions.hpp). Here the hash functions of the scheme layer run directly, without any burn, on
+// secret inputs, and the stack is searched as it is (not in the swapped views: the SHA-2 compression functions
+// leave W[] in their dead frames by design, byte-swapped, and only the burn removes it) for SK.seed, SK.prf and
+// the message (which a SHA-2 or HMAC state holds in plain text after absorbing them), for HMAC's key blocks
+// SK.prf xor ipad and xor opad and its inner hash, and for the outputs, which Values hold and a SHAKE state holds
+// at its start.
 template <slh::ParameterSet P>
 struct SchemeLayer {
     static constexpr std::size_t n = P::n;
@@ -1383,10 +1387,10 @@ void prehash_destruction(bool verbose) {
 //
 // The stack burn needs stack_burn_bytes in one frame. On a thread stack that is too short, the operation must
 // end in a fault at the guard page and not write the memory below it (a stack clash; burn_stack touches the
-// stack from the top down first, SLH/DSA/scheme/slhdsa_internal.hpp). Each operation runs in a child process,
-// on a thread whose stack of the given size lies directly above a PROT_NONE guard page, below which a shared
-// canary region holds 0xAA. Returns 0 if the operation succeeded, 1 if it ended in SIGSEGV, 2 if the canary was
-// written (whatever else happened), 3 for any other outcome.
+// stack from the top down first, SLH/DSA/scheme/slhdsa_internal.hpp). Each operation runs in a child process
+// that cannot dump core, on a thread whose stack of the given size lies directly above a PROT_NONE guard page,
+// below which a shared canary region holds 0xAA. Returns 0 if the operation succeeded, 1 if it ended in SIGSEGV,
+// 2 if the canary was written (whatever else happened), 3 for any other outcome.
 void (*short_stack_op)() = nullptr;
 void* short_stack_thread(void*) {
     short_stack_op();
@@ -1402,6 +1406,13 @@ int on_short_stack(void (*op)(), std::size_t stack_bytes) {
     std::fflush(stdout);
     const pid_t pid = fork();
     if (pid == 0) {
+        // The operation is expected to end in SIGSEGV. A process that is not dumpable gets no core dump, and no
+        // record of a core-dump handler that the kernel pipes crashes to (systemd-coredump), which a core-size
+        // limit of 0 alone does not prevent; the limit covers a kernel that writes core files itself. If either
+        // call fails, the crash is dumped as it would be otherwise, and the outcome is the same.
+        const rlimit no_core{0, 0};
+        (void)prctl(PR_SET_DUMPABLE, 0UL, 0UL, 0UL, 0UL);
+        (void)setrlimit(RLIMIT_CORE, &no_core);
         if (mprotect(base + canary, guard, PROT_NONE) != 0) _exit(4);
         pthread_attr_t attr;
         pthread_t thread;

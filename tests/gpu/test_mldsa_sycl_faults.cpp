@@ -6,25 +6,34 @@
 // workspace, KeyGen's pair-wise consistency test and the self-test of create, by fault injection
 //
 // A white-box test, as test_mlkem_sycl_faults.cpp and test_slhdsa_sycl_faults.cpp: this translation unit compiles
-// the backend itself (include/ML/DSA/sycl/mldsa_sycl.cpp), with the pair-wise consistency test after KeyGen
-// (OPENPQC_MLDSA_KEYGEN_PCT) and with its kernel launches -- Core's for_each_item and for_each_team, through which
-// every stage kernel is queued -- renamed to versions that count them and can leave one, or one and all later ones,
-// out (kernels that never run, as when the device faults part way through a call), throw instead (a launch that
-// the SYCL runtime refuses), or have an asynchronous error reported first, the way the runtimes report a device
-// fault that a wait finds (DPC++: a host task that throws; AdaptiveCpp: an error registered with its runtime, as
-// it registers a failed kernel or copy). The backend of the default build, without the pair-wise consistency
-// test, is not compiled here, and no test checks its KeyGen and RNG-failure wipes. The test provides the
-// randombytes() of the library's randomized calls (it links openpqc_core_testrng): a generator whose bytes the
-// test gives the CPU library, and which can fail on a chosen call. It reads the context's workspace back.
+// the backend itself (include/ML/DSA/sycl/mldsa_sycl.cpp), with its kernel launches -- Core's for_each_item and
+// for_each_team, through which every stage kernel is queued -- renamed to versions that count them and can leave
+// one, or one and all later ones, out (kernels that never run, as when the device faults part way through a call),
+// throw instead (a launch that the SYCL runtime refuses), or have an asynchronous error reported first, the way the
+// runtimes report a device fault that a wait finds (DPC++: a host task that throws; AdaptiveCpp: an error registered
+// with its runtime, as it registers a failed kernel or copy), and with its lock (Lock) renamed to one that can throw
+// std::system_error on a chosen construction, as std::recursive_mutex::lock does when the system refuses the lock.
+// It is built twice: test_mldsa_sycl_faults with the pair-wise consistency test after KeyGen
+// (OPENPQC_MLDSA_KEYGEN_PCT), and test_mldsa_sycl_faults_nopct (OPENPQC_TEST_FAULTS_NO_PCT) without it, as the
+// library is built by default, so that the wipes of KeyGen and of a failed RNG are tested in both configurations.
+// Core is compiled with its test-only count of the USM allocations its helpers hold
+// (OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS), which must be 0 again after every case. The test provides the
+// opqc_external_randombytes() of the library's randomized calls (it links openpqc_core_testrng): a generator whose
+// bytes the test gives the CPU library, and which can fail on a chosen call. It reads the context's workspace back.
 // ML-DSA-44, n = 5 operations in launches of 2 (three chunks), on every SYCL device (or those given), every case
 // on a new context:
 //
-//   control    keypair_derand, sign_derand, the randomized keypair, sign and sign_one_key, and verify: the CPU's
-//              results, those of the randomized calls computed by the CPU library from the bytes that the
-//              generator gave the device, in the order of the operations (so that no coins are left out, reused or
-//              replaced by zeros, within a chunk or across chunks); after every call but verify every secret section
-//              of the workspace is zero (FIPS 204, Section 3.6.3); verification with status NULL is refused, and a
-//              refused verification has set every status entry to "invalid" when it returns
+//   control    keypair_derand, sign_derand, sign_one_key_derand, sign_mu_derand, the randomized keypair, sign and
+//              sign_one_key, and verify, verify_mu and verify_one_key: the CPU's results, those of the randomized
+//              calls computed by the CPU library from the bytes that the generator gave the device, in the order
+//              of the operations (so that no coins are left out, reused or replaced by zeros, within a chunk or
+//              across chunks); after every call every secret section of the workspace is zero (FIPS 204, Section
+//              3.6.3), after every signing call (and KeyGen, whose pair-wise consistency test signs) also mu's
+//              section, every slot, and the copy of the context string, which come from the message, and after
+//              KeyGen and every verification also every other section that verification writes, but A^;
+//              verification with status NULL is refused, and
+//              a refused verification has set every status entry to "invalid" when it returns; sign_stats reports
+//              0 rounds and 0 attempts after a signing call that is refused, and after a randomized one of n = 0
 //   never run  verification none of whose kernels run, into status entries that hold 0 ("valid") from an earlier
 //              call: every entry reads OPENPQC_MLDSA_ERR_INVALID_SIGNATURE, and the call, sync and memcpy return 0
 //              (the runtime saw nothing fail); signing none of whose kernels run: -2, since the counters of its
@@ -36,25 +45,37 @@
 //              memcpy with a NULL pointer -1, and destroy returns
 //   in loop    signing with one attempt per round and an asynchronous error reported during the first round: -2,
 //              and not one launch after that round (the loop stops at the round's counters, and the other chunks
-//              queue nothing), the workspace zero
+//              queue nothing), the workspace zero; the next call -2, with 0 rounds and 0 attempts
 //   throw      signing whose second launch of the first round throws: -2, the workspace zero, the next call -2
 //              without a launch
-//   rng        randomized keypair and sign whose randombytes() fails for chunk 2: OPENPQC_MLDSA_ERR_RNG_FAIL, the
-//              coins and every secret section zero; the context has not failed (the next call gives the CPU's
-//              keys); a refused randomized call draws no randomness
-//   pct        KeyGen whose computation of tr (H(pk), into sk) is left out for chunk 1: OPENPQC_MLDSA_ERR_PCT_FAIL,
-//              pk and sk of operations 0 and 1 zero, the others the CPU's; randomized, the same, with every chunk
-//              computed
+//   rng        randomized keypair and sign whose randomness fails for chunk 2: OPENPQC_MLDSA_ERR_RNG_FAIL, the
+//              coins and every secret section zero, and nothing of chunk 1's signing (mu, the context string)
+//              left; the context has not failed (the next call gives the CPU's
+//              keys); a refused randomized call draws no randomness; signing whose randomness fails for chunk 1
+//              (no launch) reports 0 rounds and 0 attempts
+//   pct        (with the pair-wise consistency test only) KeyGen whose computation of tr (H(pk), into sk) is left
+//              out for chunk 1: OPENPQC_MLDSA_ERR_PCT_FAIL, pk and sk of operations 0 and 1 zero, the others the
+//              CPU's; randomized, the same, with every chunk computed
 //   limit      the end of the signing loop (FIPS 204, Appendix C), with the loop's bound lowered to one attempt
 //              (Schedule::bound, which the C API never changes; the CPU library's tests do the same with
-//              sign_mu<P, 1>): 16 signatures, most of which reach it, all-zero signatures and
-//              OPENPQC_MLDSA_ERR_SIGNING_LIMIT in status where the CPU library has them, and as the result of a
-//              call without status; the secret sections zero
-//   self-test  create with one launch of its self-test left out: OPQC_SYCL_MLDSA_SELF_TEST_FAIL, and no context
+//              sign_mu<P, 1>): 16 signatures, most of which reach it, and one under a private key whose s1 has a
+//              coefficient out of range (Algorithm 25, line 3): all-zero signatures and
+//              OPENPQC_MLDSA_ERR_SIGNING_LIMIT or OPENPQC_MLDSA_ERR_INVALID_KEY in status where the CPU library has
+//              them; a call without status returns OPENPQC_MLDSA_ERR_INVALID_KEY, before the limit, and
+//              OPENPQC_MLDSA_ERR_SIGNING_LIMIT once the malformed key is replaced; the secret sections, mu and
+//              the context string zero after these calls, which return an error code
+//   self-test  create with one launch of its self-test left out: OPQC_SYCL_MLDSA_SELF_TEST_FAIL, and no context;
+//              create whose self-test's lock throws after it has allocated its device memory: -2, no context, and
+//              Core's count of USM allocations as before; create: the whole workspace of the new context is zero
+//              (no value of its self-test is left in it)
 //
-// Usage: test_mldsa_sycl_faults [devices: all (default) or indices, e.g. 2 or 0,3]
+// Usage: test_mldsa_sycl_faults[_nopct] [devices: all (default) or indices, e.g. 2 or 0,3]
 // Exit code 0 if every check passed, 1 if one failed, 2 for malformed arguments, 77 (CTest: skipped) if there is
 // no SYCL device.
+
+// Core counts the USM allocations that its helpers hold (Core/sycl/opqc_sycl_context.hpp, usm_allocations)
+#define OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS 1
+
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
@@ -63,9 +84,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 // Every header that defines or uses the launch helpers is included before they are renamed below
@@ -123,19 +146,48 @@ void counted_for_each_team(sycl::queue& q, std::size_t n, std::size_t local_word
     if (Launches::admit(q)) for_each_team<Word, TeamSize, TeamsPerGroup>(q, n, local_words, f);
 }
 
+// The backend's lock (its Lock): the constructions since reset(); construction number throw_at > 0 throws
+// std::system_error instead of taking the lock, as std::recursive_mutex::lock does when the system refuses it.
+// Core's helpers keep the real Lock (their code was compiled above).
+struct Locks {
+    static inline long count = 0;
+    static inline long throw_at = 0;
+    static void reset() { count = throw_at = 0; }
+};
+
+class CountedLock {
+public:
+    explicit CountedLock(std::recursive_mutex& m) : lock_(admit(m)) {}
+
+private:
+    static std::recursive_mutex& admit(std::recursive_mutex& m) {
+        if (++Locks::count == Locks::throw_at)
+            throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
+                                    "injected: the lock is refused");
+        return m;
+    }
+    std::lock_guard<std::recursive_mutex> lock_;
+};
+
 } // namespace openpqc::gpu
 
+// The backend with KeyGen's pair-wise consistency test, or (_nopct) as the library is built by default
+#if !defined(OPENPQC_TEST_FAULTS_NO_PCT)
 #define OPENPQC_MLDSA_KEYGEN_PCT 1
+#endif
 #define for_each_item counted_for_each_item
 #define for_each_team counted_for_each_team
+#define Lock CountedLock
 #include "ML/DSA/sycl/mldsa_sycl.cpp"
 #undef for_each_item
 #undef for_each_team
+#undef Lock
 
 #include "ML/DSA/openpqc_mldsa.h"
 
-// The randomness of the library (openpqc_core_testrng): a deterministic generator, which fails on call number
-// fail_at (counted from the last reset) when that is set, and keeps every byte it gives since the last reset
+// The randomness of the library (openpqc_core_testrng calls opqc_external_randombytes): a deterministic generator,
+// which fails on call number fail_at (counted from the last reset) when that is set, and keeps every byte it gives
+// since the last reset
 namespace faults_test {
 struct Rng {
     static inline long calls = 0;
@@ -149,7 +201,7 @@ struct Rng {
 };
 } // namespace faults_test
 
-extern "C" int randombytes(std::uint8_t* out, std::size_t len) {
+extern "C" int opqc_external_randombytes(std::uint8_t* out, std::size_t len) {
     using faults_test::Rng;
     if (++Rng::calls == Rng::fail_at) return -1;
     for (std::size_t i = 0; i < len; i++) {   // splitmix64, a byte at a time
@@ -189,13 +241,18 @@ const std::uint8_t CTXSTR[] = {'f', 'a', 'u', 'l', 't', 's'};
 
 namespace gpu_ns = openpqc::mldsa::gpu;
 
-// The CPU's values for OPS operations: key pairs from seeds, deterministic signatures of messages, and the
-// verdicts on those signatures with operations 2 to 4 forged
+bool all_zero(const std::uint8_t* p, std::size_t n) {
+    return std::all_of(p, p + n, [](std::uint8_t v) { return v == 0; });
+}
+
+// The CPU's values for OPS operations: key pairs from seeds, deterministic signatures of messages, the verdicts
+// on those signatures with operations 2 to 4 forged (also with the messages' mu, and all under key 0), and a
+// malformed copy of key 0 (bad_sk: the first coefficient of s1[0] is -eta - 1, Algorithm 25, line 3)
 struct Oracle {
-    Bytes seeds, rnd, pk, sk, msgs, sig, forged;
+    Bytes seeds, rnd, pk, sk, msgs, sig, forged, mu, bad_sk;
     std::vector<std::uint64_t> offsets{0};
-    Status verdicts;
-    Oracle() : seeds(32 * OPS), rnd(32 * OPS), pk(PK * OPS), sk(SK * OPS), sig(SIG * OPS) {
+    Status verdicts, verdicts_mu, verdicts_one_key;
+    Oracle() : seeds(32 * OPS), rnd(32 * OPS), pk(PK * OPS), sk(SK * OPS), sig(SIG * OPS), mu(64 * OPS) {
         for (std::size_t i = 0; i < seeds.size(); i++) seeds[i] = static_cast<std::uint8_t>(i * 7 + 3);
         for (std::size_t i = 0; i < rnd.size(); i++) rnd[i] = static_cast<std::uint8_t>(i * 11 + 1);
         for (std::size_t i = 0; i < OPS; i++) {
@@ -207,12 +264,27 @@ struct Oracle {
         forged = sig;
         const std::size_t flip[OPS] = {0, 0, 3, 700, SIG - 1};   // c~, z, the hint
         for (std::size_t i = 2; i < OPS; i++) forged[i * SIG + flip[i]] ^= 0x10;
-        for (std::size_t i = 0; i < OPS; i++)
-            verdicts.push_back(openpqc_mldsa44_verify(&forged[i * SIG], SIG, message(i), length(i), CTXSTR,
-                                                      sizeof CTXSTR, &pk[i * PK]) == 0
-                                       ? 0
-                                       : INVALID);
+        const auto verdict = [](int rc) { return rc == 0 ? 0 : INVALID; };
+        for (std::size_t i = 0; i < OPS; i++) {
+            verdicts.push_back(verdict(openpqc_mldsa44_verify(&forged[i * SIG], SIG, message(i), length(i), CTXSTR,
+                                                              sizeof CTXSTR, &pk[i * PK])));
+            CHECK(openpqc_mldsa44_external_mu(&mu[64 * i], message(i), length(i), CTXSTR, sizeof CTXSTR,
+                                              &pk[i * PK]) == 0);
+            verdicts_mu.push_back(verdict(openpqc_mldsa44_verify_mu(&forged[i * SIG], SIG, &mu[64 * i], &pk[i * PK])));
+            verdicts_one_key.push_back(verdict(openpqc_mldsa44_verify(&forged[i * SIG], SIG, message(i), length(i),
+                                                                      CTXSTR, sizeof CTXSTR, pk.data())));
+        }
         CHECK((verdicts == Status{0, 0, INVALID, INVALID, INVALID}));
+        CHECK(verdicts_mu == verdicts);
+        CHECK((verdicts_one_key == Status{0, INVALID, INVALID, INVALID, INVALID}));
+        // s1[0][0] is BitUnpack's eta - v of the first 3-bit code v of s1 (eta = 2): v = 2 eta + 1 gives -eta - 1
+        using Lay = openpqc::mldsa::Layout<openpqc::mldsa::params::ML_DSA_44>;
+        bad_sk.assign(sk.begin(), sk.begin() + static_cast<std::ptrdiff_t>(SK));
+        bad_sk[Lay::sk_s1] = static_cast<std::uint8_t>((bad_sk[Lay::sk_s1] & ~7u) | 5u);
+        Bytes out(SIG, 0xA5);
+        CHECK(openpqc_mldsa44_sign_derand(out.data(), message(0), length(0), CTXSTR, sizeof CTXSTR, &rnd[0],
+                                          bad_sk.data()) == OPENPQC_MLDSA_ERR_INVALID_KEY &&
+              all_zero(out.data(), SIG));
     }
     const std::uint8_t* message(std::size_t i) const { return msgs.data() + offsets[i]; }
     std::size_t length(std::size_t i) const { return offsets[i + 1] - offsets[i]; }
@@ -220,10 +292,6 @@ struct Oracle {
         return openpqc_mldsa44_sign_derand(out, message(i), length(i), CTXSTR, sizeof CTXSTR, r, key);
     }
 };
-
-bool all_zero(const std::uint8_t* p, std::size_t n) {
-    return std::all_of(p, p + n, [](std::uint8_t v) { return v == 0; });
-}
 
 std::string show(const Status& s) {
     std::string r;
@@ -247,7 +315,8 @@ bool raw_copy(opqc_sycl_mldsa* ctx, void* dst, const void* src, std::size_t byte
 // A context (max_batch 2) on the device, with the inputs in device memory
 struct Fixture {
     opqc_sycl_mldsa* ctx = nullptr;
-    std::uint8_t *seeds = nullptr, *rnd = nullptr, *pk = nullptr, *sk = nullptr, *sig = nullptr, *msg = nullptr;
+    std::uint8_t *seeds = nullptr, *rnd = nullptr, *pk = nullptr, *sk = nullptr, *sig = nullptr, *msg = nullptr,
+                 *mu = nullptr;
     std::uint64_t* offsets = nullptr;
     std::int32_t* status = nullptr;
     const Oracle& o;
@@ -266,24 +335,26 @@ struct Fixture {
         sk = alloc(o.sk.size());
         sig = alloc(o.sig.size());
         msg = alloc(o.msgs.size());
+        mu = alloc(o.mu.size());
         offsets = static_cast<std::uint64_t*>(opqc_sycl_mldsa_malloc(ctx, 8 * o.offsets.size()));
         status = static_cast<std::int32_t*>(opqc_sycl_mldsa_malloc(ctx, 4 * OPS));
         if (!usable()) return;
         put(seeds, o.seeds);
         put(rnd, o.rnd);
         put(msg, o.msgs);
+        put(mu, o.mu);
         CHECK(opqc_sycl_mldsa_memcpy(ctx, offsets, o.offsets.data(), 8 * o.offsets.size()) == 0);
     }
     ~Fixture() {
         for (void* p : {static_cast<void*>(seeds), static_cast<void*>(rnd), static_cast<void*>(pk),
                         static_cast<void*>(sk), static_cast<void*>(sig), static_cast<void*>(msg),
-                        static_cast<void*>(offsets), static_cast<void*>(status)})
+                        static_cast<void*>(mu), static_cast<void*>(offsets), static_cast<void*>(status)})
             opqc_sycl_mldsa_free(ctx, p);
         opqc_sycl_mldsa_destroy(ctx);   // also after a failure: must return
     }
     Fixture(const Fixture&) = delete;
     Fixture& operator=(const Fixture&) = delete;
-    bool usable() const { return ctx && seeds && rnd && pk && sk && sig && msg && offsets && status; }
+    bool usable() const { return ctx && seeds && rnd && pk && sk && sig && msg && mu && offsets && status; }
 
     void put(void* dst, const Bytes& src) { CHECK(opqc_sycl_mldsa_memcpy(ctx, dst, src.data(), src.size()) == 0); }
     // device memory with raw copies (also on a failed context)
@@ -315,9 +386,8 @@ struct Fixture {
     }
     // the whole workspace with a raw copy
     Bytes workspace() { return raw_get(ctx->mem, ctx->mem_bytes); }
-    // the secret sections of the workspace that are not zero (by name), all of them or, after a
-    // verification (which leaves its intermediate values, of public inputs, in SCRATCH, W and W1), the others
-    std::string secrets_left(bool after_verify = false) {
+    // the secret sections of the workspace that are not zero (by name)
+    std::string secrets_left() {
         static const struct {
             gpu_ns::Section s;
             const char* name;
@@ -328,10 +398,52 @@ struct Fixture {
         const Bytes w = workspace();
         std::string left;
         for (const auto& [s, name] : secret) {
-            if (after_verify && (s == gpu_ns::SCRATCH || s == gpu_ns::W || s == gpu_ns::W1)) continue;
             if (!all_zero(w.data() + ctx->offset[s], ctx->bytes[s] * ctx->max_batch)) left += std::string(" ") + name;
         }
         return left.empty() ? "none" : left;
+    }
+    // what a verification leaves in the workspace that is not zero (by name): every section it writes but A^
+    // (MATRIX, which FIPS 204, Section 3.6.3, lets an implementation keep), and the context string
+    std::string verification_left() {
+        static const struct {
+            gpu_ns::Section s;
+            const char* name;
+        } written[] = {{gpu_ns::TR, "TR"}, {gpu_ns::MU, "MU"}, {gpu_ns::SCRATCH, "SCRATCH"}, {gpu_ns::W, "W"},
+                       {gpu_ns::W1, "W1"}, {gpu_ns::C, "C"},   {gpu_ns::FLAGS, "FLAGS"}};
+        const Bytes w = workspace();
+        std::string left;
+        for (const auto& [s, name] : written) {
+            if (!all_zero(w.data() + ctx->offset[s], ctx->bytes[s] * ctx->max_batch)) left += std::string(" ") + name;
+        }
+        const std::size_t at = static_cast<std::size_t>(ctx->ws.ctx - ctx->mem);
+        if (!all_zero(w.data() + at, openpqc::gpu::MAX_CONTEXT_BYTES)) left += " CONTEXT";
+        return left.empty() ? "none" : left;
+    }
+    // What a signing call leaves of the message in the workspace (FIPS 204, Section 3.6.3): the nonzero bytes of
+    // mu's section, every slot, and of the copy of the context string, as "MU <n> B, context <n> B"; ok if both 0
+    std::string signing_left(bool& ok) {
+        const Bytes w = workspace();
+        const auto nonzero = [&](std::size_t at, std::size_t n) {
+            return std::count_if(w.begin() + static_cast<std::ptrdiff_t>(at),
+                                 w.begin() + static_cast<std::ptrdiff_t>(at + n), [](std::uint8_t v) { return v != 0; });
+        };
+        const auto mu_bytes = nonzero(ctx->offset[gpu_ns::MU], ctx->bytes[gpu_ns::MU] * ctx->max_batch);
+        const auto ctx_bytes =
+                nonzero(static_cast<std::size_t>(ctx->ws.ctx - ctx->mem), openpqc::gpu::MAX_CONTEXT_BYTES);
+        ok = mu_bytes == 0 && ctx_bytes == 0;
+        return "MU " + std::to_string(mu_bytes) + " B, context " + std::to_string(ctx_bytes) + " B";
+    }
+    std::string signing_left() {
+        bool ok = false;
+        std::string left = signing_left(ok);
+        CHECK(ok);
+        return left;
+    }
+    // sign_stats: "rounds/attempts"
+    std::string stats() {
+        std::size_t rounds = 99, attempts = 99;
+        CHECK(opqc_sycl_mldsa_sign_stats(ctx, &rounds, &attempts) == 0);
+        return std::to_string(rounds) + "/" + std::to_string(attempts);
     }
 };
 
@@ -373,7 +485,12 @@ void control(int device, const Oracle& o) {
     CHECK(keys);
     std::string left = f.secrets_left();
     CHECK(left == "none");
-    detail += std::string("keypair_derand ") + (keys ? "= CPU" : "WRONG") + ", secrets left: " + left;
+    // the pair-wise consistency test verifies; without it, KeyGen writes none of these sections
+    std::string vleft = f.verification_left();
+    CHECK(vleft == "none");
+    std::string sleft = f.signing_left();
+    detail += std::string("keypair_derand ") + (keys ? "= CPU" : "WRONG") + ", secrets left: " + left +
+              ", of a verification: " + vleft + ", of a signing: " + sleft;
     // deterministic signing
     f.put(f.sk, o.sk);
     f.put_status(UNTOUCHED);
@@ -382,7 +499,52 @@ void control(int device, const Oracle& o) {
     CHECK(sigs);
     left = f.secrets_left();
     CHECK(left == "none");
-    detail += std::string("; sign_derand ") + (sigs ? "= CPU" : "WRONG") + ", secrets left: " + left;
+    sleft = f.signing_left();
+    detail += std::string("; sign_derand ") + (sigs ? "= CPU" : "WRONG") + ", secrets left: " + left +
+              ", of the signing: " + sleft;
+    // the same messages under key 0, and the messages' mu (external_mu of each message under its key: the
+    // signatures of sign_derand)
+    Bytes want_one(SIG * OPS);
+    for (std::size_t i = 0; i < OPS; i++) CHECK(o.sign(&want_one[i * SIG], i, &o.rnd[32 * i], o.sk.data()) == 0);
+    f.put_status(UNTOUCHED);
+    CHECK(opqc_sycl_mldsa_sign_one_key_derand(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, sizeof CTXSTR, f.rnd, f.sk,
+                                              f.status, OPS) == 0);
+    const bool one = records(f.raw_get(f.sig, SIG * OPS), want_one, SIG) && f.raw_status() == Status(OPS, 0);
+    CHECK(one);
+    left = f.secrets_left();
+    CHECK(left == "none");
+    sleft = f.signing_left();
+    detail += std::string("; sign_one_key_derand ") + (one ? "= CPU" : "WRONG") + ", secrets left: " + left +
+              ", of the signing: " + sleft;
+    f.put_status(UNTOUCHED);
+    f.raw_put(f.sig, Bytes(SIG * OPS, 0xA5));
+    CHECK(opqc_sycl_mldsa_sign_mu_derand(f.ctx, f.sig, f.mu, f.rnd, f.sk, f.status, OPS) == 0);
+    const bool by_mu = records(f.raw_get(f.sig, SIG * OPS), o.sig, SIG) && f.raw_status() == Status(OPS, 0);
+    CHECK(by_mu);
+    left = f.secrets_left();
+    CHECK(left == "none");
+    sleft = f.signing_left();
+    detail += std::string("; sign_mu_derand ") + (by_mu ? "= CPU" : "WRONG") + ", secrets left: " + left +
+              ", of the signing: " + sleft;
+    // sign_stats after a signing call that is refused (sk not 8-byte aligned; a context string of 256 bytes for the
+    // randomized call), and after a randomized one of n = 0: 0 rounds and 0 attempts, not the call before's
+    const std::string ran = f.stats();
+    const int refused_derand = opqc_sycl_mldsa_sign_derand(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, sizeof CTXSTR,
+                                                           f.rnd, f.sk + 4, f.status, OPS);
+    const std::string after_refused = f.stats();
+    CHECK(f.sign_derand(f.status) == 0);
+    const std::string ran2 = f.stats();
+    const int refused_random =
+            opqc_sycl_mldsa_sign(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, 256, f.sk, f.status, OPS);   // |ctx| 256
+    const std::string after_refused2 = f.stats();
+    CHECK(f.sign_derand(f.status) == 0);
+    Rng::reset();
+    const int empty = opqc_sycl_mldsa_sign(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, sizeof CTXSTR, f.sk, f.status, 0);
+    const std::string after_empty = f.stats();
+    CHECK(ran != "0/0" && ran2 != "0/0" && refused_derand == -1 && refused_random == -1 && empty == 0);
+    CHECK(after_refused == "0/0" && after_refused2 == "0/0" && after_empty == "0/0" && Rng::calls == 0);
+    detail += "; sign_stats " + ran + ", after a refused sign_derand " + after_refused + ", after a refused sign " +
+              after_refused2 + ", after sign of n = 0 " + after_empty;
     // randomized KeyGen: the CPU's keys from the generator's bytes, in the order of the operations
     Rng::reset();
     f.raw_put(f.sk, Bytes(SK * OPS, 0xA5));
@@ -415,19 +577,32 @@ void control(int device, const Oracle& o) {
         CHECK(ok);
         left = f.secrets_left();
         CHECK(left == "none");
+        sleft = f.signing_left();
         detail += std::string(one_key ? "; sign_one_key " : "; sign ") + (ok ? "= CPU of the generator's bytes" : "WRONG") +
-                  ", secrets left: " + left;
+                  ", secrets left: " + left + ", of the signing: " + sleft;
     }
-    // verification: the CPU's verdicts; status NULL refused; a refused call has set status to "invalid"
+    // verification, with messages, with mu, and under one key: the CPU's verdicts, and nothing of the verification
+    // left in the workspace (but A^); status NULL refused; a refused call has set status to "invalid"
     f.put(f.pk, o.pk);
     f.put(f.sig, o.forged);
-    f.put_status(UNTOUCHED);
-    CHECK(f.verify(f.sig, f.status) == 0);
-    Status st;
-    CHECK(f.get_status(st) == 0);
-    CHECK(st == o.verdicts);
-    left = f.secrets_left(true);
-    CHECK(left == "none");
+    std::string verified;
+    for (const int kind : {0, 1, 2}) {
+        const char* name = kind == 0 ? "verify" : kind == 1 ? "verify_mu" : "verify_one_key";
+        f.put_status(UNTOUCHED);
+        const int rc = kind == 0   ? f.verify(f.sig, f.status)
+                       : kind == 1 ? opqc_sycl_mldsa_verify_mu(f.ctx, f.sig, f.mu, f.pk, f.status, OPS)
+                                   : opqc_sycl_mldsa_verify_one_key(f.ctx, f.sig, f.msg, f.offsets, CTXSTR,
+                                                                    sizeof CTXSTR, f.pk, f.status, OPS);
+        Status st;
+        CHECK(rc == 0 && f.get_status(st) == 0);
+        const Status& want = kind == 0 ? o.verdicts : kind == 1 ? o.verdicts_mu : o.verdicts_one_key;
+        CHECK(st == want);
+        left = f.secrets_left();
+        vleft = f.verification_left();
+        CHECK(left == "none" && vleft == "none");
+        verified += std::string("; ") + name + " " + show(st) + (st == want ? "" : " WRONG") + ", secrets left: " +
+                    left + ", of the verification: " + vleft;
+    }
     f.put_status(0);
     const int null_rc = f.verify(f.sig, nullptr);
     const int long_rc =
@@ -435,8 +610,8 @@ void control(int device, const Oracle& o) {
     const Status refused = f.raw_status();
     CHECK(null_rc == -1 && long_rc == -1 && refused == Status(OPS, INVALID));
     CHECK(opqc_sycl_mldsa_sync(f.ctx) == 0);
-    detail += "; verify " + show(st) + ", secrets left: " + left + ", status NULL " + std::to_string(null_rc) +
-              ", |ctx| = 256 " + std::to_string(long_rc) + " with status " + show(refused);
+    detail += verified + "; status NULL " + std::to_string(null_rc) + ", |ctx| = 256 " + std::to_string(long_rc) +
+              " with status " + show(refused);
     report(device, "control", before, detail);
 }
 
@@ -564,16 +739,20 @@ void in_loop(int device, const Oracle& o) {
     const int rc = f.sign_derand(f.status);
     const long launched = Launches::count;
     Launches::reset();
+    const std::string stats = f.stats();   // the round of the fault
     const Bytes w = f.workspace();
     const int rc2 = f.sign_derand(f.status);
     const long later = Launches::count;
+    const std::string stats2 = f.stats();   // a call that launched nothing
     CHECK(rc == -2 && launched == SIGN_SETUP_LAUNCHES + ROUND_LAUNCHES && rc2 == -2 && later == 0);
     CHECK(all_zero(w.data(), w.size()));
+    CHECK(stats == "1/" + std::to_string(BATCH) && stats2 == "0/0");
     report(device, "in loop", before,
            "sign " + std::to_string(rc) + " after " + std::to_string(launched) + " launches (" +
-                   std::to_string(SIGN_SETUP_LAUNCHES + ROUND_LAUNCHES) + " = chunk 1 up to its first round), workspace " +
-                   (all_zero(w.data(), w.size()) ? "zero" : "NOT zero") + ", next call " + std::to_string(rc2) +
-                   " with " + std::to_string(later) + " launches");
+                   std::to_string(SIGN_SETUP_LAUNCHES + ROUND_LAUNCHES) + " = chunk 1 up to its first round), " +
+                   "sign_stats " + stats + ", workspace " + (all_zero(w.data(), w.size()) ? "zero" : "NOT zero") +
+                   ", next call " + std::to_string(rc2) + " with " + std::to_string(later) + " launches, sign_stats " +
+                   stats2);
 }
 
 // Signing whose second launch of the first round throws
@@ -597,7 +776,7 @@ void thrown(int device, const Oracle& o) {
                    " with " + std::to_string(launched) + " launches");
 }
 
-// randombytes() fails for chunk 2
+// The randomness fails for chunk 2 (and, for sign_stats, for chunk 1)
 void rng(int device, const Oracle& o) {
     const int before = failures;
     Fixture f(device, o);
@@ -611,6 +790,7 @@ void rng(int device, const Oracle& o) {
     Rng::fail_at = 2;
     const int src = opqc_sycl_mldsa_sign(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, sizeof CTXSTR, f.sk, f.status, OPS);
     const std::string sleft = f.secrets_left();
+    const std::string signing = f.signing_left();   // chunk 1 was signed before the randomness failed
     CHECK(krc == OPENPQC_MLDSA_ERR_RNG_FAIL && src == OPENPQC_MLDSA_ERR_RNG_FAIL);
     CHECK(kleft == "none" && sleft == "none");
     // the context has not failed
@@ -622,12 +802,23 @@ void rng(int device, const Oracle& o) {
     const int refused = opqc_sycl_mldsa_keypair(f.ctx, f.pk + 4, f.sk, OPS);
     const int refused2 =
             opqc_sycl_mldsa_sign(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, 256, f.sk, f.status, OPS);   // |ctx| 256
-    CHECK(refused == -1 && refused2 == -1 && Rng::calls == 0);
+    const long refused_draws = Rng::calls;
+    CHECK(refused == -1 && refused2 == -1 && refused_draws == 0);
+    // signing whose randomness fails before its first launch: 0 rounds and 0 attempts, not the call before's
+    CHECK(f.sign_derand(f.status) == 0);
+    const std::string ran = f.stats();
+    Rng::reset();
+    Rng::fail_at = 1;
+    const int frc = opqc_sycl_mldsa_sign(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, sizeof CTXSTR, f.sk, f.status, OPS);
+    const std::string stats = f.stats();
+    CHECK(frc == OPENPQC_MLDSA_ERR_RNG_FAIL && ran != "0/0" && stats == "0/0");
     report(device, "rng", before,
            "keypair " + std::to_string(krc) + " (secrets left: " + kleft + "), sign " + std::to_string(src) +
-                   " (secrets left: " + sleft + "), then keypair_derand " + (keys ? "= CPU" : "WRONG") +
+                   " (secrets left: " + sleft + ", of the signing: " + signing + "), then keypair_derand " +
+                   (keys ? "= CPU" : "WRONG") +
                    "; refused calls " + std::to_string(refused) + "/" + std::to_string(refused2) + " with " +
-                   std::to_string(Rng::calls) + " RNG calls");
+                   std::to_string(refused_draws) + " RNG calls; sign_stats " + ran +
+                   ", after a sign whose first draw fails (" + std::to_string(frc) + ") " + stats);
 }
 
 // KeyGen whose hash_pk (tr) is left out for chunk 1: the pair-wise consistency test fails for operations 0 and 1
@@ -664,31 +855,37 @@ void pct(int device, const Oracle& o) {
 
 // The end of the signing loop (FIPS 204, Appendix C) with the bound lowered to one attempt (Schedule::bound, which
 // the C API never changes) and one attempt per round, against the CPU library's sign_mu<P, 1>: 16 signatures
-// under the five keys, most of which reach the limit
+// under the five keys, most of which reach the limit, and one (operation BAD) under the malformed key, which the
+// signer refuses (OPENPQC_MLDSA_ERR_INVALID_KEY, an all-zero signature, as the CPU library). A call without status
+// can return one code only: the refused key comes first, and the limit once that key is replaced by a good one.
 void limit(int device, const Oracle& o) {
     using P = openpqc::mldsa::params::ML_DSA_44;
-    constexpr std::size_t N = 16;
+    constexpr std::size_t N = 16, BAD = 7, RBAD = 3;   // RBAD: the randomized calls' operation under the bad key
     const int before = failures;
     Fixture f(device, o);
     if (!f.usable()) return report(device, "limit", before, "no context");
     CHECK(opqc_sycl_mldsa_set_speculation(f.ctx, 1, 0) == 0);
     f.ctx->schedule.bound = 1;
-    Bytes mu(64 * N), rnd(32 * N), keys, want(SIG * N);
+    Bytes mu(64 * N), rnd(32 * N), keys, want(SIG * N), want_good(SIG * N);
     for (std::size_t i = 0; i < mu.size(); i++) mu[i] = static_cast<std::uint8_t>(i * 5 + 7);
     for (std::size_t i = 0; i < rnd.size(); i++) rnd[i] = static_cast<std::uint8_t>(i * 3 + 2);
-    Status want_status(N);
+    Status want_status(N), want_status_good(N);
+    const auto cpu_sign = [](std::uint8_t* out, const std::uint8_t* key, const std::uint8_t* m, const std::uint8_t* r) {
+        return static_cast<std::int32_t>(openpqc::mldsa::internal::sign_mu<P, 1>(
+                std::span<std::uint8_t, SIG>(out, SIG), std::span<const std::uint8_t, SK>(key, SK),
+                std::span<const std::uint8_t, 64>(m, 64), std::span<const std::uint8_t, 32>(r, 32)));
+    };
     for (std::size_t i = 0; i < N; i++) {
-        keys.insert(keys.end(), o.sk.begin() + static_cast<std::ptrdiff_t>((i % OPS) * SK),
-                    o.sk.begin() + static_cast<std::ptrdiff_t>((i % OPS + 1) * SK));
-        const auto r = openpqc::mldsa::internal::sign_mu<P, 1>(std::span<std::uint8_t, SIG>(&want[i * SIG], SIG),
-                                                               std::span<const std::uint8_t, SK>(&keys[i * SK], SK),
-                                                               std::span<const std::uint8_t, 64>(&mu[64 * i], 64),
-                                                               std::span<const std::uint8_t, 32>(&rnd[32 * i], 32));
-        want_status[i] = static_cast<std::int32_t>(r);
+        const std::uint8_t* key = &o.sk[(i % OPS) * SK];
+        want_status_good[i] = cpu_sign(&want_good[i * SIG], key, &mu[64 * i], &rnd[32 * i]);
+        if (i == BAD) key = o.bad_sk.data();
+        keys.insert(keys.end(), key, key + SK);
+        want_status[i] = cpu_sign(&want[i * SIG], key, &mu[64 * i], &rnd[32 * i]);
     }
     const auto limited = static_cast<std::size_t>(
             std::count(want_status.begin(), want_status.end(), std::int32_t{OPENPQC_MLDSA_ERR_SIGNING_LIMIT}));
-    CHECK(limited > 0 && limited < N);   // both outcomes
+    CHECK(limited > 0 && limited < N - 1);   // both outcomes, besides the refused key
+    CHECK(want_status[BAD] == OPENPQC_MLDSA_ERR_INVALID_KEY && all_zero(&want[BAD * SIG], SIG));
     auto* d = static_cast<std::uint8_t*>(opqc_sycl_mldsa_malloc(f.ctx, mu.size() + rnd.size() + keys.size() + SIG * N));
     auto* st = static_cast<std::int32_t*>(opqc_sycl_mldsa_malloc(f.ctx, 4 * N));
     CHECK(d && st);
@@ -699,24 +896,38 @@ void limit(int device, const Oracle& o) {
     f.put(d_sk, keys);
     Status got_status(N, UNTOUCHED);
     CHECK(raw_copy(f.ctx, st, got_status.data(), 4 * N));
+    f.raw_put(d_sig, Bytes(SIG * N, 0xA5));
     const int rc = opqc_sycl_mldsa_sign_mu_derand(f.ctx, d_sig, d_mu, d_rnd, d_sk, st, N);
     const Bytes got = f.raw_get(d_sig, SIG * N);
     CHECK(raw_copy(f.ctx, got_status.data(), st, 4 * N));
+    std::string signing = f.signing_left();
+    f.raw_put(d_sig, Bytes(SIG * N, 0xA5));
     const int rc_nostatus = opqc_sycl_mldsa_sign_mu_derand(f.ctx, d_sig, d_mu, d_rnd, d_sk, nullptr, N);
     const Bytes got2 = f.raw_get(d_sig, SIG * N);
+    signing += "; " + f.signing_left();
+    // the malformed key replaced by the good one: without status, the limit
+    f.put(d_sk + BAD * SK, Bytes(o.sk.begin() + static_cast<std::ptrdiff_t>((BAD % OPS) * SK),
+                                 o.sk.begin() + static_cast<std::ptrdiff_t>((BAD % OPS + 1) * SK)));
+    const int rc_good = opqc_sycl_mldsa_sign_mu_derand(f.ctx, d_sig, d_mu, d_rnd, d_sk, nullptr, N);
+    const Bytes got3 = f.raw_get(d_sig, SIG * N);
     const std::string left = f.secrets_left();
+    signing += "; " + f.signing_left();
     CHECK(rc == 0 && got == want && got_status == want_status);
-    CHECK(rc_nostatus == OPENPQC_MLDSA_ERR_SIGNING_LIMIT && got2 == want && left == "none");
+    CHECK(rc_nostatus == OPENPQC_MLDSA_ERR_INVALID_KEY && got2 == want && left == "none");
+    CHECK(rc_good == OPENPQC_MLDSA_ERR_SIGNING_LIMIT && got3 == want_good);
     opqc_sycl_mldsa_free(f.ctx, d);
     opqc_sycl_mldsa_free(f.ctx, st);
-    // randomized, the fixture's messages under their keys in three launches: the CPU's sign_mu<P, 1> of each
-    // message's mu with the generator's rnd; without status, the call's result is the limit if any signature
-    // reached it, in whichever launch (with_random_coins remembers it while the other launches go on)
-    f.put(f.sk, o.sk);
+    // randomized, the fixture's messages under their keys (operation RBAD, in the second launch, under the malformed
+    // key) in three launches: the CPU's sign_mu<P, 1> of each message's mu with the generator's rnd; without status,
+    // the call's result is OPENPQC_MLDSA_ERR_INVALID_KEY, and every launch has run (the signatures of the third)
+    Bytes rkeys = o.sk;
+    std::copy(o.bad_sk.begin(), o.bad_sk.end(), rkeys.begin() + static_cast<std::ptrdiff_t>(RBAD * SK));
+    f.put(f.sk, rkeys);
     std::string randomized;
     for (const bool with_status : {true, false}) {
         Rng::reset();
         f.put_status(UNTOUCHED);
+        f.raw_put(f.sig, Bytes(SIG * OPS, 0xA5));
         const int rrc = opqc_sycl_mldsa_sign(f.ctx, f.sig, f.msg, f.offsets, CTXSTR, sizeof CTXSTR, f.sk,
                                              with_status ? f.status : nullptr, OPS);
         Bytes r = Rng::given, rwant(SIG * OPS), m(64);
@@ -725,48 +936,77 @@ void limit(int device, const Oracle& o) {
         for (std::size_t i = 0; i < OPS; i++) {
             CHECK(openpqc_mldsa44_external_mu(m.data(), o.message(i), o.length(i), CTXSTR, sizeof CTXSTR,
                                               &o.pk[i * PK]) == 0);
-            rstatus[i] = static_cast<std::int32_t>(openpqc::mldsa::internal::sign_mu<P, 1>(
-                    std::span<std::uint8_t, SIG>(&rwant[i * SIG], SIG), std::span<const std::uint8_t, SK>(&o.sk[i * SK], SK),
-                    std::span<const std::uint8_t, 64>(m.data(), 64), std::span<const std::uint8_t, 32>(&r[32 * i], 32)));
+            rstatus[i] = cpu_sign(&rwant[i * SIG], &rkeys[i * SK], m.data(), &r[32 * i]);
         }
         const bool any = std::count(rstatus.begin(), rstatus.end(), std::int32_t{OPENPQC_MLDSA_ERR_SIGNING_LIMIT}) > 0;
         const bool same = records(f.raw_get(f.sig, SIG * OPS), rwant, SIG);
-        const bool ok = same && (with_status ? rrc == 0 && f.raw_status() == rstatus
-                                             : rrc == (any ? OPENPQC_MLDSA_ERR_SIGNING_LIMIT : 0));
+        const bool ok = same && rstatus[RBAD] == OPENPQC_MLDSA_ERR_INVALID_KEY && Rng::calls == 3 &&
+                        (with_status ? rrc == 0 && f.raw_status() == rstatus : rrc == OPENPQC_MLDSA_ERR_INVALID_KEY);
         CHECK(ok);
+        signing += "; " + f.signing_left();
         randomized += std::string(with_status ? "; sign " : ", without status ") + std::to_string(rrc) + " " +
-                      (with_status ? show(rstatus) : std::string(any ? "(a signature at the limit)" : "(none)")) +
+                      (with_status ? show(rstatus)
+                                   : std::string(any ? "(a key refused, a signature at the limit)" : "(a key refused)")) +
                       (ok ? " = CPU" : " WRONG");
     }
     report(device, "limit", before,
            std::to_string(limited) + " of " + std::to_string(N) +
-                   " signatures at the limit (bound 1); sign_mu_derand " + std::to_string(rc) + ", signatures " +
-                   (got == want ? "= CPU" : "WRONG") + ", status " + (got_status == want_status ? "= CPU" : "WRONG") +
-                   "; without status " + std::to_string(rc_nostatus) + ", signatures " +
-                   (got2 == want ? "= CPU" : "WRONG") + ", secrets left: " + left + randomized);
+                   " signatures at the limit (bound 1), one key refused; sign_mu_derand " + std::to_string(rc) +
+                   ", signatures " + (got == want ? "= CPU" : "WRONG") + ", status " +
+                   (got_status == want_status ? "= CPU" : "WRONG") + "; without status " + std::to_string(rc_nostatus) +
+                   ", signatures " + (got2 == want ? "= CPU" : "WRONG") + ", with the good key " +
+                   std::to_string(rc_good) + (got3 == want_good ? " = CPU" : " WRONG") + ", secrets left: " + left +
+                   randomized + "; of the signing after each call: " + signing);
 }
 
-// create with one launch of its self-test left out
+// create with one launch of its self-test left out; create whose self-test's lock throws (the backend's first
+// Lock in create is that of the self-test's keypair_derand, after the self-test has allocated its device memory);
+// and create: the new context's workspace holds nothing (none of the self-test's values). Core's count of USM
+// allocations must be as before after each failed create.
 void self_test(int device) {
+    using openpqc::gpu::Locks;
+    using openpqc::gpu::usm_allocations;
     const int before = failures;
+    const long usm = usm_allocations();
     opqc_sycl_mldsa* ctx = nullptr;
     Launches::reset();
     Launches::skip_at = 2;   // ExpandA of KeyGen: a key pair of another matrix
     const int rc = opqc_sycl_mldsa_create(&ctx, 44, BATCH, device);
     const long launched = Launches::count;
     Launches::reset();
-    CHECK(rc == OPQC_SYCL_MLDSA_SELF_TEST_FAIL && ctx == nullptr);
+    const long left1 = usm_allocations() - usm;
+    CHECK(rc == OPQC_SYCL_MLDSA_SELF_TEST_FAIL && ctx == nullptr && left1 == 0);
     if (ctx) opqc_sycl_mldsa_destroy(ctx);
+    opqc_sycl_mldsa* thrown = nullptr;
+    Locks::reset();
+    Locks::throw_at = 1;
+    const int rc_lock = opqc_sycl_mldsa_create(&thrown, 44, BATCH, device);
+    const bool lock_thrown = Locks::count >= 1;
+    Locks::reset();
+    Launches::reset();
+    const long left2 = usm_allocations() - usm;
+    CHECK(rc_lock == -2 && thrown == nullptr && lock_thrown && left2 == 0);
+    if (thrown) opqc_sycl_mldsa_destroy(thrown);
     opqc_sycl_mldsa* good = nullptr;
     const int rc2 = opqc_sycl_mldsa_create(&good, 44, BATCH, device);
     const long launched2 = Launches::count;
     Launches::reset();
     CHECK(rc2 == 0 && good != nullptr && launched2 > 0);
-    if (good) opqc_sycl_mldsa_destroy(good);
+    bool zero = false;
+    if (good) {
+        Bytes w(good->mem_bytes, 0xEE);
+        CHECK(raw_copy(good, w.data(), good->mem, w.size()));
+        zero = all_zero(w.data(), w.size());
+        CHECK(zero);
+        opqc_sycl_mldsa_destroy(good);
+    }
     report(device, "self-test", before,
            "create with ExpandA of its KeyGen left out " + std::to_string(rc) + (ctx ? " with a context" : ", no context") +
-                   " (" + std::to_string(launched) + " launches); create " + std::to_string(rc2) + " (" +
-                   std::to_string(launched2) + " launches)");
+                   " (" + std::to_string(launched) + " launches); create whose self-test's lock throws " +
+                   std::to_string(rc_lock) + (thrown ? " with a context" : ", no context") + "; Core's count of USM " +
+                   "allocations held after them: " + std::to_string(left1) + " and " + std::to_string(left2) +
+                   " more; create " + std::to_string(rc2) + " (" + std::to_string(launched2) +
+                   " launches), its workspace " + (zero ? "zero" : "NOT zero"));
 }
 
 // A comma-separated list of integers in [lo, hi], or "all" (an empty list); false if malformed
@@ -791,7 +1031,7 @@ int main(int argc, char** argv) {
     using namespace faults_test;
     const int count = opqc_sycl_device_count();
     if (argc > 2) {
-        std::fprintf(stderr, "usage: test_mldsa_sycl_faults [devices: all or indices, e.g. 0,3]\n");
+        std::fprintf(stderr, "usage: test_mldsa_sycl_faults[_nopct] [devices: all or indices, e.g. 0,3]\n");
         return 2;
     }
     for (int d = 0; d < count; d++)
@@ -808,18 +1048,40 @@ int main(int argc, char** argv) {
     if (devices.empty())
         for (int d = 0; d < count; d++) devices.push_back(d);
     const Oracle o;
+    long held = 0;   // Core's count of USM allocations after a case: every case frees what it allocated
+    const auto freed = [&] {
+        const long n = openpqc::gpu::usm_allocations();
+        CHECK(n == 0);
+        held += n;
+    };
     for (const int d : devices) {
         control(d, o);
+        freed();
         never_run(d, o);
+        freed();
         fault(d, o);
+        freed();
         in_loop(d, o);
+        freed();
         thrown(d, o);
+        freed();
         rng(d, o);
-        pct(d, o);
+        freed();
+        if (openpqc::mldsa::gpu::KEYGEN_PCT) {
+            pct(d, o);
+            freed();
+        } else {
+            std::printf("  device %d %-9s %s\n", d, "pct", "not run: this build has no pair-wise consistency test");
+        }
         limit(d, o);
+        freed();
         self_test(d);
+        freed();
     }
-    std::printf("result: %s, ML-DSA-44 on %zu device(s), %d failed check(s)\n", failures ? "FAIL" : "PASS",
-                devices.size(), failures);
+    std::printf("result: %s, ML-DSA-44 (%s) on %zu device(s), %d failed check(s); USM allocations held after the "
+                "cases: %ld\n",
+                failures ? "FAIL" : "PASS",
+                openpqc::mldsa::gpu::KEYGEN_PCT ? "with KeyGen's pair-wise consistency test" : "the default build",
+                devices.size(), failures, held);
     return failures ? 1 : 0;
 }

@@ -9,7 +9,7 @@
 //
 //   using DSA = openpqc::mldsa::MLDSA65;
 //   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
-//   if (DSA::keypair(pk, sk) != 0 ||               // randomness from the operating system
+//   if (DSA::keypair(pk, sk) != 0 ||               // randomness from opqc_randombytes (below)
 //       DSA::sign(sig, message, sk) != 0)          // hedged; optional context string last
 //       return -1;                                 // no key pair or no signature
 //   bool valid = DSA::verify(sig, message, pk) == 0;            // 0 and only 0: valid
@@ -27,6 +27,12 @@
 // place of sk (FIPS 204, Section 3.6.3), the signing functions with rnd = {0} are the
 // deterministic variant (Sections 3.4 and 5.2) and with any other rnd for testing only
 // (Sections 5.4 and 6; "Testing interfaces" in openpqc_mldsa.h).
+//
+// keypair and the hedged signing functions (sign, prehash_sign, sign_mu) draw xi or rnd
+// through Core's opqc_randombytes (Core/opqc_platform.h): from the source that the
+// application registered with opqc_set_randombytes, else, in a library built with the
+// CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
+// opqc_external_randombytes, else from the operating system (the default).
 #pragma once
 
 #include <array>
@@ -100,7 +106,7 @@ struct MLDSA {
     using randomness = std::array<std::uint8_t, rnd_bytes>;
     using message_representative = std::array<std::uint8_t, mu_bytes>;
 
-    // ML-DSA.KeyGen, FIPS 204 Algorithm 1 (xi from the operating system)
+    // ML-DSA.KeyGen, FIPS 204 Algorithm 1 (xi from opqc_randombytes, above)
     [[nodiscard]] static int keypair(public_key& pk, secret_key& sk) { return api::keypair(pk.data(), sk.data()); }
 
     // ML-DSA.KeyGen_internal(xi), Algorithm 6: the key pair of a stored seed
@@ -117,7 +123,7 @@ struct MLDSA {
         return api::check_keypair(pk.data(), sk.data());
     }
 
-    // ML-DSA.Sign, Algorithm 2: hedged (rnd from the operating system)
+    // ML-DSA.Sign, Algorithm 2: hedged (rnd from opqc_randombytes, above)
     [[nodiscard]] static int sign(signature& sig, bytes message, const secret_key& sk, bytes ctx = {}) {
         return api::sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data());
     }

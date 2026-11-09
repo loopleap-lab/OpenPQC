@@ -48,6 +48,30 @@ else()
     set(_openpqc_sanitizer_build OFF)
 endif()
 
+# openpqc_expect_tests(TESTS <names>... NEEDS <requirements>... [LABELS <labels>...]): declares that the
+# tests <names> are registered when all of <requirements> are met (the keys of the _openpqc_unmet_<key>
+# variables near the end of this file: python, openssl, valgrind, nosan, threads, linux, gnu, wrap, clang,
+# avx2, m32), with the labels <labels>. Every test that a directory registers only on such a condition is
+# declared, in the list near the end of this file or by its directory next to the condition (this function
+# exists before the directories are added); where its directory did not register it, the end of this file
+# registers it as a test that reports itself skipped and lists it with the reason.
+function(openpqc_expect_tests)
+    cmake_parse_arguments(PARSE_ARGV 0 _openpqc_e "" "" "TESTS;NEEDS;LABELS")
+    if(NOT _openpqc_e_TESTS OR NOT _openpqc_e_NEEDS OR _openpqc_e_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "openpqc_expect_tests(TESTS <names>... NEEDS <requirements>... [LABELS <labels>...]), "
+                            "not openpqc_expect_tests(${ARGV})")
+    endif()
+    foreach(_openpqc_t IN LISTS _openpqc_e_TESTS)
+        get_property(_openpqc_known GLOBAL PROPERTY OPENPQC_EXPECTED_TESTS)
+        if(NOT _openpqc_t IN_LIST _openpqc_known)
+            set_property(GLOBAL APPEND PROPERTY OPENPQC_EXPECTED_TESTS ${_openpqc_t})
+        endif()
+        set_property(GLOBAL PROPERTY OPENPQC_EXPECTED_NEEDS_${_openpqc_t} ${_openpqc_e_NEEDS})
+        set_property(GLOBAL PROPERTY OPENPQC_EXPECTED_LABELS_${_openpqc_t} "${_openpqc_e_LABELS}")
+    endforeach()
+endfunction()
+set_property(GLOBAL PROPERTY OPENPQC_EXPECTED_TESTS "")
+
 # one executable per test file, each registered with CTest
 set(OPENPQC_TESTS
     test_reduce
@@ -128,11 +152,14 @@ endif()
 #   c_api_errors       every error path a caller can reach, for every parameter set of ML-KEM, ML-DSA and
 #                      SLH-DSA: the result code, and outputs unchanged (a failure found before the internal
 #                      algorithm runs) or zero (a failure inside it), with positive controls
-#   c_api_must_check   every function of the three C headers warns when its result is ignored
-#                      (OPQC_MUST_CHECK), compiled as C11, C23, C++14 and C++20 with GCC and Clang (the
-#                      compilers found on the PATH; skipped if none is), and every function the libraries
-#                      export is declared there. It compiles to objects: GCC reports warn_unused_result only
-#                      when it generates code, never under -fsyntax-only.
+#   c_api_must_check   every function that returns a status in the eight C headers (openpqc_mlkem.h,
+#                      openpqc_mldsa.h, openpqc_slhdsa.h, Core/openpqc_core.h and the GPU backends' four,
+#                      which compile as plain C without a SYCL compiler) warns when its result is ignored
+#                      (OPQC_MUST_CHECK), compiled as C11, C23, C++14 and C++20 with each of GCC and Clang
+#                      found on the PATH (skipped if neither is); and every function that the libraries of
+#                      this build export is declared in them, and each declared function of a library that
+#                      this build has is exported. It compiles to objects: GCC reports warn_unused_result
+#                      only when it generates code, never under -fsyntax-only.
 add_executable(test_c_api_errors test_c_api_errors.c)
 target_link_libraries(test_c_api_errors PRIVATE openpqc_mlkem_testrng openpqc_mldsa_testrng openpqc_slhdsa_testrng
                                                 openpqc_strict_warnings)
@@ -140,11 +167,41 @@ set_target_properties(test_c_api_errors PROPERTIES C_STANDARD 11 C_STANDARD_REQU
                                                    LINKER_LANGUAGE CXX)
 add_test(NAME c_api_errors COMMAND test_c_api_errors)
 if(Python3_Interpreter_FOUND)
+    set(_openpqc_api_archives "")
+    foreach(_openpqc_lib openpqc_core openpqc_mlkem openpqc_mldsa openpqc_slhdsa
+                         openpqc_core_sycl openpqc_mlkem_sycl openpqc_mldsa_sycl openpqc_slhdsa_sycl)
+        if(TARGET ${_openpqc_lib})
+            list(APPEND _openpqc_api_archives --archive $<TARGET_FILE:${_openpqc_lib}>)
+        endif()
+    endforeach()
     add_test(NAME c_api_must_check
              COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_must_check.py
-                     ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/must_check
-                     $<TARGET_FILE:openpqc_mlkem> $<TARGET_FILE:openpqc_mldsa> $<TARGET_FILE:openpqc_slhdsa>)
-    set_tests_properties(c_api_must_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+                     ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/must_check ${_openpqc_api_archives})
+    set_tests_properties(c_api_must_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+endif()
+
+# Core's hash functions against NIST's ACVP vectors (tests/Core/acvp_hash.py):
+#   core_hash_acvp          the AFT, VOT and MCT cases of SHA2-224 to SHA2-512/256, SHA3-224 to SHA3-512, SHAKE-128
+#                           and SHAKE-256 whose message is a whole number of bytes (5,294 cases), run through the
+#                           one-shot functions (acvp_hash_driver.c), from 14 vector files of the ACVP server pinned
+#                           by SHA-256 and number of cases and downloaded on first use into the build directory
+#                           (label "network"); a driver run that fails, crashes or writes to stderr, and a count of
+#                           results other than the pinned one, fail it. Not run: the messages that are not a whole
+#                           number of bytes (Core's functions take bytes) and the large-data tests (1 to 8 GiB per
+#                           message)
+#   core_hash_acvp_control  positive controls of those rules: a changed vector file, a driver run that writes to
+#                           stderr or is killed by a signal, a result left out and a changed digest must each be
+#                           reported
+add_executable(acvp_hash_driver Core/acvp_hash_driver.c)
+target_link_libraries(acvp_hash_driver PRIVATE openpqc_core openpqc_strict_warnings)
+set_target_properties(acvp_hash_driver PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+if(Python3_Interpreter_FOUND)
+    set(_openpqc_hash_acvp ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/Core/acvp_hash.py
+                           --driver $<TARGET_FILE:acvp_hash_driver> --cache ${CMAKE_CURRENT_BINARY_DIR}/acvp-hash-data)
+    add_test(NAME core_hash_acvp COMMAND ${_openpqc_hash_acvp})
+    add_test(NAME core_hash_acvp_control COMMAND ${_openpqc_hash_acvp} --controls)
+    set_tests_properties(core_hash_acvp core_hash_acvp_control PROPERTIES LABELS network TIMEOUT 600
+                                                                          RESOURCE_LOCK core_hash_acvp_data)
 endif()
 
 # ML-KEM (OpenPQC and the reference) and Core
@@ -157,18 +214,10 @@ add_subdirectory(Core)
 add_subdirectory(gpu)
 
 # --- the tests that a directory registers only on a condition ----------------------------------------
-# _openpqc_expect(TESTS <names>... NEEDS <requirements>... [LABELS <labels>...]): the tests <names> are
-# registered when all of <requirements> are met (keys of the _openpqc_unmet_<key> variables below),
-# with the labels <labels>. Keep this list in step with the directories' CMakeLists.txt.
-set(_openpqc_expected "")
-macro(_openpqc_expect)
-    cmake_parse_arguments(_openpqc_e "" "" "TESTS;NEEDS;LABELS" ${ARGN})
-    foreach(_openpqc_t IN LISTS _openpqc_e_TESTS)
-        list(APPEND _openpqc_expected ${_openpqc_t})
-        set(_openpqc_needs_${_openpqc_t} ${_openpqc_e_NEEDS})
-        set(_openpqc_labels_${_openpqc_t} ${_openpqc_e_LABELS})
-    endforeach()
-endmacro()
+# Declared with openpqc_expect_tests (above): here, or by the directory itself. Keep the list in step with
+# the directories' CMakeLists.txt. Not in it: the tests of what an option turns on, which a configuration
+# without the option does not have (mlkem_pct_library and mldsa_pct_library with OPENPQC_MLKEM_KEYGEN_PCT and
+# OPENPQC_MLDSA_KEYGEN_PCT; the GPU tests with OPENPQC_SYCL, of which the summary says when they are not built).
 
 # what each requirement key needs, and why it is not met (empty: met)
 set(_openpqc_linux_gnu OFF)
@@ -229,13 +278,13 @@ endif()
 
 foreach(_openpqc_prefix "" reference_)
     foreach(_openpqc_level 512 768 1024)
-        _openpqc_expect(TESTS ${_openpqc_prefix}mlkem${_openpqc_level}_kat NEEDS python)
+        openpqc_expect_tests(TESTS ${_openpqc_prefix}mlkem${_openpqc_level}_kat NEEDS python)
     endforeach()
-    _openpqc_expect(TESTS ${_openpqc_prefix}mlkem_acvp ${_openpqc_prefix}mlkem_wycheproof NEEDS python
-                    LABELS network)
+    openpqc_expect_tests(TESTS ${_openpqc_prefix}mlkem_acvp ${_openpqc_prefix}mlkem_wycheproof NEEDS python
+                         LABELS network)
     foreach(_openpqc_level 44 65 87)
-        _openpqc_expect(TESTS ${_openpqc_prefix}mldsa${_openpqc_level}_vectors NEEDS python)
-        _openpqc_expect(TESTS ${_openpqc_prefix}mldsa${_openpqc_level}_kat NEEDS python openssl)
+        openpqc_expect_tests(TESTS ${_openpqc_prefix}mldsa${_openpqc_level}_vectors NEEDS python)
+        openpqc_expect_tests(TESTS ${_openpqc_prefix}mldsa${_openpqc_level}_kat NEEDS python openssl)
     endforeach()
     foreach(_openpqc_set IN LISTS OPENPQC_SLHDSA_SETS)
         string(REPLACE "-" "_" _openpqc_infix ${_openpqc_set})
@@ -243,39 +292,53 @@ foreach(_openpqc_prefix "" reference_)
         if(_openpqc_set MATCHES "s$")
             set(_openpqc_slow slow)
         endif()
-        _openpqc_expect(TESTS ${_openpqc_prefix}slhdsa_${_openpqc_infix}_kat NEEDS python openssl
-                        LABELS ${_openpqc_slow})
+        openpqc_expect_tests(TESTS ${_openpqc_prefix}slhdsa_${_openpqc_infix}_kat NEEDS python openssl
+                             LABELS ${_openpqc_slow})
     endforeach()
 endforeach()
 foreach(_openpqc_level 512 768 1024)
-    _openpqc_expect(TESTS mlkem${_openpqc_level}_pct_kat NEEDS python)
-    _openpqc_expect(TESTS mlkem${_openpqc_level}_ct NEEDS valgrind nosan)
+    openpqc_expect_tests(TESTS mlkem${_openpqc_level}_pct_kat NEEDS python)
+    openpqc_expect_tests(TESTS mlkem${_openpqc_level}_ct mlkem${_openpqc_level}_ct_production NEEDS valgrind nosan)
     foreach(_openpqc_opt O1 O2 O3 Os)
-        _openpqc_expect(TESTS mlkem${_openpqc_level}_${_openpqc_opt}_ct NEEDS valgrind nosan LABELS slow)
+        openpqc_expect_tests(TESTS mlkem${_openpqc_level}_${_openpqc_opt}_ct NEEDS valgrind nosan LABELS slow)
     endforeach()
 endforeach()
-_openpqc_expect(TESTS mlkem_acvp_control_info mlkem_wycheproof_control_crash mlkem_wycheproof_control_sanitizer
-                NEEDS python LABELS network)
-_openpqc_expect(TESTS mlkem_stack mlkem_stack_pct mlkem_stack_O0 mlkem_stack_O1 mlkem_stack_O2 mlkem_stack_Os
-                      mldsa_stack
-                NEEDS linux)
-_openpqc_expect(TESTS mldsa_thread_stack mldsa_thread_stack_pct slhdsa_stack slhdsa_stack_pct NEEDS linux threads)
-_openpqc_expect(TESTS mldsa_acvp NEEDS python LABELS network)
-_openpqc_expect(TESTS mldsa_ct mldsa_O1_ct mldsa_O2_ct mldsa_O3_ct mldsa_Os_ct NEEDS valgrind nosan)
-_openpqc_expect(TESTS slhdsa_ct slhdsa_O2_ct NEEDS valgrind nosan LABELS slow)
-_openpqc_expect(TESTS slhdsa_acvp NEEDS python LABELS network slow)
-_openpqc_expect(TESTS reference_slhdsa_acvp NEEDS python openssl LABELS network slow)
-_openpqc_expect(TESTS reference_slhdsa_avx2_acvp NEEDS python openssl avx2 LABELS network)
-_openpqc_expect(TESTS core_rng NEEDS wrap)
+openpqc_expect_tests(TESTS mlkem_acvp_control_info mlkem_wycheproof_control_crash mlkem_wycheproof_control_sanitizer
+                     NEEDS python LABELS network)
+openpqc_expect_tests(TESTS mlkem_stack mlkem_stack_pct mlkem_stack_O0 mlkem_stack_O1 mlkem_stack_O2 mlkem_stack_Os
+                           mlkem_stack_noburn mlkem_stack_noburn_pct mldsa_stack mlkem_config_odr_O0
+                     NEEDS linux)
+openpqc_expect_tests(TESTS mlkem_thread_stack mlkem_thread_stack_pct mldsa_thread_stack mldsa_thread_stack_pct
+                           slhdsa_stack slhdsa_stack_pct
+                     NEEDS linux threads)
+openpqc_expect_tests(TESTS mldsa_acvp NEEDS python LABELS network)
+openpqc_expect_tests(TESTS mldsa_ct mldsa_O1_ct mldsa_O2_ct mldsa_O3_ct mldsa_Os_ct NEEDS valgrind nosan)
+openpqc_expect_tests(TESTS slhdsa_ct slhdsa_O2_ct NEEDS valgrind nosan LABELS slow)
+openpqc_expect_tests(TESTS slhdsa_acvp NEEDS python LABELS network slow)
+openpqc_expect_tests(TESTS reference_slhdsa_acvp NEEDS python openssl LABELS network slow)
+openpqc_expect_tests(TESTS reference_slhdsa_avx2_acvp NEEDS python openssl avx2 LABELS network)
+openpqc_expect_tests(TESTS core_rng NEEDS wrap)
 foreach(_openpqc_barrier asm volatile)
     foreach(_openpqc_level O0 O1 O2 O3 Os)
-        _openpqc_expect(TESTS core_${_openpqc_barrier}_${_openpqc_level}_ct NEEDS gnu nosan valgrind)
+        openpqc_expect_tests(TESTS core_${_openpqc_barrier}_${_openpqc_level}_ct NEEDS gnu nosan valgrind)
     endforeach()
 endforeach()
-_openpqc_expect(TESTS core_ct_control core_ct_control_volatile NEEDS gnu nosan valgrind)
-_openpqc_expect(TESTS core_ct_asm NEEDS python clang)
-_openpqc_expect(TESTS hash_m32 NEEDS m32)
-_openpqc_expect(TESTS c_api_must_check NEEDS python)
+openpqc_expect_tests(TESTS core_ct_control core_ct_control_volatile NEEDS gnu nosan valgrind)
+openpqc_expect_tests(TESTS core_ct_asm NEEDS python clang)
+openpqc_expect_tests(TESTS hash_m32 NEEDS m32)
+openpqc_expect_tests(TESTS c_api_must_check NEEDS python)
+openpqc_expect_tests(TESTS core_hash_acvp core_hash_acvp_control NEEDS python LABELS network)
+get_property(_openpqc_expected GLOBAL PROPERTY OPENPQC_EXPECTED_TESTS)
+foreach(_openpqc_t IN LISTS _openpqc_expected)
+    get_property(_openpqc_needs_${_openpqc_t} GLOBAL PROPERTY OPENPQC_EXPECTED_NEEDS_${_openpqc_t})
+    get_property(_openpqc_labels_${_openpqc_t} GLOBAL PROPERTY OPENPQC_EXPECTED_LABELS_${_openpqc_t})
+    foreach(_openpqc_n IN LISTS _openpqc_needs_${_openpqc_t})
+        if(NOT DEFINED _openpqc_unmet_${_openpqc_n})
+            message(FATAL_ERROR "openpqc_expect_tests: ${_openpqc_t} needs '${_openpqc_n}', which is not one of the "
+                                "requirements tests/CMakeLists.txt knows")
+        endif()
+    endforeach()
+endforeach()
 
 # the tests registered, and the directory of each
 set(_openpqc_registered "")

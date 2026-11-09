@@ -21,12 +21,23 @@
 // secret input (H here, RejBoundedPoly, the message representative) are
 // OPENPQC_MLDSA_CLEARS_REGISTERS: never inlined, and their call-used registers
 // are zeroed when they return, where the compiler can (zero_call_used_regs:
-// GCC 11 and Clang 15 or later, on x86 and AArch64). Clang 23 at -O1, -O2, -O3
-// and -Os on x86-64 does not do it for H: H zeroes the ones that carry no
-// argument of openpqc::sponge, then jumps to it (a tail call), and sponge
-// returns to H's caller without clearing any; at -O0, and with GCC 16 at every
-// level, H clears them (other compiler versions, 32-bit x86 and AArch64 were
-// not checked).
+// GCC 11 and Clang 15 or later, on x86 and AArch64).
+// The clearing runs at the function's own return, so the function must not
+// end in a call that the compiler turns into a jump (a tail call): the callee
+// would return to the caller with its registers as it left them, and the
+// clearing would have run before the computation instead of after it. Clang 23
+// compiled H so, as a jump to openpqc::sponge, at -O1, -O2, -O3 and -Os on
+// x86-64. Hence an empty assembler statement follows H's call of the sponge
+// (a read of a volatile object with OPQC_CONFIG_NO_ASM_VALUE_BARRIER, as
+// Core's OPQC_STACK_BURN_FENCE), and under Clang the macro also carries
+// disable_tail_calls, so that no call in such a function becomes a jump.
+// RejBoundedPoly and the message representative end in the destruction of
+// their Xof, a call with a pointer into their own frame, which cannot become
+// one. tests/ML-DSA/check_regs_asm.py (mldsa_regs_asm) reads the x86-64 code
+// of these functions and of Core's clearing functions, compiled by GCC and
+// Clang at -O1, -O2, -O3 and -Os, and fails on a jump to another function or
+// a register left uncleared at a return (32-bit x86 and AArch64 are not
+// checked).
 #pragma once
 
 #include <array>
@@ -44,7 +55,11 @@ using openpqc::Xof;
 
 #if defined(__has_attribute) && (defined(__x86_64__) || defined(__i386__) || defined(__aarch64__))
 #if __has_attribute(zero_call_used_regs)
+#if __has_attribute(disable_tail_calls)
+#define OPENPQC_MLDSA_CLEARS_REGISTERS __attribute__((noinline, zero_call_used_regs("all"), disable_tail_calls))
+#else
 #define OPENPQC_MLDSA_CLEARS_REGISTERS __attribute__((noinline, zero_call_used_regs("all")))
+#endif
 #endif
 #endif
 #if !defined(OPENPQC_MLDSA_CLEARS_REGISTERS)
@@ -52,9 +67,16 @@ using openpqc::Xof;
 #endif
 
 // out <- H(str, |out|), written in place: for secret outputs (the seeds rho', K and rho''),
-// of which a returned copy could be left behind (Section 3.6.3)
+// of which a returned copy could be left behind (Section 3.6.3). Something follows the call
+// of the sponge, so that it returns here and H's clearing of the registers runs after it
+// (see the top of the file).
 OPENPQC_MLDSA_CLEARS_REGISTERS inline void H(std::span<std::uint8_t> out, ByteStrings str) {
     openpqc::sponge(OPQC_SHAKE256_RATE, OPQC_SHAKE_SUFFIX, out, str);
+#if defined(OPQC_STACK_BURN_ASM)
+    __asm__ __volatile__("" : : : "memory");
+#elif defined(OPQC_STACK_BURN)
+    OPQC_STACK_BURN_FENCE();
+#endif
 }
 
 // H(str, L) = SHAKE256(str, 8 L): L bytes

@@ -50,7 +50,7 @@ therefore run the same arithmetic code. Only the distribution of work and the me
 | SHAKE256 | PRF_η, J | seed expansion, tr, μ, SampleInBall, ExpandMask, ExpandS | all six hash functions of the SHAKE sets; pre-hash | tr, HashToPoint, sampler PRNG | **Core (identical)** |
 | SHA-2 (SHA-224 … SHA-512/256, FIPS 180-4) | - | pre-hash only (HashML-DSA) | the six hash functions of the SHA2 sets: SHA-256 for all of them in category 1; in categories 3 and 5 SHA-256 for F and PRF, SHA-512 for H, T_l, PRF_msg and H_msg; pre-hash | pre-hash only | **Core (identical)** |
 | Constant-time toolkit (value barriers, masks, ct memcmp/cmov, zeroize) | FO transform, message decoding | norm checks, hint, wiping | root and key comparisons, wiping, the stack burn | sampler, encodings | **Core (identical)** (needs 32/64-bit variants for ML-DSA/FN-DSA) |
-| Randomness (operating system or `randombytes()`) | d, z, m | ξ, rnd | SK.seed, SK.prf, PK.seed, addrnd | seed, salt/nonce | **Core (identical)** |
+| Randomness (`opqc_randombytes`: the operating system, a source registered with `opqc_set_randombytes`, or `opqc_external_randombytes()`) | d, z, m | ξ, rnd | SK.seed, SK.prf, PK.seed, addrnd | seed, salt/nonce | **Core (identical)** |
 | Modular reduction | q = 3329, exact multiply-shift | q = 8380417 | - | q = 12289 | Core (pattern) |
 | NTT / inverse NTT (CT/GS butterflies, bit-reversed twiddles) | n = 256, **incomplete**, 7 layers | n = 256, complete, 8 layers | - | n = 512/1024, complete, 9/10 layers | Core (pattern) |
 | NTT-domain product | degree-2 base multiplication | pointwise | - | pointwise + field division | Core (pattern) |

@@ -9,7 +9,7 @@
 //
 //   using DSA = openpqc::slhdsa::SLHDSA_SHAKE_128f;
 //   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
-//   if (DSA::keypair(pk, sk) != 0 ||               // randomness from the operating system
+//   if (DSA::keypair(pk, sk) != 0 ||               // randomness from opqc_randombytes (below)
 //       DSA::sign(sig, message, sk) != 0)          // hedged; optional context string last
 //       return -1;                                 // no key pair or no signature
 //   bool valid = DSA::verify(sig, message, pk) == 0;            // 0 and only 0: valid
@@ -27,6 +27,12 @@
 // check of Section 3.1 and for seeds stored in place of sk; sign_deterministic and
 // prehash_sign_deterministic are the deterministic variant (Section 9.2; "Testing
 // interfaces" in openpqc_slhdsa.h).
+//
+// keypair and the hedged signing functions (sign, prehash_sign) draw the seeds or addrnd
+// through Core's opqc_randombytes (Core/opqc_platform.h): from the source that the
+// application registered with opqc_set_randombytes, else, in a library built with the
+// CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
+// opqc_external_randombytes, else from the operating system (the default).
 //
 // Signatures are up to 49,856 bytes (SLH-DSA-*-256f), which is a lot for a
 // stack: callers that sign on small thread stacks may prefer to hold
@@ -113,7 +119,7 @@ struct SLHDSA {
     using seed = std::array<std::uint8_t, seed_bytes>;
     using randomness = std::array<std::uint8_t, rnd_bytes>;
 
-    // slh_keygen, FIPS 205 Algorithm 21 (the seeds from the operating system)
+    // slh_keygen, FIPS 205 Algorithm 21 (the seeds from opqc_randombytes, above)
     [[nodiscard]] static int keypair(public_key& pk, secret_key& sk) { return api::keypair(pk.data(), sk.data()); }
 
     // slh_keygen_internal, Algorithm 18: the key pair of the seeds SK.seed || SK.prf || PK.seed
@@ -121,7 +127,7 @@ struct SLHDSA {
         return api::keypair_derand(pk.data(), sk.data(), s.data());
     }
 
-    // slh_sign, Algorithm 22: hedged (addrnd from the operating system)
+    // slh_sign, Algorithm 22: hedged (addrnd from opqc_randombytes, above)
     [[nodiscard]] static int sign(signature& sig, bytes message, const secret_key& sk, bytes ctx = {}) {
         return api::sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data());
     }

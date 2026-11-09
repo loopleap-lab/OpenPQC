@@ -9,6 +9,9 @@
 //                sums need more bits than the word (64-bit words: more than 32)
 //   healthy      calls in chunks, sync and copies; the stand-in secrets that the kernels write into the
 //                workspace are zeroized after every chunk
+//   sync word    sync queues a command of its own, which writes zeros into the last bytes of the workspace
+//                (Context::sync_word) and nowhere else: with the workspace filled with 0x5A, a sync of a
+//                context that queued nothing since its last wait leaves only those bytes zero
 //   failure      an asynchronous error in a call's work (DPC++: a host task that throws, which SYCL hands to
 //                the queue's async handler; AdaptiveCpp: an error registered with the runtime, the way its
 //                runtime reports a failed kernel or copy), the workspace filled with 0x5A before: sync
@@ -44,7 +47,11 @@
 //                B's handler fails context A too; a context created afterwards is healthy
 //   sticky       (argument "sticky"; NVIDIA devices only, since the fault poisons the device for the rest of
 //                the process: a ctest of its own) a kernel stores through a null pointer: sync, the copies and
-//                later calls return -2, and destroy returns
+//                later calls return -2, and destroy returns; and the sync of two other contexts on the device,
+//                created before the fault, that queued nothing since their last wait (one waited through the
+//                queue, as create's final zeroization does, the other through a sync after a call) returns -2
+//                too: DPC++'s CUDA backend asks the driver nothing for a queue whose work was all waited for,
+//                so only the command that sync queues finds the fault
 //   selection    (once, before the devices) the default device of create: OPENPQC_SYCL_DEVICE unset or empty
 //                gives SYCL's default device, a decimal index that device; "gpu", "1abc", "-1", "+1", an
 //                index out of range or above INT_MAX, and a device index below -1 select none (create
@@ -286,6 +293,29 @@ void test_queue_wait(const sycl::device& dev) {
     }
     CHECK(ctx->failed());
     CHECK(nonzero_workspace(ctx) == 0);
+    gpu::destroy(ctx);
+}
+
+// The command that sync queues: it reaches the device also when the context queued nothing since its last wait,
+// and writes the sync word only
+void test_sync_word(const sycl::device& dev) {
+    TestContext* ctx = create(dev);
+    if (!ctx) return;
+    CHECK(ctx->sync_word() + gpu::SYNC_WORD_BYTES == ctx->mem + ctx->mem_bytes);
+    CHECK(ctx->sync_word() >= ctx->section(1) + SECTION * BATCH + 256);   // after the sections and the extra bytes
+    ctx->queue.memset(ctx->mem, 0x5A, ctx->mem_bytes).wait();
+    ctx->queue.wait();   // nothing left to wait for
+    CHECK(gpu::sync(ctx) == 0);
+    std::vector<std::uint8_t> host(ctx->mem_bytes, 0xEE);
+    CHECK(gpu::copy(ctx, host.data(), ctx->mem, ctx->mem_bytes, true) == 0);
+    std::size_t other = 0, word = 0;
+    for (std::size_t i = 0; i < host.size(); i++) {
+        if (i < host.size() - gpu::SYNC_WORD_BYTES) other += host[i] != 0x5A;
+        else word += host[i] != 0;
+    }
+    CHECK(other == 0 && word == 0);
+    std::printf("  sync word: %zu of %zu bytes before it changed, %zu of %zu not zero after a sync\n", other,
+                host.size() - gpu::SYNC_WORD_BYTES, word, gpu::SYNC_WORD_BYTES);
     gpu::destroy(ctx);
 }
 
@@ -642,14 +672,34 @@ bool is_nvidia(const sycl::device& dev) {
 
 void test_sticky(const sycl::device& dev) {
     TestContext* ctx = create(dev);
-    if (!ctx) return;
+    // idle: created, then waited for through the queue (as create's final zeroization), or a call and a sync
+    TestContext* idle_wiped = create(dev);
+    TestContext* idle_synced = create(dev);
+    if (!ctx || !idle_wiped || !idle_synced) {
+        gpu::destroy(ctx);
+        gpu::destroy(idle_wiped);
+        gpu::destroy(idle_synced);
+        return;
+    }
     auto* out = static_cast<std::int32_t*>(gpu::device_malloc(ctx->queue, 64));
+    auto* idle_out = static_cast<std::int32_t*>(gpu::device_malloc(idle_synced->queue, 64));
     std::int32_t host[4] = {0, 0, 0, 0};
+    idle_wiped->wipe_workspace();
+    CHECK(!idle_wiped->failed());
+    CHECK(call(idle_synced, idle_out, 4, 5) == 0);
+    CHECK(gpu::sync(idle_synced) == 0);
     CHECK(call(ctx, out, 4, 7) == 0);
     CHECK(gpu::sync(ctx) == 0);
     const int rc = call(ctx, nullptr, 4, 7);   // a store through a null pointer: an illegal address on CUDA
     CHECK(rc == 0 || rc == -2);
     CHECK(gpu::sync(ctx) == -2);
+    // the other contexts on the device, which queued nothing since their last wait
+    const int wiped_rc = gpu::sync(idle_wiped), synced_rc = gpu::sync(idle_synced);
+    CHECK(wiped_rc == -2 && synced_rc == -2);
+    CHECK(idle_wiped->failed() && idle_synced->failed());
+    std::printf("  after the fault: sync of the context that faulted -2; of an idle context %d (its last wait through "
+                "the queue) and %d (its last wait a sync)\n",
+                wiped_rc, synced_rc);
     CHECK(gpu::copy(ctx, host, out, 16, true) == -2);
     CHECK(call(ctx, out, 4, 9) == -2);
     CHECK(gpu::copy(ctx->queue, host, out, 16, true) == -2);
@@ -659,6 +709,9 @@ void test_sticky(const sycl::device& dev) {
           }) == -2);
     CHECK(ctx->failed());
     gpu::device_free(ctx->queue, out);
+    gpu::device_free(idle_synced->queue, idle_out);
+    gpu::destroy(idle_synced);
+    gpu::destroy(idle_wiped);
     gpu::destroy(ctx);
 }
 
@@ -701,6 +754,7 @@ int main(int argc, char** argv) {
             test_allocation(dev);
             test_process(dev);
             test_lock(dev);
+            test_sync_word(dev);
             test_arguments(dev);   // last: a misaligned fill, were one queued, could fault the device
         }
         std::printf("  %s: %d failed check(s)\n", sticky ? "sticky fault" : "team, contexts", failures - before);

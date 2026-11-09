@@ -849,7 +849,7 @@ int check_helpers(sycl::queue& q, int& cases) {
     // the counter across the block boundary, and three hashes. (Both in one check, <Sha512, 125, 130>, did
     // not compile with SHA-512's rounds all unrolled: DPC++'s nvptx64 device compile at -O3 did not finish
     // in 5 minutes for that check alone, nor in 30 for the whole file; these two shapes, and SLH-DSA's,
-    // take under a minute. DPC++ nightly 2026-10-11, docs/slhdsa-notes/experiments/H1.md.)
+    // take under a minute. DPC++ nightly 2026-10-11, each check compiled alone.)
     check_mgf1<Sha512, 125, 128>(c, "mgf1_sha512_125_128");
     check_mgf1<Sha512, 120, 130>(c, "mgf1_sha512_120_130");
     check_fixed<Sha256, 64, 22, 16, 16>(c, "fixed_f_n16");   // F, PRF (SHA-256 for every n)

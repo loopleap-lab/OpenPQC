@@ -779,8 +779,9 @@ LevelSizes sizes_of(int level) {
 // Whether p can be a buffer of the kernels: not NULL, aligned to `alignment` (the kernels rely on
 // it, openpqc::gpu::buffer), and USM memory of the context's SYCL context, which its device can
 // use (device, shared or page-locked host memory). A NULL pointer or memory the device cannot use
-// (pageable host memory, another device's memory) would make the device fault, or, as on Intel GPUs
-// under Level Zero, be read as zeros, and the call would report results computed from them.
+// (pageable host memory, another device's memory) would make the device fault, or, as on an Intel GPU
+// under DPC++'s Level Zero backend, be read as zeros, and the call would report results computed from
+// them.
 bool usable(const opqc_sycl_mlkem* ctx, const void* p, std::size_t alignment) {
     if (!p || !openpqc::gpu::aligned(alignment, p)) return false;
     try {
@@ -937,7 +938,8 @@ int encaps_call(opqc_sycl_mlkem* ctx, std::uint8_t* ct, std::uint8_t* ss, const 
 // inputs is set to a pattern first (0xA5: no answer, and no status 0), so that only what the
 // kernels write can pass: device memory is not cleared when it is allocated, and the memory of an
 // earlier self-test, with its answers, can come back at the same address (it does under Level
-// Zero), where a device that ran no kernel would read them. It is zeroed before it is freed.
+// Zero), where a device that ran no kernel would read them. It is zeroed before it is freed, and freed
+// on every way out, an exception included (taking the context's lock can throw std::system_error).
 // Returns 0, OPQC_SYCL_MLKEM_SELF_TEST_FAIL, -1 (no device memory) or -2.
 int self_test(opqc_sycl_mlkem* ctx) {
     namespace st = openpqc::mlkem::gpu::self_test;
@@ -952,7 +954,29 @@ int self_test(opqc_sycl_mlkem* ctx) {
                       total = o_st + 16;
     // the device memory's host copy: the inputs, then the pattern (may throw: before the device memory exists)
     std::vector<std::uint8_t> h(total, std::uint8_t{0xA5});
-    auto* d = static_cast<std::uint8_t*>(openpqc::gpu::device_malloc(ctx->queue, total));
+    // The device memory, zeroized and freed when the self-test returns or throws. The zeroization is
+    // queued behind the work that uses the memory (the queue is in order) and waited for, so that the
+    // free, which does not wait (sycl::free), comes after that work. wipe() runs it once: 0, or -2 if
+    // it failed (the context has then failed).
+    struct Memory {
+        opqc_sycl_mlkem* owner;
+        std::uint8_t* p;
+        std::size_t size;
+        bool wiped = false;
+        int wipe() noexcept {
+            if (!p || wiped) return 0;
+            wiped = true;
+            return owner->guard([&] {
+                owner->queue.memset(p, 0, size).wait();
+                return 0;
+            });
+        }
+        ~Memory() {
+            wipe();
+            openpqc::gpu::device_free(owner->queue, p);
+        }
+    } memory{ctx, static_cast<std::uint8_t*>(openpqc::gpu::device_malloc(ctx->queue, total)), total};
+    std::uint8_t* const d = memory.p;
     if (!d) return -1;
     for (std::size_t i = 0; i < 96; i++) h[i] = st::coin(i);
     auto* status = reinterpret_cast<std::int32_t*>(d + o_st);
@@ -981,13 +1005,9 @@ int self_test(opqc_sycl_mlkem* ctx) {
         if (rc == 0) rc = get(o_ek, s.ek);
         if (rc == 0) rc = get(o_k, 96);
         if (rc == 0) rc = get(o_st, 12);
-        const int wiped = ctx->guard([&] {   // before the free, which does not wait
-            ctx->queue.memset(d, 0, total).wait();
-            return 0;
-        });
+        const int wiped = memory.wipe();
         if (rc == 0) rc = wiped;
     }
-    openpqc::gpu::device_free(ctx->queue, d);
     if (rc != 0) return rc;
     std::uint8_t hash[32];
     bool ok = true;

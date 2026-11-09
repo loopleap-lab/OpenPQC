@@ -10,9 +10,9 @@
 #   sycl/              batched ML-DSA on GPUs and other SYCL devices (optional)
 #
 # Targets:
-#   openpqc_mldsa           the library; randomness from the operating system
+#   openpqc_mldsa           the library; randomness from Core (opqc_randombytes: by default the operating system)
 #   openpqc_mldsa_testrng   the same code, randomness from the application's
-#                           randombytes(), for the tests
+#                           opqc_external_randombytes(), for the tests
 #   openpqc_mldsa_sycl      the SYCL backend (OPENPQC_SYCL, see the top-level CMakeLists.txt)
 
 add_library(openpqc_mldsa_objects OBJECT mldsa.cpp)
@@ -39,6 +39,11 @@ if(OPENPQC_HAVE_SYCL)
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
     target_compile_features(openpqc_mldsa_sycl PRIVATE cxx_std_20)
     target_link_libraries(openpqc_mldsa_sycl PUBLIC openpqc_core openpqc_core_sycl)
+    # KeyGen with the pair-wise consistency test of FIPS 140-3 (sycl/mldsa_sycl.cpp), as for the CPU
+    # library (the option OPENPQC_MLDSA_KEYGEN_PCT, top-level CMakeLists.txt)
+    if(OPENPQC_MLDSA_KEYGEN_PCT)
+        target_compile_definitions(openpqc_mldsa_sycl PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
+    endif()
     set_target_properties(openpqc_mldsa_sycl PROPERTIES LINKER_LANGUAGE CXX POSITION_INDEPENDENT_CODE ON)
     openpqc_sycl_sources(openpqc_mldsa_sycl sycl/mldsa_sycl.cpp)
 endif()

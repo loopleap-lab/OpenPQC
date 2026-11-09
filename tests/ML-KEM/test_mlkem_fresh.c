@@ -22,7 +22,7 @@
  * concern; core_rng tests how Core calls it).
  *
  * Positive control (compiled with OPENPQC_FRESH_CONTROL and linked with openpqc_mlkem_testrng, whose
- * randomness comes from the randombytes() below): the generator gives the same bytes on every call;
+ * randomness comes from the opqc_external_randombytes() below): the generator gives the same bytes on every call;
  * the checks must report repeats of ek, dk, z, ct and K for every parameter set, and the program exits 0
  * only if they do.
  */
@@ -37,8 +37,8 @@
 #define TRIALS 32
 
 #if defined(OPENPQC_FRESH_CONTROL)
-int randombytes(uint8_t *out, size_t outlen);
-int randombytes(uint8_t *out, size_t outlen)
+int opqc_external_randombytes(uint8_t *out, size_t outlen);
+int opqc_external_randombytes(uint8_t *out, size_t outlen)
 {
     memset(out, 0x5a, outlen); /* the same "random" bytes on every call */
     return 0;

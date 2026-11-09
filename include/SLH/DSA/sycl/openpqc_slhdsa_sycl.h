@@ -36,7 +36,7 @@
  * other memory (pageable host memory of malloc, new or a std::vector; memory of a
  * context on another device) returns -1 before anything is queued or any randomness is
  * drawn (verification fails closed, see Status): the device would fault on it or, as
- * Intel GPUs under Level Zero do, read it as zeros. The buffers are checked also when n
+ * DPC++'s Level Zero backend does, read it as zeros. The buffers are checked also when n
  * is 0. The check asks the SYCL runtime (sycl::get_pointer_type), and some memory
  * passes it that should not. AdaptiveCpp's OpenMP host device takes every pointer for
  * memory of its own: host memory, which it then uses, and another GPU's device memory,
@@ -80,14 +80,17 @@
  * results equal the CPU's prehash_sign_derand and prehash_verify of M.
  *
  * Randomness. opqc_sycl_slhdsa_keypair, _sign and _prehash_sign (and their _one_key
- * forms) draw the seeds or addrnd from the operating system's RNG on the host (FIPS
- * 205, Section 3.1: the module, not the caller, generates them) and return
- * OPENPQC_SLHDSA_ERR_RNG_FAIL if it fails. They go to the device from page-locked host
- * memory that the context holds and wipes at once after each launch's copy (a copy from
- * pageable memory would leave them in a staging buffer of the driver); even so, NVIDIA's
- * CUDA driver has been seen to keep copies of such small host-to-device transfers in
- * memory of its own (mappings of /dev/nvidiactl), after the call and after destroy,
- * where the library cannot reach them.
+ * forms) draw the seeds or addrnd on the host from Core's opqc_randombytes
+ * (Core/opqc_platform.h: a source that the application registered with
+ * opqc_set_randombytes, or else the default, the operating system's RNG unless the
+ * libraries are built with OPENPQC_EXTERNAL_RANDOMBYTES; FIPS 205, Section 3.1: the
+ * module, not the caller, generates them) and return OPENPQC_SLHDSA_ERR_RNG_FAIL if
+ * it fails. They go to the device from page-locked host memory that the context holds
+ * and wipes at once after each launch's copy (a copy from pageable memory would leave
+ * them in a staging buffer of the driver); even so, NVIDIA's CUDA driver has been seen
+ * to keep copies of such small host-to-device transfers in memory of its own (mappings
+ * of /dev/nvidiactl), after the call and after destroy, where the library cannot reach
+ * them.
  *
  * One key. The _one_key functions use a single key (sk or pk is one key in device
  * memory) for all n operations; the results are those of the functions above with n
@@ -264,7 +267,9 @@ OPQC_MUST_CHECK int opqc_sycl_slhdsa_verify_internal_one_key(opqc_sycl_slhdsa *c
                                                              const uint8_t *mprime, const uint64_t *offsets,
                                                              const uint8_t *pk, int32_t *status, size_t n);
 
-/* Waits until all queued work of the context is done. Returns 0, -1 for NULL, or -2 if the
+/* Queues a 4-byte write of zeros into the context's own device memory, unless the context
+ * has failed, so that the wait reaches the device also when nothing else is queued; then
+ * waits until all queued work of the context is done. Returns 0, -1 for NULL, or -2 if the
  * context has failed, before or during the wait (Device failures, above). */
 OPQC_MUST_CHECK int opqc_sycl_slhdsa_sync(opqc_sycl_slhdsa *ctx);
 
