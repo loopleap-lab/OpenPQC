@@ -14,7 +14,7 @@
  * randombytes(): mlkem-native's notrandombytes, the rng.c of NIST's KAT
  * generators, and the reference implementations of the differential tests.
  * This file, the one member of the static library
- * openpqc_core_testrng_forward (include/Core/CMakeLists.txt), gives those
+ * openpqc_core_testrng_forward (src/Core/CMakeLists.txt), gives those
  * programs the test variants' source as a call of their randombytes(). A
  * program that defines opqc_external_randombytes() itself never links it: the
  * linker takes a member out of an archive only for a symbol that is still

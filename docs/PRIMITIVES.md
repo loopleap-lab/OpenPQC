@@ -9,16 +9,16 @@ optimized CPU baseline.
 
 Detailed per-symbol catalogs of the upstream projects (every function, bound and file:line) are in
 [`docs/catalog/`](catalog/README.md). [SOURCE_MAP.md](SOURCE_MAP.md) goes through mlkem-native file by file and marks which
-parts are FIPS 203/202 algorithms and which mlkem-native added. [include/ML/KEM/README.md](../include/ML/KEM/README.md)
+parts are FIPS 203/202 algorithms and which mlkem-native added. [src/ML/KEM/README.md](../src/ML/KEM/README.md)
 maps FIPS 203 to OpenPQC's own code.
 
 | Group | Directory | Standard | Status |
 |---|---|---|---|
-| **Core** | [`include/Core`](../include/Core/README.md) | FIPS 202 (SHA-3) + shared infrastructure | partially filled: Keccak-f[1600], SHA-3, SHAKE (incremental), SHA-2, the pre-hash functions of HashML-DSA and HashSLH-DSA, constant-time helpers, OS randomness and zeroization, the GPU sponge and SHA-2 helpers |
-| **ML-KEM** | [`include/ML/KEM`](../include/ML/KEM/README.md) | FIPS 203 | implemented: all three parameter sets, CPU and SYCL GPU backend, byte-identical to mlkem-native |
-| **ML-DSA** | [`include/ML/DSA`](../include/ML/DSA/README.md) | FIPS 204 | implemented: all three parameter sets, HashML-DSA and external μ, CPU and SYCL GPU backend, byte-identical to CRYSTALS-Dilithium |
-| **SLH-DSA** | [`include/SLH/DSA`](../include/SLH/DSA/README.md) | FIPS 205 | implemented: all twelve parameter sets and HashSLH-DSA, CPU and SYCL GPU backend, byte-identical to SPHINCS+ (sphincsplus) |
-| **FN-DSA** | [`include/FN/DSA`](../include/FN/DSA/README.md) | FIPS 206 (not yet published) | placeholder: primitive inventory and integration plan |
+| **Core** | [`src/Core`](../src/Core/README.md) | FIPS 202 (SHA-3) + shared infrastructure | partially filled: Keccak-f[1600], SHA-3, SHAKE (incremental), SHA-2, the pre-hash functions of HashML-DSA and HashSLH-DSA, constant-time helpers, OS randomness and zeroization, the GPU sponge and SHA-2 helpers |
+| **ML-KEM** | [`src/ML/KEM`](../src/ML/KEM/README.md) | FIPS 203 | implemented: all three parameter sets, CPU and SYCL GPU backend, byte-identical to mlkem-native |
+| **ML-DSA** | [`src/ML/DSA`](../src/ML/DSA/README.md) | FIPS 204 | implemented: all three parameter sets, HashML-DSA and external μ, CPU and SYCL GPU backend, byte-identical to CRYSTALS-Dilithium |
+| **SLH-DSA** | [`src/SLH/DSA`](../src/SLH/DSA/README.md) | FIPS 205 | implemented: all twelve parameter sets and HashSLH-DSA, CPU and SYCL GPU backend, byte-identical to SPHINCS+ (sphincsplus) |
+| **FN-DSA** | [`src/FN/DSA`](../src/FN/DSA/README.md) | FIPS 206 (not yet published) | placeholder: primitive inventory and integration plan |
 
 "Implemented" means every algorithm and parameter set of the standard with outputs byte-identical to the reference;
 it does not mean ready for production or validated: see the top-level README ("Maturity and scope", "Security notes")
@@ -37,7 +37,7 @@ Every primitive gets one of three classifications:
 - **Scheme-specific.** Exists only in one standard, e.g. ML-KEM's compression or FN-DSA's Gaussian sampler.
 
 **One source for CPU and GPU.** The math core of each group is header-only C that is valid C11, C++20 and SYCL device
-code at the same time (`include/Core/opqc_common.h` lists what that rules out). The CPU library and the SYCL kernels
+code at the same time (`src/Core/opqc_common.h` lists what that rules out). The CPU library and the SYCL kernels
 therefore run the same arithmetic code. Only the distribution of work and the memory layout are GPU-specific.
 
 ## 2. Map of all primitives
@@ -67,8 +67,8 @@ therefore run the same arithmetic code. Only the distribution of work and the me
 
 ## 3. Core
 
-Files: [`include/Core`](../include/Core/README.md). C API umbrella: [`openpqc_core.h`](../include/Core/openpqc_core.h);
-C++ API: [`hash.hpp`](../include/Core/hash.hpp), [`zeroize.hpp`](../include/Core/zeroize.hpp).
+Files: [`src/Core`](../src/Core/README.md). C API umbrella: [`openpqc_core.h`](../src/Core/openpqc_core.h);
+C++ API: [`hash.hpp`](../src/Core/hash.hpp), [`zeroize.hpp`](../src/Core/zeroize.hpp).
 
 | Primitive | Standard reference | API | File |
 |---|---|---|---|
@@ -89,13 +89,13 @@ SLH-DSA's reference has, is not.
 
 ## 4. ML-KEM (FIPS 203)
 
-Files: [`include/ML/KEM/math`](../include/ML/KEM/math) (C11 math core), [`include/ML/KEM/scheme`](../include/ML/KEM/scheme)
-(C++20 algorithms). Public C API: [`openpqc_mlkem.h`](../include/ML/KEM/openpqc_mlkem.h) (`openpqc_mlkem{512,768,1024}_*`),
+Files: [`src/ML/KEM/math`](../src/ML/KEM/math) (C11 math core), [`src/ML/KEM/scheme`](../src/ML/KEM/scheme)
+(C++20 algorithms). Public C API: [`openpqc_mlkem.h`](../src/ML/KEM/openpqc_mlkem.h) (`openpqc_mlkem{512,768,1024}_*`),
 and [`openpqc/kem.h`](../include/openpqc/kem.h) for a parameter set chosen at run time; C++ API:
-[`mlkem.hpp`](../include/ML/KEM/mlkem.hpp) (`openpqc::ML_KEM_768`, ... in
+[`mlkem.hpp`](../src/ML/KEM/mlkem.hpp) (`openpqc::ML_KEM_768`, ... in
 [`openpqc/openpqc.hpp`](../include/openpqc/openpqc.hpp)); GPU: [`openpqc/sycl.h`](../include/openpqc/sycl.h), one
 context type for every parameter set, over the backend's internal C API
-[`sycl/openpqc_mlkem_sycl.h`](../include/ML/KEM/sycl/openpqc_mlkem_sycl.h).
+[`sycl/openpqc_mlkem_sycl.h`](../src/ML/KEM/sycl/openpqc_mlkem_sycl.h).
 
 ### 4.1 Representation conventions
 
@@ -114,7 +114,7 @@ The two produce the same bytes (`mlkem_differential`).
 
 ### 4.2 Primitives
 
-| FIPS 203 | Primitive | OpenPQC (`include/ML/KEM/math`, `scheme`) | mlkem-native (`reference/mlkem-native/mlkem/src`) | On the GPU |
+| FIPS 203 | Primitive | OpenPQC (`src/ML/KEM/math`, `scheme`) | mlkem-native (`reference/mlkem-native/mlkem/src`) | On the GPU |
 |---|---|---|---|---|
 | §2.3 | arithmetic in Z_q | `mlkem_add/sub/mul/mod_q` | `mlk_montgomery_reduce`, `mlk_barrett_reduce`, `mlk_fqmul` (`poly.h`, `poly.c`) | same functions |
 | Alg. 3–6 | ByteEncode_d / ByteDecode_d | `mlkem_byte_encode[8]`, `mlkem_byte_decode[8]` (`mlkem_encode.h`); ByteDecode₁₂ reduces mod q | `mlk_poly_tobytes`, `mlk_poly_frombytes` (no reduction; §7.2 check in `kem.c`), fused compress+encode | one 8-coefficient chunk per work-item |
@@ -159,19 +159,19 @@ ML-DSA reuses Core's Keccak and SHAKE code and the constant-time and randomness 
 hint, challenge and rejection-signing primitives are ML-DSA-specific. It follows the ML-KEM recipe: a C11 math
 core (shared with the SYCL kernels) and a C++20 scheme layer written along FIPS 204, with CRYSTALS-Dilithium (its C and
 AVX2 code) in `reference/` as the test oracle (the original plan named mldsa-native). The map from FIPS 204 to the
-code, the design and the measurements: [include/ML/DSA/README.md](../include/ML/DSA/README.md).
+code, the design and the measurements: [src/ML/DSA/README.md](../src/ML/DSA/README.md).
 
 ## 6. SLH-DSA (FIPS 205)
 
-Files: [`include/SLH/DSA/math`](../include/SLH/DSA/math) (C11 math core),
-[`include/SLH/DSA/scheme`](../include/SLH/DSA/scheme) (C++20 algorithms). Public C API:
-[`openpqc_slhdsa.h`](../include/SLH/DSA/openpqc_slhdsa.h) (`openpqc_slhdsa_<set>_*` for the twelve sets of Table 2),
+Files: [`src/SLH/DSA/math`](../src/SLH/DSA/math) (C11 math core),
+[`src/SLH/DSA/scheme`](../src/SLH/DSA/scheme) (C++20 algorithms). Public C API:
+[`openpqc_slhdsa.h`](../src/SLH/DSA/openpqc_slhdsa.h) (`openpqc_slhdsa_<set>_*` for the twelve sets of Table 2),
 and [`openpqc/sig.h`](../include/openpqc/sig.h) for a parameter set chosen at run time; C++ API:
-[`slhdsa.hpp`](../include/SLH/DSA/slhdsa.hpp) (`openpqc::SLH_DSA_SHA2_128f`, ... in
+[`slhdsa.hpp`](../src/SLH/DSA/slhdsa.hpp) (`openpqc::SLH_DSA_SHA2_128f`, ... in
 [`openpqc/openpqc.hpp`](../include/openpqc/openpqc.hpp)); GPU: [`openpqc/sycl.h`](../include/openpqc/sycl.h), one
 context type for every parameter set, over the backend's internal C API
-[`sycl/openpqc_slhdsa_sycl.h`](../include/SLH/DSA/sycl/openpqc_slhdsa_sycl.h). The FIPS 205 to code map, the tests and
-the measurements are in [include/SLH/DSA/README.md](../include/SLH/DSA/README.md); the catalog written before the
+[`sycl/openpqc_slhdsa_sycl.h`](../src/SLH/DSA/sycl/openpqc_slhdsa_sycl.h). The FIPS 205 to code map, the tests and
+the measurements are in [src/SLH/DSA/README.md](../src/SLH/DSA/README.md); the catalog written before the
 implementation is [catalog/SLH-DSA.md](catalog/SLH-DSA.md).
 
 ### 6.1 Representation conventions
@@ -193,7 +193,7 @@ The two produce the same bytes (`slhdsa_differential`, against the reference's C
 
 ### 6.2 Primitives
 
-| FIPS 205 | Primitive | OpenPQC (`include/SLH/DSA/math`, `scheme`) | sphincsplus (`reference/sphincsplus/ref`) | On the GPU |
+| FIPS 205 | Primitive | OpenPQC (`src/SLH/DSA/math`, `scheme`) | sphincsplus (`reference/sphincsplus/ref`) | On the GPU |
 |---|---|---|---|---|
 | Alg. 1–4 | gen_len2, toInt, toByte, base_2b | `slhdsa_gen_len2`, `slhdsa_to_int`, `slhdsa_to_byte`, `slhdsa_base_2b` (`slhdsa_encode.h`) | `ull_to_bytes`, `bytes_to_ull` (`utils.c`), `base_w`, `wots_checksum` (`wots.c`), `message_to_indices` (`fors.c`) | the same functions |
 | §4.2, §4.3, Table 1; §11.2, Table 3 | ADRS and its member functions, ADRSᶜ | `slhdsa_adrs_*`, `slhdsa_adrs_compress` (`slhdsa_address.h`); `Adrs` (`address.hpp`) | `address.c`, with the byte offsets per family (`sha2_offsets.h`, `shake_offsets.h`) | eight integers (`slhdsa_adrsw_*`), SHAKE lanes and big-endian words computed from them |
@@ -234,7 +234,7 @@ FIPS 206 has not been published yet (as of 2026-10, not even an initial public d
 FN-DSA reuses Core's SHAKE256, randomness and constant-time code. Its NTT mod 12289 (n = 512/1024, complete) is
 "Core (pattern)". Most of its signing primitives are FN-DSA-specific: the FFT over C in IEEE-754 binary64 (native or
 integer-emulated), ffLDL/ffSampling and the Gaussian sampler, and in key generation NTRUSolve with big integers.
-Inventory and plan: [include/FN/DSA/README.md](../include/FN/DSA/README.md).
+Inventory and plan: [src/FN/DSA/README.md](../src/FN/DSA/README.md).
 
 ## 8. Backends
 

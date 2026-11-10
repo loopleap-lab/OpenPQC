@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 """Vendor the CRYSTALS-Dilithium reference implementation into OpenPQC.
 
-OpenPQC's ML-DSA (include/ML/DSA) is its own C11/C++20 code. The official
+OpenPQC's ML-DSA (src/ML/DSA) is its own C11/C++20 code. The official
 implementation of the CRYSTALS team, which implements FIPS 204, is kept
 unmodified as the reference that the tests compare it with (and its AVX2
 version as the optimized CPU baseline of the benchmarks):

@@ -49,7 +49,7 @@ configure_file(openpqc_version.h.in ${PROJECT_BINARY_DIR}/include/Core/openpqc_v
 function(_openpqc_core_target name type)
     add_library(${name} ${type} ${ARGN})
     target_include_directories(${name} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
         $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
     if(WIN32)
         target_link_libraries(${name} PUBLIC bcrypt)
@@ -93,7 +93,7 @@ endif()
 # build with the tests.
 if(OPENPQC_BUILD_TESTS)
     add_library(openpqc_core_testrng_forward STATIC ${PROJECT_SOURCE_DIR}/tests/Core/testrng_forward.c)
-    target_include_directories(openpqc_core_testrng_forward PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(openpqc_core_testrng_forward PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(openpqc_core_testrng_forward PRIVATE openpqc_strict_warnings)
     set_target_properties(openpqc_core_testrng_forward PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
                                                                   C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)

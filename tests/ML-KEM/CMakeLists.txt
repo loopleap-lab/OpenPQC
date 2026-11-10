@@ -6,7 +6,7 @@
 # mlkem-native's test programs (vendored by scripts/vendor_mlkem_native.py) run
 # against two targets, each with its own copy of the programs in run/<target>:
 #
-#   openpqc     OpenPQC ML-KEM (include/ML-KEM), the library under test
+#   openpqc     OpenPQC ML-KEM (src/ML/KEM), the library under test
 #   reference   mlkem-native itself (reference/), as a check of the checks
 #
 # Tests (NNN = 512, 768, 1024; the reference's tests start with "reference_"):
@@ -261,7 +261,7 @@ if(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
             set(_suffix _${opt}_ct)
         endif()
         add_library(${_lib}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
-        target_include_directories(${_lib}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include
+        target_include_directories(${_lib}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
                                    ${OPENPQC_VALGRIND_INCLUDE_DIR})
         target_compile_definitions(${_lib}_objects PRIVATE OPQC_CT_TESTING ${_mlkem_pct_definitions}
                                                            ${_mlkem_burn_definitions})
@@ -356,13 +356,13 @@ add_test(NAME mlkem_differential COMMAND test_mlkem_differential)
 #                    check is compiled in and that its result is used, which mlkem_pct alone cannot show.
 foreach(variant pct pct_fail)
     add_library(openpqc_mlkem_${variant}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
-    target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_compile_definitions(openpqc_mlkem_${variant}_objects PRIVATE OPENPQC_MLKEM_KEYGEN_PCT
                                                                         ${_mlkem_burn_definitions})
     target_compile_features(openpqc_mlkem_${variant}_objects PRIVATE cxx_std_20)
     target_link_libraries(openpqc_mlkem_${variant}_objects PRIVATE openpqc_strict_warnings)
     add_executable(test_mlkem_${variant} test_mlkem_pct.c $<TARGET_OBJECTS:openpqc_mlkem_${variant}_objects>)
-    target_include_directories(test_mlkem_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(test_mlkem_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(test_mlkem_${variant} PRIVATE openpqc_core_testrng openpqc_strict_warnings)
     set_target_properties(test_mlkem_${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
                                                            C_EXTENSIONS OFF)
@@ -376,7 +376,7 @@ target_compile_definitions(test_mlkem_pct_fail PRIVATE OPENPQC_TEST_EXPECT_PCT_F
 #                    linker must not let them take the place of the library's, whose KeyGen must still fail
 add_executable(test_mlkem_pct_odr test_mlkem_pct_odr.cpp test_mlkem_pct.c
                                   $<TARGET_OBJECTS:openpqc_mlkem_pct_fail_objects>)
-target_include_directories(test_mlkem_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(test_mlkem_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_mlkem_pct_odr PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
 target_compile_features(test_mlkem_pct_odr PRIVATE cxx_std_20)
 target_link_libraries(test_mlkem_pct_odr PRIVATE openpqc_core_testrng openpqc_strict_warnings)
@@ -414,7 +414,7 @@ function(mlkem_config_odr target library_burn library_pct)
     target_compile_definitions(${target} PRIVATE OPENPQC_TEST_BURN=${other_burn} OPENPQC_TEST_PCT=${library_pct}
                                                  OPENPQC_TEST_LIBRARY_BURN=${library_burn})
     foreach(t ${target}_library_side ${target})
-        target_include_directories(${t} PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests)
+        target_include_directories(${t} PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/tests)
         target_compile_features(${t} PRIVATE cxx_std_20)
         target_link_libraries(${t} PRIVATE openpqc_strict_warnings)
     endforeach()
@@ -488,7 +488,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
 
     add_executable(test_mlkem_stack_pct test_mlkem_stack.cpp)
     target_compile_definitions(test_mlkem_stack_pct PRIVATE OPENPQC_TEST_PCT ${_mlkem_test_burn_definitions})
-    target_include_directories(test_mlkem_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/tests ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(test_mlkem_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/tests ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(test_mlkem_stack_pct PRIVATE openpqc_mlkem_pct openpqc_strict_warnings)
     target_compile_features(test_mlkem_stack_pct PRIVATE cxx_std_20)
     add_test(NAME mlkem_stack_pct COMMAND test_mlkem_stack_pct)
@@ -496,13 +496,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
     add_library(test_mlkem_stack_objects OBJECT test_mlkem_stack.cpp)
     target_compile_definitions(test_mlkem_stack_objects PRIVATE ${_mlkem_test_burn_definitions})
     target_include_directories(test_mlkem_stack_objects PRIVATE ${PROJECT_SOURCE_DIR}/tests
-                                                                ${PROJECT_SOURCE_DIR}/include)
+                                                                ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(test_mlkem_stack_objects PRIVATE openpqc_strict_warnings)
     target_compile_features(test_mlkem_stack_objects PRIVATE cxx_std_20)
     foreach(opt O0 O1 O2 Os)
         # a target's options come after those of the build type, so -${opt} wins
         add_library(openpqc_mlkem_${opt}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
-        target_include_directories(openpqc_mlkem_${opt}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(openpqc_mlkem_${opt}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_compile_options(openpqc_mlkem_${opt}_objects PRIVATE -${opt})
         target_compile_definitions(openpqc_mlkem_${opt}_objects PRIVATE ${_mlkem_burn_definitions})
         target_compile_features(openpqc_mlkem_${opt}_objects PRIVATE cxx_std_20)
@@ -533,7 +533,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
     #                 build with OPENPQC_MLKEM_STACK_BURN=OFF they repeat mlkem_stack and mlkem_stack_pct.
     foreach(variant noburn noburn_pct)
         add_library(openpqc_mlkem_${variant}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
-        target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_compile_definitions(openpqc_mlkem_${variant}_objects PRIVATE OPENPQC_MLKEM_NO_STACK_BURN)
         target_compile_features(openpqc_mlkem_${variant}_objects PRIVATE cxx_std_20)
         target_link_libraries(openpqc_mlkem_${variant}_objects PRIVATE openpqc_strict_warnings)
@@ -541,7 +541,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
                                                    $<TARGET_OBJECTS:openpqc_mlkem_${variant}_objects>)
         target_compile_definitions(test_mlkem_stack_${variant} PRIVATE OPENPQC_TEST_NO_STACK_BURN)
         target_include_directories(test_mlkem_stack_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/tests
-                                                                       ${PROJECT_SOURCE_DIR}/include)
+                                                                       ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_link_libraries(test_mlkem_stack_${variant} PRIVATE openpqc_core_testrng openpqc_strict_warnings)
         target_compile_features(test_mlkem_stack_${variant} PRIVATE cxx_std_20)
         set_target_properties(test_mlkem_stack_${variant} PROPERTIES LINKER_LANGUAGE CXX)
@@ -566,7 +566,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
         target_link_libraries(test_mlkem_thread_stack PRIVATE openpqc_mlkem openpqc_strict_warnings Threads::Threads)
         add_executable(test_mlkem_thread_stack_pct test_mlkem_thread_stack.cpp
                        $<TARGET_OBJECTS:openpqc_mlkem_pct_objects>)
-        target_include_directories(test_mlkem_thread_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(test_mlkem_thread_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_link_libraries(test_mlkem_thread_stack_pct PRIVATE openpqc_core openpqc_strict_warnings
                                                                   Threads::Threads)
         target_compile_definitions(test_mlkem_thread_stack_pct PRIVATE OPENPQC_TEST_PCT)

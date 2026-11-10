@@ -6,7 +6,7 @@
 // Encaps with m given (Algorithm 20, lines 5-6, behind the check of Section 7.2): FIPS 203, Section 3.3, says
 // that such interfaces "should not be made available to applications other than for testing purposes", so they
 // are compiled apart from the library openpqc, which never contains them (review finding M13). Built with the
-// same definitions as mlkem.cpp (include/ML/KEM/CMakeLists.txt), so that the two agree.
+// same definitions as mlkem.cpp (src/ML/KEM/CMakeLists.txt), so that the two agree.
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
 

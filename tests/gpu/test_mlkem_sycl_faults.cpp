@@ -5,7 +5,7 @@
 // outputs, the zeroization of the workspace, the failed state of a context, and the RNG failure path
 //
 // A white-box test, as test_slhdsa_sycl_faults.cpp: this translation unit compiles the backend itself
-// (include/ML/KEM/sycl/mlkem_sycl.cpp), with its kernel launches -- its for_each_item and for_each_team, through
+// (src/ML/KEM/sycl/mlkem_sycl.cpp), with its kernel launches -- its for_each_item and for_each_team, through
 // which every stage kernel is queued -- renamed to versions that count them and can leave them out (kernels that
 // never run, as when the device faults part way through a call) or throw instead (a launch that the SYCL runtime
 // refuses), its own device_malloc and device_free renamed to versions that count the device memory it holds, and

@@ -56,7 +56,7 @@ endif()
 
 # Randomness from the application (OPENPQC_EXTERNAL_RANDOMBYTES): openpqc_core, and with it every library,
 # calls the application's opqc_external_randombytes() where it would ask the operating system
-# (Core/opqc_platform.h, include/Core/CMakeLists.txt). The project's own tests, benchmarks and demos link
+# (Core/opqc_platform.h, src/Core/CMakeLists.txt). The project's own tests, benchmarks and demos link
 # the libraries without such a function, so they are not built then; the tests cover this configuration
 # through the test variants openpqc_*_testrng, which are built that way.
 if(OPENPQC_EXTERNAL_RANDOMBYTES AND (OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHMARKS OR OPENPQC_BUILD_EXAMPLES))
@@ -92,11 +92,11 @@ include(GNUInstallDirs)
 # include each other by these paths, and the directories' names are too general for <prefix>/include itself.
 set(OPENPQC_INSTALL_INCLUDEDIR ${CMAKE_INSTALL_INCLUDEDIR}/openpqc)
 
-# The library's inline namespace carries the version (include/Core/abi.hpp): it must be this project's
-file(STRINGS include/Core/abi.hpp _openpqc_abi_version REGEX "^#define OPENPQC_ABI_VERSION ")
+# The library's inline namespace carries the version (src/Core/abi.hpp): it must be this project's
+file(STRINGS src/Core/abi.hpp _openpqc_abi_version REGEX "^#define OPENPQC_ABI_VERSION ")
 set(OPENPQC_ABI_VERSION v${PROJECT_VERSION_MAJOR}_${PROJECT_VERSION_MINOR}_${PROJECT_VERSION_PATCH})
 if(NOT _openpqc_abi_version STREQUAL "#define OPENPQC_ABI_VERSION ${OPENPQC_ABI_VERSION}")
-    message(FATAL_ERROR "include/Core/abi.hpp: OPENPQC_ABI_VERSION is not ${OPENPQC_ABI_VERSION}, the version of "
+    message(FATAL_ERROR "src/Core/abi.hpp: OPENPQC_ABI_VERSION is not ${OPENPQC_ABI_VERSION}, the version of "
                         "project(OpenPQC VERSION ${PROJECT_VERSION}): change it with the version")
 endif()
 
@@ -212,7 +212,7 @@ function(_openpqc_sycl_backend name source)
     cmake_parse_arguments(_b "" "" "DEFINITIONS" ${ARGN})
     add_library(${name}_objects OBJECT ${source})
     target_include_directories(${name}_objects PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
     target_compile_features(${name}_objects PRIVATE cxx_std_20)
     if(_b_DEFINITIONS)
         target_compile_definitions(${name}_objects PUBLIC ${_b_DEFINITIONS})
@@ -222,7 +222,7 @@ function(_openpqc_sycl_backend name source)
 
     add_library(${name} STATIC EXCLUDE_FROM_ALL $<TARGET_OBJECTS:${name}_objects>)
     target_include_directories(${name} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
     if(_b_DEFINITIONS)
         target_compile_definitions(${name} PUBLIC ${_b_DEFINITIONS})
     endif()
@@ -239,7 +239,7 @@ if(OPENPQC_CUPQC_DIR AND OPENPQC_BUILD_BENCHMARKS)
     find_package(CUDAToolkit REQUIRED)
 endif()
 
-# The groups (include/<group>/), from the primitives shared by every scheme up
+# The groups (src/<group>/), from the primitives shared by every scheme up
 # to the schemes. Each scheme has a C11 math core (header-only, shared by the
 # CPU code and the GPU kernels) and a C++20 scheme layer:
 #   Core    primitives shared by all schemes: FIPS 202 (Keccak, SHA-3, SHAKE),
@@ -250,10 +250,10 @@ endif()
 #   ML/DSA  FIPS 204
 #   SLH     the stateless hash-based schemes
 #   SLH/DSA FIPS 205
-add_subdirectory(include/Core)
-add_subdirectory(include/ML/KEM)
-add_subdirectory(include/ML/DSA)
-add_subdirectory(include/SLH/DSA)
+add_subdirectory(src/Core)
+add_subdirectory(src/ML/KEM)
+add_subdirectory(src/ML/DSA)
+add_subdirectory(src/SLH/DSA)
 add_subdirectory(include/openpqc)   # the common C API: openpqc/common.h, kem.h, sig.h, testing.h
 
 # ML-KEM with the pair-wise consistency test after KeyGen (FIPS 140-3; FIPS 203, Section 7.1, item 4):
@@ -276,7 +276,7 @@ message(STATUS "OpenPQC ML-KEM stack burn after every call: ${OPENPQC_MLKEM_STAC
 
 # ML-DSA with the pair-wise consistency test after KeyGen (FIPS 140-3; scheme/ml_dsa.hpp), in the same way:
 # the definition goes to the library's own objects only (openpqc_mldsa and openpqc_mldsa_testrng, and the
-# GPU backend openpqc_mldsa_sycl, include/ML/DSA/CMakeLists.txt), and KeyGen then signs a fixed message
+# GPU backend openpqc_mldsa_sycl, src/ML/DSA/CMakeLists.txt), and KeyGen then signs a fixed message
 # with the new sk and verifies it with the new pk (deterministically: no randomness is drawn).
 if(OPENPQC_MLDSA_KEYGEN_PCT)
     target_compile_definitions(openpqc_mldsa_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
@@ -303,7 +303,7 @@ add_library(openpqc::openpqc ALIAS openpqc)
 # Installed, the headers are <prefix>/include/openpqc/{openpqc,Core,ML,SLH}/...: <prefix>/include for
 # "openpqc/common.h" and the like, <prefix>/include/openpqc for "Core/...", "ML/..." and "SLH/..."
 target_include_directories(openpqc PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
     $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(openpqc INTERFACE cxx_std_20)
 if(WIN32)
@@ -374,7 +374,7 @@ if(OPENPQC_HAVE_SYCL)
             openpqc_sycl_link(${name} PUBLIC)
         endif()
         target_include_directories(${name} PUBLIC
-            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
             $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
         if(OPENPQC_SLHDSA_SYCL_SETS)
             target_compile_definitions(${name} PUBLIC OPENPQC_SLHDSA_SYCL_SETS=${OPENPQC_SLHDSA_SYCL_SETS})
@@ -401,8 +401,8 @@ endif()
 
 # The C++ learning code for ML-KEM's arithmetic (ML/KEM/reduce, ML/KEM/ntt): a Montgomery-form NTT from the
 # time before the math core, kept for its tests only and in no library (review findings F008, F153)
-add_library(openpqc_learning STATIC EXCLUDE_FROM_ALL include/ML/KEM/reduce.cpp include/ML/KEM/ntt.cpp)
-target_include_directories(openpqc_learning PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+add_library(openpqc_learning STATIC EXCLUDE_FROM_ALL src/ML/KEM/reduce.cpp src/ML/KEM/ntt.cpp)
+target_include_directories(openpqc_learning PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
 target_compile_features(openpqc_learning PUBLIC cxx_std_20)
 target_link_libraries(openpqc_learning PRIVATE openpqc_warnings)
 
@@ -446,7 +446,7 @@ install(EXPORT OpenPQCTargets NAMESPACE OpenPQC:: DESTINATION ${CMAKE_INSTALL_LI
 
 # The headers: Core's C and C++ APIs, and of each scheme the C API and its C++ API (the files they include). The
 # scheme layers, the math cores and the GPU backends' internals stay in the source tree.
-install(DIRECTORY include/Core/ DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core
+install(DIRECTORY src/Core/ DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp" PATTERN "sycl" EXCLUDE)
 install(FILES ${PROJECT_BINARY_DIR}/include/Core/openpqc_version.h DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core)
 # The common API (openpqc/*.h, *.hpp), without the testing interfaces (openpqc/testing.h, testing.hpp), whose
@@ -460,7 +460,7 @@ foreach(_openpqc_scheme IN ITEMS "ML/KEM:mlkem" "ML/DSA:mldsa" "SLH/DSA:slhdsa")
     list(GET _openpqc_parts 1 _openpqc_name)
     string(TOUPPER ${_openpqc_name} _openpqc_upper)
     if(OPENPQC_WITH_${_openpqc_upper})
-        install(FILES include/${_openpqc_dir}/openpqc_${_openpqc_name}.h include/${_openpqc_dir}/${_openpqc_name}.hpp
+        install(FILES src/${_openpqc_dir}/openpqc_${_openpqc_name}.h src/${_openpqc_dir}/${_openpqc_name}.hpp
                 DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/${_openpqc_dir})
     endif()
 endforeach()
@@ -472,8 +472,8 @@ if(OPENPQC_HAVE_SYCL)
             DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR})
     install(FILES include/openpqc/sycl/device.hpp include/openpqc/sycl/interop.hpp
             DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/sycl)
-    install(FILES include/Core/sycl/opqc_sycl_sha2.hpp include/Core/sycl/opqc_sycl_sponge.hpp
-                  include/Core/sycl/opqc_sycl_team.hpp
+    install(FILES src/Core/sycl/opqc_sycl_sha2.hpp src/Core/sycl/opqc_sycl_sponge.hpp
+                  src/Core/sycl/opqc_sycl_team.hpp
             DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core/sycl)
 endif()
 

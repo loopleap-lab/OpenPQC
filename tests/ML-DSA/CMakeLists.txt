@@ -31,12 +31,12 @@ add_test(NAME mldsa_differential COMMAND test_mldsa_differential)
 #                    test is compiled in and that its result is used, which mldsa_pct alone cannot show.
 foreach(variant pct pct_fail)
     add_library(openpqc_mldsa_${variant}_objects OBJECT ${OPENPQC_MLDSA_SOURCES})
-    target_include_directories(openpqc_mldsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(openpqc_mldsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_compile_definitions(openpqc_mldsa_${variant}_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
     target_compile_features(openpqc_mldsa_${variant}_objects PRIVATE cxx_std_20)
     target_link_libraries(openpqc_mldsa_${variant}_objects PRIVATE openpqc_strict_warnings)
     add_executable(test_mldsa_${variant} test_mldsa_pct.c $<TARGET_OBJECTS:openpqc_mldsa_${variant}_objects>)
-    target_include_directories(test_mldsa_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(test_mldsa_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(test_mldsa_${variant} PRIVATE openpqc_core openpqc_strict_warnings)
     set_target_properties(test_mldsa_${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
                                                            C_EXTENSIONS OFF)
@@ -50,7 +50,7 @@ target_compile_definitions(test_mldsa_pct_fail PRIVATE OPENPQC_TEST_EXPECT_PCT_F
 #                    linker must not let them take the place of the library's, whose KeyGen must still fail
 add_executable(test_mldsa_pct_odr test_mldsa_pct_odr.cpp test_mldsa_pct.c
                                   $<TARGET_OBJECTS:openpqc_mldsa_pct_fail_objects>)
-target_include_directories(test_mldsa_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(test_mldsa_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_mldsa_pct_odr PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
 target_compile_features(test_mldsa_pct_odr PRIVATE cxx_std_20)
 target_link_libraries(test_mldsa_pct_odr PRIVATE openpqc_core openpqc_strict_warnings)
@@ -114,7 +114,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Cla
         target_link_libraries(test_mldsa_thread_stack PRIVATE openpqc_mldsa openpqc_strict_warnings Threads::Threads)
         add_executable(test_mldsa_thread_stack_pct test_mldsa_thread_stack.cpp
                        $<TARGET_OBJECTS:openpqc_mldsa_pct_objects>)
-        target_include_directories(test_mldsa_thread_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(test_mldsa_thread_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_link_libraries(test_mldsa_thread_stack_pct PRIVATE openpqc_core openpqc_strict_warnings
                                                                   Threads::Threads)
         target_compile_definitions(test_mldsa_thread_stack_pct PRIVATE OPENPQC_TEST_PCT)
@@ -184,7 +184,7 @@ foreach(mode 2 3 5)
     # the OpenPQC target's implementation of the reference's API, with OpenPQC's warnings
     add_library(openpqc_mldsa_target${mode} OBJECT ${_target}/openpqc_target.c)
     target_compile_definitions(openpqc_mldsa_target${mode} PRIVATE DILITHIUM_MODE=${mode})
-    target_include_directories(openpqc_mldsa_target${mode} PRIVATE ${_target} ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(openpqc_mldsa_target${mode} PRIVATE ${_target} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(openpqc_mldsa_target${mode} PRIVATE openpqc_strict_warnings)
     set_target_properties(openpqc_mldsa_target${mode} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
                                                                  C_EXTENSIONS OFF)
@@ -324,7 +324,7 @@ elseif(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
             set(_objects openpqc_mldsa_ct_${opt}_objects)
         endif()
         add_library(${_objects} OBJECT ${OPENPQC_MLDSA_SOURCES})
-        target_include_directories(${_objects} PRIVATE ${PROJECT_SOURCE_DIR}/include ${OPENPQC_VALGRIND_INCLUDE_DIR})
+        target_include_directories(${_objects} PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src ${OPENPQC_VALGRIND_INCLUDE_DIR})
         target_compile_definitions(${_objects} PRIVATE OPQC_CT_TESTING)
         target_compile_features(${_objects} PRIVATE cxx_std_20)
         # a target's options come after those of the build type, so -${opt} wins
@@ -385,7 +385,8 @@ if(Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     endif()
     add_test(NAME mldsa_regs_asm
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_regs_asm.py
-                     --source ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp --include ${PROJECT_SOURCE_DIR}/include
+                     --source ${PROJECT_SOURCE_DIR}/src/ML/DSA/mldsa.cpp
+                     --include ${PROJECT_SOURCE_DIR}/include --include ${PROJECT_SOURCE_DIR}/src
                      --work ${CMAKE_CURRENT_BINARY_DIR}/regs_asm "--objdump=${CMAKE_OBJDUMP}" ${_regs_compilers}
                      "--flags=${_regs_flags}" ${_regs_object})
     set_tests_properties(mldsa_regs_asm PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900)

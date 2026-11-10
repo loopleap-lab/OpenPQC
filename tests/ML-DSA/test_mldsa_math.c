@@ -4,7 +4,7 @@
  */
 
 /*
- * test_mldsa_math.c -- tests of the ML-DSA math core (include/ML/DSA/math)
+ * test_mldsa_math.c -- tests of the ML-DSA math core (src/ML/DSA/math)
  *
  * Every function is compared with a direct transcription of its definition in
  * FIPS 204, using plain integer arithmetic (%, /, branches) that the library

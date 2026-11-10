@@ -69,7 +69,7 @@ measuring laptop: `bench/results/` is git-ignored, so they are not part of the p
   - The cuPQC SDK licence classifies locally measured cuPQC results as NVIDIA-confidential, so none appear in this
     repository (§7.4).
 - **ML-DSA followed the same plan** (§10.3; design, experiments and measurements in
-  [include/ML/DSA/README.md](../include/ML/DSA/README.md)):
+  [src/ML/DSA/README.md](../src/ML/DSA/README.md)):
   - On the RTX 3050, ML-DSA-65 reaches 716 thousand KeyGen/s, 131 thousand Sign/s and 710 thousand Verify/s
     (kernel-only, batch 16384, DPC++); end to end that is 3.1–4.7× the AVX2 reference on all 8 CPU threads. These
     figures date from October 2026, before verification began to zeroize what it computes, and were not measured
@@ -82,7 +82,7 @@ measuring laptop: `bench/results/` is git-ignored, so they are not part of the p
     OpenMP path); the reproducer for the ptxas one is kept
     locally in `docs/toolchain-bugs/` and is not part of the published repository.
 - **SLH-DSA (FIPS 205) is pure hashing** (§12; design and tests in
-  [include/SLH/DSA/README.md](../include/SLH/DSA/README.md)):
+  [src/SLH/DSA/README.md](../src/SLH/DSA/README.md)):
   - The baseline backend covers all twelve parameter sets and is byte-identical to the CPU library on all seven
     device/compiler combinations. The optimisation experiments planned after it have not been run (§10.6).
   - On the RTX 3050, from batch 64 (f sets) or 8 (s sets) on, Sign already runs at 80–108 % and KeyGen at 89–110 % of
@@ -227,7 +227,7 @@ The tables use these terms:
 
 | Primitive | Parallel structure | Recommended GPU mapping | Pitfalls | OpenPQC status |
 |---|---|---|---|---|
-| Keccak-f[1600] | 24 dependent rounds on 25 × 64-bit lanes; independent instances | **Batches of independent hashes:** thread per sponge, state in registers. The 24 rounds need not be unrolled: unrolling 2 or 24 of them made the DPC++ kernels slower. **Long serial hashes:** lane-parallel Keccak (warp shuffles, or shared memory) | Register pressure: the state alone is 50 × 32-bit registers, and the SYCL hashing kernels use 72–88 (DPC++, sm_86). On shader targets without fast 64-bit integers, use 32-bit lane pairs | SYCL: Core's C11 permutation with the state in registers ([`opqc_keccak.h`](../include/Core/opqc_keccak.h), [`opqc_sycl_sponge.hpp`](../include/Core/sycl/opqc_sycl_sponge.hpp)) |
+| Keccak-f[1600] | 24 dependent rounds on 25 × 64-bit lanes; independent instances | **Batches of independent hashes:** thread per sponge, state in registers. The 24 rounds need not be unrolled: unrolling 2 or 24 of them made the DPC++ kernels slower. **Long serial hashes:** lane-parallel Keccak (warp shuffles, or shared memory) | Register pressure: the state alone is 50 × 32-bit registers, and the SYCL hashing kernels use 72–88 (DPC++, sm_86). On shader targets without fast 64-bit integers, use 32-bit lane pairs | SYCL: Core's C11 permutation with the state in registers ([`opqc_keccak.h`](../src/Core/opqc_keccak.h), [`opqc_sycl_sponge.hpp`](../src/Core/sycl/opqc_sycl_sponge.hpp)) |
 | SHA3-256 / SHA3-512 (H, G) | One serial absorb chain of ⌈length / rate⌉ permutations per message | Thread per message, absorbing directly from global memory with aligned 8-byte loads. Every ML-KEM byte string and field offset is a multiple of 8 bytes | Long inputs (ek, c) make the chain the latency floor | SYCL (G, H(ek), the dk hash check) |
 | SHAKE128 (SampleNTT, ExpandA) | k² (ML-KEM) or k·l (ML-DSA) independent streams per operation | Thread per stream across the batch, fused with rejection sampling | Data-dependent output length (public data only); coalescing of the scattered outputs (§4.4) | SYCL |
 | SHAKE256 (PRF/CBD, J, ExpandS, ExpandMask) | One stream per polynomial or per hash | Thread per stream. Fixed-length outputs (CBD, ExpandMask) need no rejection | Outputs are secret: keep them in registers, or in a workspace that is cleared after the call | SYCL (PRF, J; CBD runs in the arithmetic stage) |
@@ -316,7 +316,7 @@ arithmetic, which is the math core's.
 
 ## 4. ML-KEM on SYCL
 
-Code: [`include/ML/KEM/sycl/`](../include/ML/KEM/sycl) and [`include/Core/sycl/`](../include/Core/sycl). The backend is
+Code: [`src/ML/KEM/sycl/`](../src/ML/KEM/sycl) and [`src/Core/sycl/`](../src/Core/sycl). The backend is
 part of the GPU library `openpqc_sycl` (`OpenPQC::sycl`), under the GPU API of §4.2, built when CMake finds a SYCL
 compiler (`OPENPQC_SYCL`, default `AUTO`); `openpqc_mlkem_sycl` is its static copy for the benchmarks.
 
@@ -1378,7 +1378,7 @@ these is needed for the GPUs SYCL already covers.
 ### 10.3 ML-DSA
 
 Done in October 2026; the design, the experiments and the measurements are in
-[include/ML/DSA/README.md](../include/ML/DSA/README.md), the raw data in
+[src/ML/DSA/README.md](../src/ML/DSA/README.md), the raw data in
 `bench/results/2026-10-20-rtx3050-laptop-mldsa/`. Against
 the plan:
 
@@ -1413,7 +1413,7 @@ Still open:
   argument specialization (`ACPP_ADAPTIVITY_LEVEL=2`) gains at most 6 %. Not yet investigated at the PTX level.
 - **Verification.** Constant-time trace testing of the kernels (§8); ACVP vectors through the GPU path.
 
-Since then (November 2026, after the review of October 2026; the header `include/ML/DSA/sycl/openpqc_mldsa_sycl.h`
+Since then (November 2026, after the review of October 2026; the header `src/ML/DSA/sycl/openpqc_mldsa_sycl.h`
 states the contract):
 
 - **Status.** Verification requires `status` (NULL or misaligned: -1); every entry is set to
@@ -1575,11 +1575,11 @@ build/bench/bench_cupqc_mlkem 512,768,1024 1,32,128,512,2048,8192,32768 15 32,64
 
 ## 12. SLH-DSA on SYCL
 
-Done in October 2026, as a baseline ("E0"): `include/SLH/DSA/sycl/` runs batched KeyGen, Sign and Verify (also
+Done in October 2026, as a baseline ("E0"): `src/SLH/DSA/sycl/` runs batched KeyGen, Sign and Verify (also
 HashSLH-DSA on caller-computed pre-hashes, the internal functions and one-key batches) for all twelve parameter sets of
 FIPS 205, byte-identical to the CPU library on all seven device/compiler combinations of §9 (12 sets, 36 test
 configurations per device, re-run on 2026-10-25). The design, the tests and the review findings are in
-[include/SLH/DSA/README.md](../include/SLH/DSA/README.md#gpu-backend-sycl); the raw data, the exact commands and every
+[src/SLH/DSA/README.md](../src/SLH/DSA/README.md#gpu-backend-sycl); the raw data, the exact commands and every
 table derived from them (`tables.md`) are in
 `bench/results/2026-10-23-rtx3050-laptop-slhdsa/`. The
 optimisation experiments that were to follow (E1–E6, §10.6) have not been run. The figures below were measured before

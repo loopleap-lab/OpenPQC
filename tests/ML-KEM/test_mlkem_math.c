@@ -4,7 +4,7 @@
  */
 
 /*
- * test_mlkem_math.c -- tests of the ML-KEM math core (include/ML/KEM/math)
+ * test_mlkem_math.c -- tests of the ML-KEM math core (src/ML/KEM/math)
  *
  * Every function is compared with a direct transcription of its definition in
  * FIPS 203, using plain integer arithmetic (%, /, rational rounding) that the

@@ -58,9 +58,9 @@
 #include <thread>
 #include <vector>
 
-#include "../../include/SLH/DSA/openpqc_slhdsa.h"
+#include "../../src/SLH/DSA/openpqc_slhdsa.h"
 #include "../../include/openpqc/testing.h"
-#include "../../include/SLH/DSA/sycl/openpqc_slhdsa_sycl.h"
+#include "../../src/SLH/DSA/sycl/openpqc_slhdsa_sycl.h"
 #include "../bench_common.hpp"
 
 namespace {

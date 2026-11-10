@@ -20,7 +20,7 @@
 // Prints CSV: impl,level,op,stage,batch,median_s,share
 //   (level: the parameter-set id 1-12; op: keygen, sign, sign-1key, verify, verify-1key; median_s: the
 //    median over the trials of the stage's time; share: that median over the sum of the stages' medians)
-#include "../../include/SLH/DSA/sycl/slhdsa_sycl.cpp"
+#include "../../src/SLH/DSA/sycl/slhdsa_sycl.cpp"
 
 #include <cstdio>
 #include <functional>

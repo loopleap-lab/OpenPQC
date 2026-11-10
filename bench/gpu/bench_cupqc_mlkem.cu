@@ -24,7 +24,7 @@
 
 #include <pk.hpp>
 
-#include "../../include/ML/KEM/openpqc_mlkem.h"
+#include "../../src/ML/KEM/openpqc_mlkem.h"
 #include "../../include/openpqc/testing.h"
 #include "../bench_common.hpp"
 

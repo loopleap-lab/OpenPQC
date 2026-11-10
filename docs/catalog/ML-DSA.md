@@ -5,7 +5,7 @@ is marked "(inferred)".
 
 > **OpenPQC's own ML-DSA (written after this analysis).** This catalog studied mldsa-native before OpenPQC had an
 > ML-DSA; the implementation that followed uses CRYSTALS-Dilithium as its oracle, not mldsa-native, and is described in
-> [include/ML/DSA/README.md](../../include/ML/DSA/README.md). Points of it that this catalog does not cover, as of
+> [src/ML/DSA/README.md](../../src/ML/DSA/README.md). Points of it that this catalog does not cover, as of
 > November 2026: every signing function refuses a private key whose s1 or s2 lies outside [−η, η]
 > (`OPENPQC_ERR_INVALID_SECRET_KEY`, -5, with an all-zero signature; FIPS 204 §7.2 runs skDecode only on trusted input),
 > and `openpqc_mldsaNN_check_sk` / `check_secret_key` and `openpqc_mldsaNN_check_keypair` / `check_key_pair` check a

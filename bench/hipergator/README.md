@@ -21,7 +21,7 @@ no GPUs: use it for the builds and the CPU jobs. Whole Turin nodes are rarely id
 HiPerGator runs RHEL 9 (glibc 2.34), and its oneAPI module (2025.1) has no CUDA adapter: `sycl-ls` finds no NVIDIA
 GPU. The DPC++ nightlies of [intel/llvm](https://github.com/intel/llvm/releases) have one, but they need glibc ≥ 2.35.
 So the SYCL code is compiled and run with DPC++ `nightly-2026-10-11` (the version of the measurements in
-`include/ML/DSA/README.md`) inside the image `nvidia/cuda:12.9.1-devel-ubuntu24.04` (Apptainer, `--nv`), ahead of time
+`src/ML/DSA/README.md`) inside the image `nvidia/cuda:12.9.1-devel-ubuntu24.04` (Apptainer, `--nv`), ahead of time
 for one GPU architecture per tree. The CPU benchmarks and the cuPQC baselines are built natively with GCC 14 and
 CUDA 12.9 (modules), and `run.sh` runs each kind where it was built, appending to the same results directory.
 

@@ -6,13 +6,13 @@
 /*
  * opqc_common.h -- conventions shared by the OpenPQC C11 math core
  *
- * The math core (the opqc_ headers in include/Core and the headers in
- * include/<scheme>/math) is header-only: every function is `static inline`.
+ * The math core (the opqc_ headers in src/Core and the headers in
+ * src/<scheme>/math) is header-only: every function is `static inline`.
  * One source therefore serves three compilers:
  *
  *   - C11 (the C API and any C caller),
- *   - C++20 (the scheme layer, e.g. include/ML/KEM/mlkem.hpp),
- *   - SYCL device compilers (the GPU kernels in include/<scheme>/sycl/).
+ *   - C++20 (the scheme layer, e.g. src/ML/KEM/mlkem.hpp),
+ *   - SYCL device compilers (the GPU kernels in src/<scheme>/sycl/).
  *
  * To stay valid in all three, the math core does not use `restrict`,
  * `[static n]` array parameters, compound literals, designated initializers,

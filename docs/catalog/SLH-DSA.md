@@ -12,9 +12,9 @@ Path prefixes used throughout:
 | Prefix | Meaning |
 |---|---|
 | `F205` | `NIST.FIPS.205.pdf` (13 August 2024; sha256 `8ef34228…`, byte-identical to the copy NIST serves today, `workspace:errata-acvp.md` §1.1). Cited by section, algorithm and pseudocode line; "p. N" is the **printed** page, the PDF page is N + 10. Every algorithm, figure and table was transcribed from the rendered pages and re-checked by a second agent (`workspace:fips205-partA.md` pp. 1–16, `fips205-partB.md` pp. 17–32, `fips205-partC.md` pp. 33–51); Table 2 and §11.2.2 were re-read on the rendered pages for this catalog |
-| `F204` | FIPS 204, cited through the line comments of OpenPQC's ML-DSA code (`include/ML/DSA/scheme/ml_dsa.hpp`) |
+| `F204` | FIPS 204, cited through the line comments of OpenPQC's ML-DSA code (`src/ML/DSA/scheme/ml_dsa.hpp`) |
 | `SPX` | `reference/repos/sphincsplus`: sphincsplus, branch `bas/fips205`, commit `ef36d20ff3588324ad69f844507b8217f008f35a` (FIPS 205 final with contexts, HashSLH-DSA and the internal API). Unmodified, untracked checkout; its `.git` file points to a module path that no longer exists, so git is not run inside it |
-| (none) | the OpenPQC repository at `7b0dc5a` (working tree of 2026-10-21), e.g. `include/Core/opqc_sha2.h:150` |
+| (none) | the OpenPQC repository at `7b0dc5a` (working tree of 2026-10-21), e.g. `src/Core/opqc_sha2.h:150` |
 | `ACVP` | NIST ACVP-Server release `v1.1.0.43`, `gen-val/json-files/SLH-DSA-{keyGen,sigGen,sigVer}-FIPS205/` |
 | `COST` | `workspace:cost_model.py` (stdlib Python; `python3 -I cost_model.py --markdown --simulate`) and its write-up `workspace:cost-model.md`: every count in §9. `--simulate` runs a line-by-line transcription of Algorithms 4–20 and a port of the reference's control flow with a toy hash and checks the counts, the input lengths and that both produce the same signature bytes |
 | `STYLE` | `workspace:openpqc-style.md`: the conventions SLH-DSA must follow, with decisions marked [SLH] (fixed) and [open] |
@@ -29,15 +29,15 @@ Classification legend (used in every catalog row; same meaning as in [ML-DSA.md]
   and/or FN-DSA (FIPS 206). One implementation in Core serves all.
 * **Core (pattern)**: same shape, different constants, byte or bit order, or word size. Each scheme keeps its own
   code; at most a shared skeleton (GPU launch shape, test pattern).
-* **SLH-DSA-specific**: only SLH-DSA needs it; lives in `include/SLH/DSA`.
+* **SLH-DSA-specific**: only SLH-DSA needs it; lives in `src/SLH/DSA`.
 
-Intended homes (fixed by STYLE §2 and §7.4 unless marked [open]): **math core** = `include/SLH/DSA/math/*.h`, C11,
+Intended homes (fixed by STYLE §2 and §7.4 unless marked [open]): **math core** = `src/SLH/DSA/math/*.h`, C11,
 header-only, shared by CPU code and SYCL kernels (`slhdsa_encode.h`, `slhdsa_address.h`, `slhdsa_sha2.h`); **scheme
-layer** = `include/SLH/DSA/scheme/*.hpp`, C++20 templates over the parameter set, one function per FIPS 205 algorithm
+layer** = `src/SLH/DSA/scheme/*.hpp`, C++20 templates over the parameter set, one function per FIPS 205 algorithm
 (`parameter_sets.hpp`, `address.hpp`, `crypto_functions.hpp`, `wots.hpp`, `xmss.hpp`, `hypertree.hpp`, `fors.hpp`,
 `slhdsa_internal.hpp`, `slh_dsa.hpp`); **interfaces** = `openpqc_slhdsa.h`, `slhdsa.cpp`, `slhdsa.hpp`; **GPU** =
-`sycl/openpqc_slhdsa_sycl.h`, `sycl/slhdsa_sycl.cpp`; **Core** = `include/Core`. `include/SLH/DSA/` exists and is empty.
-No `include/SLH/math` is needed while SLH-DSA is the only scheme of its group (STYLE §2).
+`sycl/openpqc_slhdsa_sycl.h`, `sycl/slhdsa_sycl.cpp`; **Core** = `src/Core`. `src/SLH/DSA/` exists and is empty.
+No `src/SLH/math` is needed while SLH-DSA is the only scheme of its group (STYLE §2).
 
 Formulation rule (the user's): the CPU code follows the FIPS 205 text (recursive `xmss_node`/`fors_node`, the full
 `PK.seed ‖ toByte(0, 64 − n) ‖ ADRS^c ‖ M` SHA-256 input, `fors_pkFromSig` after `fors_sign`); faster forms (cached
@@ -103,20 +103,20 @@ WOTS+ message, V = 15·len − S); **sphincsplus** = where the reference does it
 | T_l(PK.seed, ADRS, M_l) → 𝔹^n | as above | as H with l·n input bytes (l = len for WOTS_PK, l = k for FORS_ROOTS) | `crypto_functions.hpp` `T_l` | `thash(…, inblocks = l, …)` | SLH-DSA-specific |
 | ADRS (32 bytes) and Table 1 member functions | §4.2–4.3 pp. 11–14, Figs. 2–9, Table 1 | layer [0:4], tree [4:16] (toByte(t, 12)), type [16:20], then key pair / chain or tree height / hash or tree index; types WOTS_HASH 0 … FORS_PRF 6; only `setTypeAndClear` clears (bytes [20:32]); getters only for key pair and tree index | `math/slhdsa_address.h` (C11 setters `slhdsa_adrs_set_*`, types `SLHDSA_WOTS_HASH` …) and `scheme/address.hpp` (`struct Adrs`, `ADRS.set_layer_address(d − 1)`) | `SPX/ref/address.c:11-101`: single-byte pokes at family-specific offsets (`SPX/ref/shake_offsets.h:9-16`), `set_type` (`:33`) clears nothing; byte-identical only because callers set every field | SLH-DSA-specific |
 | ADRS^c (22 bytes) and Table 3 | §11.2 pp. 44–45, Fig. 18, Table 3 | ADRS^c = ADRS[3] ‖ ADRS[8:16] ‖ ADRS[19] ‖ ADRS[20:32]; hashed by every SHA2 F, H, T_l, PRF. The dropped bytes are always 0 for the approved sets, so a 32-byte ADRS compressed at hash time equals Table 3's stored form | `slhdsa_address.h` `slhdsa_adrs_compress`; for kernels, ADRS as a few integers and their SHAKE lanes / SHA-2 words (GPUINFRA §3.3 item 3) | the SHA2 build stores the address compressed (`SPX/ref/sha2_offsets.h:9-16`) and hashes its first 22 bytes | SLH-DSA-specific |
-| Trunc_l(X) | §2.3 p. 5 | X[0 : l] | finalize with an output length (`opqc_sha256_finalize(s, out, outlen)`, `include/Core/opqc_sha2.h:326`) | — | Core (identical): already expressible |
+| Trunc_l(X) | §2.3 p. 5 | X[0 : l] | finalize with an output length (`opqc_sha256_finalize(s, out, outlen)`, `src/Core/opqc_sha2.h:326`) | — | Core (identical): already expressible |
 | MGF1-SHA-256 / -512 | §11.2 p. 44 → RFC 8017 B.2.1 | Hash(seed ‖ I2OSP(c, 4)) for c = 0, 1, …, first m bytes. m ≤ 49: two SHA-256 outputs for 128f (m = 34), one otherwise | `math/slhdsa_sha2.h` [open: Core if a second user appears] | `SPX/ref/sha2.c:627`, `:653` | SLH-DSA-specific (no other OpenPQC scheme uses it) |
 | HMAC-SHA-256 / -512 | §11.2 → FIPS 198-1 | key SK.prf (n bytes) shorter than the block, so K0 = SK.prf ‖ 0^(B−n); inner and outer hash; Trunc_n | `math/slhdsa_sha2.h` [open, as MGF1] | `SPX/ref/hash_sha2.c:147-168` | SLH-DSA-specific (generic primitive; Core if a second user appears, e.g. an HMAC-DRBG (inferred)) |
-| SHA-256, SHA-512 | FIPS 180-4 | — | `include/Core/opqc_sha2.h` (exists) | `SPX/ref/sha2.c` | Core (identical) with HashML-DSA's pre-hash |
-| SHAKE256 (and SHAKE128, SHA3-* as pre-hash) | FIPS 202 | — | `include/Core/opqc_sha3.h`, `include/Core/xof.hpp` (exist) | `SPX/ref/fips202.c` | Core (identical) with ML-KEM, ML-DSA, FN-DSA (inferred) |
+| SHA-256, SHA-512 | FIPS 180-4 | — | `src/Core/opqc_sha2.h` (exists) | `SPX/ref/sha2.c` | Core (identical) with HashML-DSA's pre-hash |
+| SHAKE256 (and SHAKE128, SHA3-* as pre-hash) | FIPS 202 | — | `src/Core/opqc_sha3.h`, `src/Core/xof.hpp` (exist) | `SPX/ref/fips202.c` | Core (identical) with ML-KEM, ML-DSA, FN-DSA (inferred) |
 
 ### 2.1 Helpers (Algorithms 1–4)
 
 | Alg | Where | Math (I/O) | Hash calls | sphincsplus | Home | Class |
 |---|---|---|---|---|---|---|
 | 1 gen_len2(n, lg_w) | §3.1 p. 10 | w = 2^lg_w; len1 = ⌊(8n + lg_w − 1)/lg_w⌋; len2 = smallest count with w^len2 > len1(w−1) (`while capacity ≤ max_checksum`). Integer replacement of eq. 5.3; "recommended that this value be precomputed": 3 for all sets | – | precomputed table under a log-formula comment, `SPX/ref/params/params-sphincs-shake-128f.h:35-52` | `scheme/parameter_sets.hpp` constexpr with `static_assert(len2 == 3)` (or `math/slhdsa_encode.h`, STYLE §2) | SLH-DSA-specific |
-| 2 toInt(X, n) | §4.4 p. 15 | big-endian byte string → integer. Used with n = 4 (ADRS getters), ⌈(h−h′)/8⌉ ∈ {7, 8}, ⌈h′/8⌉ ∈ {1, 2}; 0 for SP 800-230 | – | `bytes_to_ull`, `SPX/ref/utils.c:35` | `math/slhdsa_encode.h` `slhdsa_to_int` | Core (pattern): FIPS 204 Algs 10–11 are little-endian; Core's `opqc_load32_be`/`opqc_load64_be` (`include/Core/opqc_sha2.h:132-139`) are toInt for n = 4, 8 |
+| 2 toInt(X, n) | §4.4 p. 15 | big-endian byte string → integer. Used with n = 4 (ADRS getters), ⌈(h−h′)/8⌉ ∈ {7, 8}, ⌈h′/8⌉ ∈ {1, 2}; 0 for SP 800-230 | – | `bytes_to_ull`, `SPX/ref/utils.c:35` | `math/slhdsa_encode.h` `slhdsa_to_int` | Core (pattern): FIPS 204 Algs 10–11 are little-endian; Core's `opqc_load32_be`/`opqc_load64_be` (`src/Core/opqc_sha2.h:132-139`) are toInt for n = 4, 8 |
 | 3 toByte(x, n) | §4.4 p. 15 | integer → n bytes, big-endian; silently truncates x ≥ 256^n. Used with n = 1 (M′ prefix), 2 (csum), 4 (ADRS words), 8 (ADRS^c tree), 11 (OIDs), 12 (ADRS tree), 32 (zero ADRS), 64−n / 128−n (zero pads) | – | `ull_to_bytes`, `u32_to_bytes`, `SPX/ref/utils.c:12`, `:24` | `math/slhdsa_encode.h` `slhdsa_to_byte` | Core (pattern) as Alg 2; toByte(x, 1) is FIPS 204's IntegerToBytes(x, 1), so the M′ prefix bytes are identical (§6) |
-| 4 base_2b(X, b, out_len) | §4.4 p. 16 | first out_len·b bits of X, **MSB first**, as integers in [0, 2^b); `total` fits a uint32 (only the low b + 7 bits matter); reads exactly ⌈out_len·b/8⌉ bytes. b = lg_w = 4 (WOTS+, out_len = len1, len2) or b = a ∈ {6, 8, 9, 12, 14} (FORS, out_len = k) | – | `base_w`, `SPX/ref/wots.c:45` (only b dividing 8); `message_to_indices`, `SPX/ref/fors.c:51-63` (`>> (~offset & 0x7)`, MSB first: matches) | `math/slhdsa_encode.h` `slhdsa_base_2b`, plus a one-digit piece for kernels | SLH-DSA-specific: FIPS 203/204 BytesToBits and `include/ML/math/ml_bitpack.h` are LSB first, so no shared code |
+| 4 base_2b(X, b, out_len) | §4.4 p. 16 | first out_len·b bits of X, **MSB first**, as integers in [0, 2^b); `total` fits a uint32 (only the low b + 7 bits matter); reads exactly ⌈out_len·b/8⌉ bytes. b = lg_w = 4 (WOTS+, out_len = len1, len2) or b = a ∈ {6, 8, 9, 12, 14} (FORS, out_len = k) | – | `base_w`, `SPX/ref/wots.c:45` (only b dividing 8); `message_to_indices`, `SPX/ref/fors.c:51-63` (`>> (~offset & 0x7)`, MSB first: matches) | `math/slhdsa_encode.h` `slhdsa_base_2b`, plus a one-digit piece for kernels | SLH-DSA-specific: FIPS 203/204 BytesToBits and `src/ML/math/ml_bitpack.h` are LSB first, so no shared code |
 
 ### 2.2 WOTS+ (Algorithms 5–8, §5)
 
@@ -143,7 +143,7 @@ redundant leaf work (`workspace:fips205-partB.md` trap 30; COST §4).
 | Alg | Where | Math (I/O) | Hash calls | sphincsplus | Home | Class |
 |---|---|---|---|---|---|---|
 | 12 ht_sign(M, SK.seed, PK.seed, idx_tree, idx_leaf) | §7.1 p. 27 | layer 0: ADRS = toByte(0, 32) with tree address idx_tree, xmss_sign of M, root = xmss_pkFromSig (l.5); layers j = 1 … d−1: idx_leaf = idx_tree mod 2^h′, then idx_tree ≫= h′ (low bits first), layer j, xmss_sign of root; root recomputed only while j < d − 1 (l.13–15) | d·xmss_sign + (d−1)·xmss_pkFromSig = (d−1) full trees + one xmss_sign | `for (i = 0; i < SPX_D; i++) merkle_sign(…)`, `SPX/ref/sign.c:149-156` (every layer a full treehash, top included) | `scheme/hypertree.hpp` `ht_sign` | SLH-DSA-specific |
-| 13 ht_verify(M, SIG_HT, PK.seed, idx_tree, idx_leaf, PK.root) | §7.2 p. 28 | d × xmss_pkFromSig, each layer's message the previous root; return node = PK.root | Σ_layers V F, d T_len, h H | `SPX/ref/sign.c:346-375` (`memcmp` at :375) | `hypertree.hpp` `ht_verify`; the compare with `opqc_ct_memcmp` (`include/Core/opqc_ct.h:102-118`), as ML-DSA compares c̃ | SLH-DSA-specific; compare Core (identical) |
+| 13 ht_verify(M, SIG_HT, PK.seed, idx_tree, idx_leaf, PK.root) | §7.2 p. 28 | d × xmss_pkFromSig, each layer's message the previous root; return node = PK.root | Σ_layers V F, d T_len, h H | `SPX/ref/sign.c:346-375` (`memcmp` at :375) | `hypertree.hpp` `ht_verify`; the compare with `opqc_ct_memcmp` (`src/Core/opqc_ct.h:102-118`), as ML-DSA compares c̃ | SLH-DSA-specific; compare Core (identical) |
 
 ### 2.5 FORS (Algorithms 14–17, §8)
 
@@ -189,7 +189,7 @@ check of F205 §3.1; the status codes are those of every scheme, `OPENPQC_OK` an
 GPU, applications call the GPU API `openpqc/sycl.h`, one context type for every parameter set, in which every call
 takes a status buffer (signing's too) and a context string over 255 bytes is refused (`OPENPQC_ERR_INVALID_ARGUMENT`);
 the backend's C API `sycl/openpqc_slhdsa_sycl.h` is internal, and the GPU's testing interfaces are in
-`openpqc/sycl_testing.h` (`OpenPQC::sycl_testing`). [include/SLH/DSA/README.md](../../include/SLH/DSA/README.md)
+`openpqc/sycl_testing.h` (`OpenPQC::sycl_testing`). [src/SLH/DSA/README.md](../../src/SLH/DSA/README.md)
 describes it.)
 
 ### 2.8 Secrets, public values, destruction (F205 §3.1)
@@ -201,7 +201,7 @@ describes it.)
 * **Secret**: SK.seed, SK.prf, addrnd/opt_rand, every PRF output, chain values below the signed position, unrevealed
   FORS values and every node computed from them until it is published in the signature. A SHAKE state after
   PRF(PK.seed, SK.seed, ADRS) is an invertible image of SK.seed; a SHA-2 state keeps its last block (SK.seed or a chain
-  value) in plain text in `opqc_sha256_state::block` (`include/Core/opqc_sha2.h:49-53`) and the schedule `W` on the
+  value) in plain text in `opqc_sha256_state::block` (`src/Core/opqc_sha2.h:49-53`) and the schedule `W` on the
   stack (`:152`). So every hash of a secret goes through a zeroizing state, and the n-byte values are a self-destroying
   value type like ML-DSA's `Poly` (STYLE §8.2).
 * **Verification data** is "similarly sensitive for some applications" (F205 §3.1): destroyed too, on the CPU and in the
@@ -284,21 +284,21 @@ SHAKE: Keccak-f[1600] permutations (⌊L/136⌋ + 1 to absorb; m ≤ 49 needs no
 
 | Primitive | SLH-DSA use | Other users | Evidence / home |
 |---|---|---|---|
-| SHAKE256 over a concatenation, zeroizing (`openpqc::sponge`) | every SHAKE-set hash (§3.1) | ML-KEM J/PRF, ML-DSA H, FN-DSA (inferred) | `include/Core/xof.hpp:32-41`, `include/Core/opqc_sha3.h:193-201` |
-| SHA-256, SHA-512 compression and incremental API | every SHA2-set hash, HMAC, MGF1 | HashML-DSA pre-hash | `include/Core/opqc_sha2.h:150-205, 279-364` |
-| The twelve pre-hash functions, their 11-byte DER OIDs, M′ = domain ‖ \|ctx\| ‖ ctx (‖ OID ‖ PH_M), the 255-byte context limit | Algs 22–25 | ML-DSA Algs 2–5; FN-DSA listed as a candidate (`include/FN/DSA/README.md:26`) | `include/ML/DSA/scheme/prehash.hpp` today; to `include/Core/prehash.hpp` (§6) |
-| RNG `opqc_randombytes`, `opqc_zeroize`, `ZeroizeOnExit` | Algs 21–23; §3.1 destruction | all schemes | `include/Core/opqc_platform.h`, `include/Core/zeroize.hpp` |
-| `opqc_ct_memcmp`, `OPQC_CT_SECRET`/`OPQC_CT_DECLASSIFY` | Alg 13 l.13; valgrind test | ML-DSA (c̃), ML-KEM | `include/Core/opqc_ct.h:29-44, 102-118` |
-| Big-endian loads/stores | toInt/toByte for 4/8 bytes, SHA-2 words | SHA-2 | `include/Core/opqc_sha2.h:132-145` (`opqc_store32_be` missing) |
-| GPU: device list, `guarded`, `for_each_item`/`for_each_team`, `Team`, `team_or`, `clear_local`, the SHAKE sponge helpers | every kernel | ML-KEM, ML-DSA backends | `include/Core/sycl/opqc_sycl_team.hpp:47-127`, `opqc_sycl_sponge.hpp:44-94` |
-| GPU: `Messages`, `FormattedMessage` (M′ read in place), `put_context`, `chunked`, `with_random_coins` | pure and internal message calls | ML-DSA backend | `include/ML/DSA/sycl/mldsa_sycl.cpp:137-143, 411-440, 1198-1209, 1261-1294, 1537-1569`: lift to `Core/sycl` (GPUINFRA §3.2) |
+| SHAKE256 over a concatenation, zeroizing (`openpqc::sponge`) | every SHAKE-set hash (§3.1) | ML-KEM J/PRF, ML-DSA H, FN-DSA (inferred) | `src/Core/xof.hpp:32-41`, `src/Core/opqc_sha3.h:193-201` |
+| SHA-256, SHA-512 compression and incremental API | every SHA2-set hash, HMAC, MGF1 | HashML-DSA pre-hash | `src/Core/opqc_sha2.h:150-205, 279-364` |
+| The twelve pre-hash functions, their 11-byte DER OIDs, M′ = domain ‖ \|ctx\| ‖ ctx (‖ OID ‖ PH_M), the 255-byte context limit | Algs 22–25 | ML-DSA Algs 2–5; FN-DSA listed as a candidate (`src/FN/DSA/README.md:26`) | `src/ML/DSA/scheme/prehash.hpp` today; to `src/Core/prehash.hpp` (§6) |
+| RNG `opqc_randombytes`, `opqc_zeroize`, `ZeroizeOnExit` | Algs 21–23; §3.1 destruction | all schemes | `src/Core/opqc_platform.h`, `src/Core/zeroize.hpp` |
+| `opqc_ct_memcmp`, `OPQC_CT_SECRET`/`OPQC_CT_DECLASSIFY` | Alg 13 l.13; valgrind test | ML-DSA (c̃), ML-KEM | `src/Core/opqc_ct.h:29-44, 102-118` |
+| Big-endian loads/stores | toInt/toByte for 4/8 bytes, SHA-2 words | SHA-2 | `src/Core/opqc_sha2.h:132-145` (`opqc_store32_be` missing) |
+| GPU: device list, `guarded`, `for_each_item`/`for_each_team`, `Team`, `team_or`, `clear_local`, the SHAKE sponge helpers | every kernel | ML-KEM, ML-DSA backends | `src/Core/sycl/opqc_sycl_team.hpp:47-127`, `opqc_sycl_sponge.hpp:44-94` |
+| GPU: `Messages`, `FormattedMessage` (M′ read in place), `put_context`, `chunked`, `with_random_coins` | pure and internal message calls | ML-DSA backend | `src/ML/DSA/sycl/mldsa_sycl.cpp:137-143, 411-440, 1198-1209, 1261-1294, 1537-1569`: lift to `Core/sycl` (GPUINFRA §3.2) |
 
 **Core (pattern)**: same shape, different order or width.
 
 | Pattern | SLH-DSA instance | Other instance | Shareable artifact |
 |---|---|---|---|
 | integer ↔ bytes | toInt/toByte, big-endian, 1–12 bytes | F204 IntegerToBytes/BitsToInteger, little-endian | none (different byte order); tests share the transcription style |
-| bit string → small integers | base_2b, MSB first, b ∈ {4, 6, 8, 9, 12, 14} | ByteDecode_d / SimpleBitUnpack, LSB first (`include/ML/math/ml_bitpack.h`) | none |
+| bit string → small integers | base_2b, MSB first, b ∈ {4, 6, 8, 9, 12, 14} | ByteDecode_d / SimpleBitUnpack, LSB first (`src/ML/math/ml_bitpack.h`) | none |
 | zeroizing hash over `ByteStrings` | SHA-2 F/H/T/PRF/HMAC in C++ | `openpqc::sponge` (SHA-3) | a SHA-2 twin of `sponge`, first in `SLH/DSA/scheme/crypto_functions.hpp`, Core when a second user needs it (STYLE §16) |
 | one work-item per hash, fixed-length absorb at compile-time positions | F/H/PRF/T kernels | ML-KEM/ML-DSA hashing stages | `opqc_sycl_sponge.hpp`; a SHA-2 counterpart (§5) |
 | batched self-test pattern (math test against transcriptions, differential against the reference, ACVP pinned, valgrind, stack residue, SYCL byte identity) | `tests/SLH-DSA` | `tests/ML-DSA` | test scaffolding copied, not shared (STYLE §13) |
@@ -311,13 +311,13 @@ in local memory on the GPU (GPUINFRA §3.3 item 5).
 
 | Need | Core today | Gap / plan |
 |---|---|---|
-| SHA-256 / SHA-512 one-shot and incremental | `opqc_sha256_init/absorb/finalize`, `opqc_sha512_*`, six one-shot functions (`include/Core/opqc_sha2.h:225-409`); `finalize(s, out, outlen)` gives Trunc_n directly; the header already names SLH-DSA (`:29-30`) | none for correctness. A midstate is a struct copy after absorbing exactly one block: the whole-block fast path (`:283-288`) leaves `block` unused, `length` = 64 or 128 |
+| SHA-256 / SHA-512 one-shot and incremental | `opqc_sha256_init/absorb/finalize`, `opqc_sha512_*`, six one-shot functions (`src/Core/opqc_sha2.h:225-409`); `finalize(s, out, outlen)` gives Trunc_n directly; the header already names SLH-DSA (`:29-30`) | none for correctness. A midstate is a struct copy after absorbing exactly one block: the whole-block fast path (`:283-288`) leaves `block` unused, `length` = 64 or 128 |
 | CPU cost of partial blocks | `opqc_sha256_absorb` copies byte by byte outside the whole-block path (`:290-296`) | every SHA2 F/H/PRF/T call absorbs ADRS^c ‖ M (38–86 bytes) this way: measure, and widen the copy if it matters (inferred cost) |
 | HMAC-SHA-256/512 (FIPS 198-1) | absent | `math/slhdsa_sha2.h` over `opqc_sha256_*`/`opqc_sha512_*`, tested against RFC 4231 and a FIPS 198-1 transcription [open: Core] |
 | MGF1-SHA-256/512 (RFC 8017 B.2.1) | absent | same file, tested against a transcription [open: Core] |
-| Zeroizing SHA-2 over `ByteStrings` (C++) | `openpqc::sha2` is one-shot only (`include/Core/hash.hpp:114-135`); `openpqc::sponge` is SHA-3 only | helper in `scheme/crypto_functions.hpp` with `ZeroizeOnExit` on the state (STYLE §16) |
+| Zeroizing SHA-2 over `ByteStrings` (C++) | `openpqc::sha2` is one-shot only (`src/Core/hash.hpp:114-135`); `openpqc::sponge` is SHA-3 only | helper in `scheme/crypto_functions.hpp` with `ZeroizeOnExit` on the state (STYLE §16) |
 | `opqc_store32_be` | only `opqc_store64_be` (`:140-145`) | add it in `opqc_sha2.h` rather than a private copy (STYLE §16) |
-| SHAKE256 incremental, any rate | `opqc_sponge_*` (`include/Core/opqc_sha3.h:49-139`), lane-wide fast path when 8-aligned (`:93-98`); PK.seed (n multiple of 8) and ADRS (32 B) keep lane alignment | none |
+| SHAKE256 incremental, any rate | `opqc_sponge_*` (`src/Core/opqc_sha3.h:49-139`), lane-wide fast path when 8-aligned (`:93-98`); PK.seed (n multiple of 8) and ADRS (32 B) keep lane alignment | none |
 | Register-resident SHA-2 compression for kernels | `opqc_sha256_compress` keeps `W[64]` with run-time indices in rolled loops (`:152-174`), which device compilers put on the stack | `opqc_sha256_compress_words(uint32_t H[8], uint32_t W[16])` with a 16-word ring and `OPQC_UNROLL(16)`, and the 64-bit twin; re-express the byte version through it so CPU and GPU keep one source (GPUINFRA §3.3 item 1) |
 | SHA-2 sponge-helper analogue on the GPU | `Core/sycl/opqc_sycl_sponge.hpp` covers SHAKE only | new `Core/sycl/opqc_sycl_sha2.hpp`: fixed-length absorb from a midstate with data, 0x80 and length at compile-time positions, big-endian words (M1 starts at byte 22 ≡ 2 mod 4: funnel shifts), a run-time-length absorb for H_msg/PRF_msg, HMAC, MGF1, Trunc_n (GPUINFRA §3.3 item 2) |
 | `clear_local` for arbitrary word counts | `clear_local<N>` needs N divisible by the team size (`opqc_sycl_team.hpp:119-127`) | `clear_local_words` in Core (GPUINFRA §3.3 item 4) |
@@ -345,12 +345,12 @@ ML-DSA tests after it, and keep the header readable as FIPS 180-4 §6.2.2.
 ### 6.2 Plan (STYLE §15.3, recommended; [open] until the user accepts it)
 
 1. **Lift first, as its own change**, before any SLH-DSA external function: move the scheme-independent part of
-   `include/ML/DSA/scheme/prehash.hpp` (89 lines; it includes only `Core/opqc_sha2.h` and `Core/opqc_sha3.h`) to
-   `include/Core/prehash.hpp`, namespace `openpqc`: `enum class PreHash` (values 1–12 unchanged), `max_prehash_bytes`
+   `src/ML/DSA/scheme/prehash.hpp` (89 lines; it includes only `Core/opqc_sha2.h` and `Core/opqc_sha3.h`) to
+   `src/Core/prehash.hpp`, namespace `openpqc`: `enum class PreHash` (values 1–12 unchanged), `max_prehash_bytes`
    = 64, `max_context_bytes` = 255, `prehash_bytes`, `prehash_oid`, `prehash`, and `to_prehash(int, PreHash&)` (today
-   in `include/ML/DSA/mldsa.cpp:35-40`). The title comment cites F204 Alg 4/5 and F205 Alg 23/25 line numbers.
-2. Add `include/Core/openpqc_prehash.h` (C) with `OPENPQC_PREHASH_SHA2_256 1 … OPENPQC_PREHASH_SHAKE256 12`;
-   `include/ML/DSA/openpqc_mldsa.h:78-91` turns its twelve macros into aliases, `openpqc_slhdsa.h` adds
+   in `src/ML/DSA/mldsa.cpp:35-40`). The title comment cites F204 Alg 4/5 and F205 Alg 23/25 line numbers.
+2. Add `src/Core/openpqc_prehash.h` (C) with `OPENPQC_PREHASH_SHA2_256 1 … OPENPQC_PREHASH_SHAKE256 12`;
+   `src/ML/DSA/openpqc_mldsa.h:78-91` turns its twelve macros into aliases, `openpqc_slhdsa.h` adds
    `OPENPQC_SLHDSA_PREHASH_*` the same way. Every existing name and value stays valid.
 3. ML-DSA call sites: `ml_dsa.hpp:35` includes the Core header and re-exports the names into `openpqc::mldsa` (so
    `openpqc::mldsa::PreHash` keeps working for `tests/test_mldsa_cxx.cpp`); `:39` uses `openpqc::max_context_bytes`;
@@ -361,8 +361,8 @@ ML-DSA tests after it, and keep the header readable as FIPS 180-4 §6.2.2.
    and an optional `OID ‖ PH_M` part, with `byte(i)` kept for SHA-2's big-endian words next to the little-endian
    `word(i)` (GPUINFRA §2.4, §3.2). The SLH-DSA GPU API takes HashSLH-DSA as `sign_internal` on a host-built M′
    (GPUINFRA §1.6).
-6. Documentation: `include/Core/README.md`, `include/Core/CMakeLists.txt` comment, `include/Core/openpqc_core.h`,
-   `include/Core/opqc_sha2.h:29-30`, `include/ML/DSA/README.md:10, 14-15, 56`, `include/FN/DSA/README.md:26`.
+6. Documentation: `src/Core/README.md`, `src/Core/CMakeLists.txt` comment, `src/Core/openpqc_core.h`,
+   `src/Core/opqc_sha2.h:29-30`, `src/ML/DSA/README.md:10, 14-15, 56`, `src/FN/DSA/README.md:26`.
 7. Verification of the lift: `test_mldsa_cxx`, `mldsa_differential`, `mldsa_ct`, `mldsa_pct`, `mldsa_stack`,
    `mldsaNN_kat`, `mldsa_acvp` unchanged and passing (the lift moves code, it changes no output), plus a Core-level
    check of the OID table and digest lengths; each scheme's C++ test keeps its independently typed OID table.
@@ -597,7 +597,7 @@ the SLH targets at `-j1` (GPUINFRA §6.4).
 
 * Constant time: control flow and indices depend only on public values (§2.8); the hash code must not use
   secret-indexed tables (SHA-2's K is indexed by the round). The GPU has no value barriers (`OPQC_VALUE_BARRIERS` off in
-  SYCL TUs, `include/Core/opqc_common.h:60-71`).
+  SYCL TUs, `src/Core/opqc_common.h:60-71`).
 * Destruction: secret workspace sections zeroized after every chunk and on failure (`chunked`), local memory cleared
   before every team kernel ends (LeftoverLocals), and a Verify mask (§2.8).
 * **Faults**: one wrong lower-layer root makes the next layer's WOTS+ key sign two different messages, which enables

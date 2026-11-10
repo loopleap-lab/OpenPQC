@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 """Vendor mlkem-native into the OpenPQC source tree, as the reference implementation.
 
-OpenPQC's ML-KEM (include/ML-KEM) is its own C11/C++20 code. mlkem-native is
+OpenPQC's ML-KEM (src/ML/KEM) is its own C11/C++20 code. mlkem-native is
 kept, unmodified, as the reference that the tests compare it with, together
 with mlkem-native's test programs:
 

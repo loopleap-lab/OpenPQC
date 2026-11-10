@@ -1293,7 +1293,7 @@ constexpr std::size_t local_bytes() {
     return std::max(TreeShape<P::n, P::a>::local_bytes, TreeShape<P::n, P::h_prime>::local_bytes);
 }
 
-// The development filter OPENPQC_SLHDSA_SYCL_SETS (the CMake option of include/SLH/DSA/CMakeLists.txt, for
+// The development filter OPENPQC_SLHDSA_SYCL_SETS (the CMake option of src/SLH/DSA/CMakeLists.txt, for
 // shorter device links): the ids of the parameter sets this build contains (default: all twelve). The others
 // are not compiled, and create refuses them.
 #if defined(OPENPQC_SLHDSA_SYCL_SETS)

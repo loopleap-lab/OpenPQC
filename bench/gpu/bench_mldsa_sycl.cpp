@@ -30,8 +30,8 @@
 #include <string>
 #include <vector>
 
-#include "../../include/ML/DSA/openpqc_mldsa.h"
-#include "../../include/ML/DSA/sycl/openpqc_mldsa_sycl.h"
+#include "../../src/ML/DSA/openpqc_mldsa.h"
+#include "../../src/ML/DSA/sycl/openpqc_mldsa_sycl.h"
 #include "../bench_common.hpp"
 
 namespace {

@@ -30,7 +30,7 @@
 
 #include <pk.hpp>
 
-#include "../../include/ML/DSA/openpqc_mldsa.h"
+#include "../../src/ML/DSA/openpqc_mldsa.h"
 #include "../../include/openpqc/testing.h"   // sign_derand, sign_internal, verify_internal (openpqc_mldsa has them in a build with the benchmarks)
 #include "../bench_common.hpp"
 

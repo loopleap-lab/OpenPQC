@@ -40,7 +40,7 @@ function(openpqc_testing_objects scheme source)
     set(_target openpqc_${scheme}_testing_objects)
     add_library(${_target} OBJECT ${source})
     target_include_directories(${_target} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
     target_compile_features(${_target} PUBLIC cxx_std_20)
     target_compile_definitions(${_target} PRIVATE
         $<TARGET_PROPERTY:openpqc_${scheme}_objects,COMPILE_DEFINITIONS>)

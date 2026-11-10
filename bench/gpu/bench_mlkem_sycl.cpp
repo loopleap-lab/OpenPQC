@@ -32,7 +32,7 @@
 #include <functional>
 #include <string>
 
-#include "../../include/ML/KEM/sycl/openpqc_mlkem_sycl.h"
+#include "../../src/ML/KEM/sycl/openpqc_mlkem_sycl.h"
 #include "../bench_common.hpp"
 
 namespace {

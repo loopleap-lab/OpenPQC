@@ -11,7 +11,7 @@
 #include "mlkem_test_target_common.h"
 
 /* provided by the test (tests/ML-KEM/notrandombytes); the library's draws reach it through the test
- * variant's forwarder, opqc_external_randombytes (include/Core/CMakeLists.txt) */
+ * variant's forwarder, opqc_external_randombytes (src/Core/CMakeLists.txt) */
 int randombytes(uint8_t *out, size_t outlen);
 
 #endif /* !MLKEM_TEST_TARGET_RANDOMBYTES_H */

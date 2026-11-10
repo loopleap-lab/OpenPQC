@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 #
 # check_regs_asm.py -- reads the x86-64 code of the functions that zero their call-used registers when they return
-# (zero_call_used_regs: OPENPQC_MLDSA_CLEARS_REGISTERS in include/ML/DSA/scheme/crypto_functions.hpp, Core's
+# (zero_call_used_regs: OPENPQC_MLDSA_CLEARS_REGISTERS in src/ML/DSA/scheme/crypto_functions.hpp, Core's
 # OPQC_STACK_FRAME and OPQC_STACK_FRAME_ROUNDS in Core/opqc_keccak.h) in objects compiled from
-# include/ML/DSA/mldsa.cpp, which contains all of them: ML-DSA's H, RejBoundedPoly (eta 2 and 4) and the message
+# src/ML/DSA/mldsa.cpp, which contains all of them: ML-DSA's H, RejBoundedPoly (eta 2 and 4) and the message
 # representative, Keccak-f's rounds, and the one-shot hashes of SHA-3 and SHA-2 that HashML-DSA's pre-hash uses.
 #
 # Each of those functions must leave only through ret, with the call-used registers zeroed just before it: never
@@ -22,7 +22,7 @@
 # function whose call an empty assembler statement follows, which must pass; they show that the check sees a jump
 # and the clearing in the code of that compiler.
 #
-#   check_regs_asm.py --source <mldsa.cpp> --include <dir> --work <dir> --objdump <objdump>
+#   check_regs_asm.py --source <mldsa.cpp> --include <dir> [--include <dir> ...] --work <dir> --objdump <objdump>
 #                     [--compile <c++ compiler>]... [--flags "<options>"] [--object <file.o>]...
 #
 # A jump between a function and its part in .text.unlikely ([clone .cold]: GCC's landing pads for exceptions,
@@ -291,7 +291,7 @@ def check_object(path, objdump, wanted, label, log):
 
 
 def compile_object(cxx, flags, source, include, out, extra):
-    cmd = [cxx, '-std=c++20', '-I', include] + flags + extra + ['-c', '-o', out, source]
+    cmd = [cxx, '-std=c++20'] + [a for d in include for a in ('-I', d)] + flags + extra + ['-c', '-o', out, source]
     r = subprocess.run(cmd, capture_output=True, text=True)
     return r.returncode == 0, ' '.join(shlex.quote(c) for c in cmd), r.stderr.strip()
 
@@ -304,7 +304,7 @@ def x86_64(cxx):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--source', required=True)
-    ap.add_argument('--include', required=True)
+    ap.add_argument('--include', required=True, action='append')
     ap.add_argument('--work', required=True)
     ap.add_argument('--objdump', required=True)
     ap.add_argument('--compile', action='append', default=[])

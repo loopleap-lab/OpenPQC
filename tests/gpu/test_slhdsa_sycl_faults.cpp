@@ -4,7 +4,7 @@
 // test_slhdsa_sycl_faults.cpp  --  the SLH-DSA SYCL backend when its device work fails: fail-closed
 // verification and the failed state of a context, by fault injection
 //
-// A white-box test: this translation unit compiles the backend itself (include/SLH/DSA/sycl/slhdsa_sycl.cpp),
+// A white-box test: this translation unit compiles the backend itself (src/SLH/DSA/sycl/slhdsa_sycl.cpp),
 // with its kernel launches -- its for_each_item and Core's for_each_team, through which every stage kernel is
 // queued -- renamed to versions that count them and can leave them out (kernels that never run, as when the
 // device faults part way through a call) or throw instead (a launch that the SYCL runtime refuses). An

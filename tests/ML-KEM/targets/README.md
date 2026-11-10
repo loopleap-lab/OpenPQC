@@ -11,7 +11,7 @@ include with a target header, and the build puts the directory of one target on 
 | `src/fips202/*.h` | `mlkem_test_target_fips202.h` | `mlk_shake256` = `opqc_shake256` | `src/fips202/fips202.h` |
 | `src/randombytes.h` | `mlkem_test_target_randombytes.h` | the declaration of `randombytes()` | `src/randombytes.h` |
 
-- **openpqc**: OpenPQC ML-KEM (`include/ML/KEM`), library `openpqc_mlkem_testrng`, API names
+- **openpqc**: OpenPQC ML-KEM (`src/ML/KEM`), library `openpqc_mlkem_testrng`, API names
   `openpqc_mlkem{512,768,1024}_*`.
 - **reference**: mlkem-native (`reference/mlkem-native`, unmodified), library `openpqc_reference_mlkem`, API
   names `ref_mlkem{512,768,1024}_*`.

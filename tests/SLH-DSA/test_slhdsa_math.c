@@ -4,7 +4,7 @@
  */
 
 /*
- * test_slhdsa_math.c -- tests of the SLH-DSA math core (include/SLH/DSA/math)
+ * test_slhdsa_math.c -- tests of the SLH-DSA math core (src/SLH/DSA/math)
  *
  * Every function is compared with a direct transcription of its definition in
  * FIPS 205 (or in the standard it cites), written differently from the library:

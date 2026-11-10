@@ -21,7 +21,7 @@
 
 add_library(openpqc_mlkem_objects OBJECT mlkem.cpp)
 target_include_directories(openpqc_mlkem_objects PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
     $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
 target_compile_features(openpqc_mlkem_objects PUBLIC cxx_std_20)
 target_link_libraries(openpqc_mlkem_objects PRIVATE openpqc_strict_warnings)
@@ -39,7 +39,7 @@ endif()
 foreach(variant "" ${OPENPQC_TESTRNG_VARIANT})   # _testrng only with the tests (top-level CMakeLists.txt)
     add_library(openpqc_mlkem${variant} STATIC EXCLUDE_FROM_ALL ${_openpqc_mlkem_lib_objects})
     target_include_directories(openpqc_mlkem${variant} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
         $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
     target_link_libraries(openpqc_mlkem${variant} PUBLIC openpqc_core${variant})
     set_target_properties(openpqc_mlkem${variant} PROPERTIES LINKER_LANGUAGE CXX)

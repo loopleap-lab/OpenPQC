@@ -686,7 +686,7 @@ work.
 
 ## Build
 
-`include/SLH/DSA/CMakeLists.txt` compiles `slhdsa.cpp` once, and in a build with the tests, benchmarks or examples also
+`src/SLH/DSA/CMakeLists.txt` compiles `slhdsa.cpp` once, and in a build with the tests, benchmarks or examples also
 `slhdsa_testing.cpp`, the testing interfaces, whose objects go into `OpenPQC::testing` and the two libraries for the
 tests below, never into `openpqc`. The objects of `slhdsa.cpp` go into the library `openpqc`
 (`OpenPQC::openpqc`, which applications link; see the top-level README) and into two libraries for the tests and

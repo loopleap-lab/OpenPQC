@@ -1,6 +1,6 @@
 // bench_mldsa_cpu_mt.cpp  --  CPU baseline: ML-DSA throughput on 1..T threads, one independent
 // operation stream per thread, for up to three implementations:
-//   openpqc     OpenPQC ML-DSA (include/ML/DSA): portable C11/C++20, no SIMD
+//   openpqc     OpenPQC ML-DSA (src/ML/DSA): portable C11/C++20, no SIMD
 //   reference   the CRYSTALS-Dilithium reference implementation (reference/dilithium/ref)
 //   avx2        its AVX2 implementation (reference/dilithium/avx2), on x86-64 with AVX2
 //

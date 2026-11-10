@@ -1,6 +1,6 @@
 // bench_mlkem_cpu_mt.cpp  --  CPU baseline: ML-KEM throughput on 1..T threads, one independent
 // operation stream per thread, for two implementations:
-//   openpqc     OpenPQC ML-KEM (include/ML-KEM): portable C11/C++20, no SIMD
+//   openpqc     OpenPQC ML-KEM (src/ML/KEM): portable C11/C++20, no SIMD
 //   reference   mlkem-native (reference/), with its assembly backends (e.g. AVX2) when built
 //
 // usage: bench_mlkem_cpu_mt [threads=1,2,4,8] [seconds_per_point=1.0] [impls=openpqc,reference] [rounds=3]

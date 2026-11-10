@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 """Vendor the SPHINCS+ reference implementation (SLH-DSA, FIPS 205) into OpenPQC.
 
-OpenPQC's SLH-DSA (include/SLH/DSA) is its own C11/C++20 code. The implementation
+OpenPQC's SLH-DSA (src/SLH/DSA) is its own C11/C++20 code. The implementation
 of the SPHINCS+ team, which implements FIPS 205 on its branch bas/fips205, is kept
 unmodified as the reference that the tests compare it with (and its AVX2 versions
 as the optimized CPU baseline of the benchmarks):

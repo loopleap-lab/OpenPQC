@@ -5,13 +5,14 @@
 # (openpqc_status, or int) warns when its result is ignored (OPENPQC_MUST_CHECK, openpqc/common.h,
 # and OPQC_MUST_CHECK, Core/opqc_common.h): the test c_api_must_check (tests/CMakeLists.txt).
 #
-# Usage: python3 -I check_must_check.py <include-root> <workdir> [--archive <library>]...
+# Usage: python3 -I check_must_check.py --include-root <dir> [--include-root <dir>]... <workdir>
+#                                        [--archive <library>]...
 #
 #   1. Preprocesses the C headers (HEADERS: the schemes', openpqc/common.h, kem.h, sig.h and
 #      testing.h, the GPU API's openpqc/sycl.h, sycl_experimental.h and sycl_testing.h, Core's, and
-#      the four of the GPU backends, which are internal and plain C) from <include-root> as C11, and
+#      the four of the GPU backends, which are internal and plain C) from the include roots as C11, and
 #      collects the declaration of every
-#      function with external linkage that a file under <include-root> makes; the preprocessor's line
+#      function with external linkage that a file under an include root makes; the preprocessor's line
 #      markers name the file of each declaration. The declarations are parsed, not matched line by line:
 #      one may span several lines and carry attributes or an export macro before the return type,
 #      between it and the name, or after the parameter list.
@@ -89,7 +90,7 @@ NOT_A_STATUS = {
 APPLICATION_DEFINED = {"opqc_external_randombytes"}
 # functions that the archives export and that are declared outside the C headers
 DECLARED_ELSEWHERE = {
-    "openpqc_version": "Core/openpqc_version.h, which the build generates outside <include-root>",
+    "openpqc_version": "Core/openpqc_version.h, which the build generates outside the include roots",
     "openpqc_gpu_create_on": "openpqc/sycl/interop.hpp: it takes SYCL types (C++)",
     "openpqc_gpu_event": "openpqc/sycl/interop.hpp: it takes SYCL types (C++)",
 }
@@ -139,12 +140,16 @@ def skip_literal(text, i):
     return j + 1
 
 
-def preprocess(inc):
+def include_flags(roots):
+    return [a for r in roots for a in ("-I", r)]
+
+
+def preprocess(roots):
     """The headers preprocessed together as C11: [(file, line)], with the file of each line."""
     src = "".join(f'#include "{h}"\n' for h in HEADERS)
     cc = next((c for c in ("gcc", "clang", "cc") if shutil.which(c)), "cc")
-    out = subprocess.run([cc, "-std=c11", "-E", "-I", inc, "-x", "c", "-"], input=src, capture_output=True,
-                         text=True, check=True).stdout
+    out = subprocess.run([cc, "-std=c11", "-E"] + include_flags(roots) + ["-x", "c", "-"], input=src,
+                         capture_output=True, text=True, check=True).stdout
     lines, current = [], ""
     for line in out.splitlines():
         m = re.match(r'#\s*(?:line\s+)?\d+\s+"((?:[^"\\]|\\.)*)"', line)
@@ -272,12 +277,13 @@ def argument(param):
     return "0"
 
 
-def declared_functions(inc):
-    """name -> (header file, return type, parameters) of the functions the headers declare."""
-    root = os.path.realpath(inc) + os.sep
+def declared_functions(roots):
+    """name -> (header file, return type, parameters) of the functions the headers under the roots declare."""
+    real = [os.path.realpath(r) + os.sep for r in roots]
     found = {}
-    for f, decl in top_level_declarations(preprocess(inc)):
-        if not os.path.realpath(f).startswith(root):
+    for f, decl in top_level_declarations(preprocess(roots)):
+        root = next((r for r in real if os.path.realpath(f).startswith(r)), None)
+        if root is None:
             continue
         fn = function_declaration(decl)
         if fn:
@@ -314,11 +320,12 @@ def write_tu(path, calls, cast):
     return where
 
 
-def warnings_per_line(compiler, lang, std, inc, tu):
+def warnings_per_line(compiler, lang, std, roots, tu):
     # compiled to an object, not -fsyntax-only: GCC reports warn_unused_result only when it
     # generates code (its C front end does not; [[nodiscard]] is reported either way)
-    r = subprocess.run([compiler, "-x", lang, f"-std={std}", "-c", "-o", os.devnull, "-Wall", "-Wextra", "-I", inc,
-                        tu], capture_output=True, text=True)
+    cmd = [compiler, "-x", lang, f"-std={std}", "-c", "-o", os.devnull, "-Wall", "-Wextra"]
+    cmd += include_flags(roots) + [tu]
+    r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         sys.stdout.write(r.stderr[:4000])
         return None
@@ -333,19 +340,21 @@ def warnings_per_line(compiler, lang, std, inc, tu):
 
 def main():
     args = sys.argv[1:]
-    archives = []
-    while "--archive" in args[:-1]:
-        k = args.index("--archive")
-        archives.append(args[k + 1])
-        del args[k: k + 2]
-    if len(args) != 2:
-        print("usage: check_must_check.py <include-root> <workdir> [--archive <library>]...")
+    archives, roots = [], []
+    for option, values in (("--archive", archives), ("--include-root", roots)):
+        while option in args[:-1]:
+            k = args.index(option)
+            values.append(args[k + 1])
+            del args[k: k + 2]
+    if len(args) != 1 or not roots:
+        print("usage: check_must_check.py --include-root <dir> [--include-root <dir>]... <workdir> "
+              "[--archive <library>]...")
         return 2
-    inc, work = os.path.abspath(args[0]), args[1]
+    roots, work = [os.path.abspath(r) for r in roots], args[0]
     os.makedirs(work, exist_ok=True)
     ok = True
     try:
-        functions = declared_functions(inc)
+        functions = declared_functions(roots)
         calls = [(n, [argument(p) for p in params]) for n, (_, ret, params) in sorted(functions.items())
                  if ret in STATUS_TYPES and n not in NOT_A_STATUS]
     except (Unreadable, subprocess.CalledProcessError) as e:
@@ -399,7 +408,7 @@ def main():
         tu = os.path.join(work, f"probe_{'cast' if cast else 'plain'}.c")
         where = write_tu(tu, calls, cast)
         for compiler, lang, std, silenced in configs:
-            counts = warnings_per_line(compiler, lang, std, inc, tu)
+            counts = warnings_per_line(compiler, lang, std, roots, tu)
             want = 0 if (cast and silenced) else 1
             if counts is None:
                 good, n, silent, extra = False, -1, [], []

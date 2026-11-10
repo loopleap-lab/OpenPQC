@@ -8,7 +8,7 @@
 # reference's ref/ code). ctest -LE "network|slow" is the quick offline run, ctest -LE network the
 # full offline run.
 #
-# The OpenPQC side of every test needs the library (include/SLH/DSA: the targets openpqc_slhdsa and
+# The OpenPQC side of every test needs the library (src/SLH/DSA: the targets openpqc_slhdsa and
 # openpqc_slhdsa_testrng and the header openpqc_slhdsa.h) and is configured only when it exists; the
 # reference side always is.
 
@@ -20,7 +20,7 @@ set(_target ${CMAKE_CURRENT_SOURCE_DIR}/targets/openpqc)
 set(_check ${PROJECT_SOURCE_DIR}/tests/ML-DSA/check_output.py)   # shared with the ML-DSA KATs
 file(STRINGS ${OPENPQC_SPHINCSPLUS_DIR}/SHA256SUMS _kat_sums REGEX "^[0-9a-f]+ ")
 if(TARGET openpqc_slhdsa AND TARGET openpqc_slhdsa_testrng
-   AND EXISTS ${PROJECT_SOURCE_DIR}/include/SLH/DSA/openpqc_slhdsa.h)
+   AND EXISTS ${PROJECT_SOURCE_DIR}/src/SLH/DSA/openpqc_slhdsa.h)
     set(_openpqc ON)
 else()
     set(_openpqc OFF)
@@ -64,12 +64,12 @@ if(_openpqc)
     #                     result is used, which slhdsa_pct alone cannot show.
     foreach(variant pct pct_fail)
         add_library(openpqc_slhdsa_${variant}_objects OBJECT ${OPENPQC_SLHDSA_SOURCES})
-        target_include_directories(openpqc_slhdsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(openpqc_slhdsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_compile_definitions(openpqc_slhdsa_${variant}_objects PRIVATE OPENPQC_SLHDSA_KEYGEN_PCT)
         target_compile_features(openpqc_slhdsa_${variant}_objects PRIVATE cxx_std_20)
         target_link_libraries(openpqc_slhdsa_${variant}_objects PRIVATE openpqc_strict_warnings)
         add_executable(test_slhdsa_${variant} test_slhdsa_pct.c $<TARGET_OBJECTS:openpqc_slhdsa_${variant}_objects>)
-        target_include_directories(test_slhdsa_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(test_slhdsa_${variant} PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_link_libraries(test_slhdsa_${variant} PRIVATE openpqc_core openpqc_strict_warnings)
         set_target_properties(test_slhdsa_${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11
                                                                 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
@@ -83,7 +83,7 @@ if(_openpqc)
     #                    linker must not let them take the place of the library's, whose KeyGen must still fail
     add_executable(test_slhdsa_pct_odr test_slhdsa_pct_odr.cpp test_slhdsa_pct.c
                                        $<TARGET_OBJECTS:openpqc_slhdsa_pct_fail_objects>)
-    target_include_directories(test_slhdsa_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(test_slhdsa_pct_odr PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_compile_definitions(test_slhdsa_pct_odr PRIVATE OPENPQC_TEST_EXPECT_PCT_FAIL)
     target_compile_features(test_slhdsa_pct_odr PRIVATE cxx_std_20)
     target_link_libraries(test_slhdsa_pct_odr PRIVATE openpqc_core openpqc_strict_warnings)
@@ -161,14 +161,14 @@ if(_openpqc)
         set_source_files_properties(test_slhdsa_stack_pct.cpp PROPERTIES COMPILE_OPTIONS "${_unprotected_options}")
         add_library(openpqc_slhdsa_pct_unprotected_objects OBJECT slhdsa_no_stack_clash_protection.cpp
                                                                  slhdsa_testing_no_stack_clash_protection.cpp)
-        target_include_directories(openpqc_slhdsa_pct_unprotected_objects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(openpqc_slhdsa_pct_unprotected_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_compile_definitions(openpqc_slhdsa_pct_unprotected_objects PRIVATE OPENPQC_SLHDSA_KEYGEN_PCT)
         target_compile_features(openpqc_slhdsa_pct_unprotected_objects PRIVATE cxx_std_20)
         target_link_libraries(openpqc_slhdsa_pct_unprotected_objects PRIVATE openpqc_strict_warnings)
         add_executable(test_slhdsa_stack_pct test_slhdsa_stack_pct.cpp
                                              $<TARGET_OBJECTS:openpqc_slhdsa_pct_unprotected_objects>)
         target_include_directories(test_slhdsa_stack_pct PRIVATE ${PROJECT_SOURCE_DIR}/tests
-                                                                 ${PROJECT_SOURCE_DIR}/include)
+                                                                 ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_link_libraries(test_slhdsa_stack_pct PRIVATE openpqc_core_testrng openpqc_strict_warnings
                                                             Threads::Threads)
         target_compile_features(test_slhdsa_stack_pct PRIVATE cxx_std_20)
@@ -207,7 +207,7 @@ if(_openpqc)
                 set(_objects openpqc_slhdsa_ct_${opt}_objects)
             endif()
             add_library(${_objects} OBJECT ${OPENPQC_SLHDSA_SOURCES})
-            target_include_directories(${_objects} PRIVATE ${PROJECT_SOURCE_DIR}/include
+            target_include_directories(${_objects} PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
                                                            ${OPENPQC_VALGRIND_INCLUDE_DIR})
             target_compile_definitions(${_objects} PRIVATE OPQC_CT_TESTING)
             target_compile_features(${_objects} PRIVATE cxx_std_20)
@@ -216,7 +216,7 @@ if(_openpqc)
             # a target's options come after those of the build type, so -${opt} wins
             target_compile_options(${_objects} PRIVATE ${OPENPQC_CT_ISA_FLAGS} $<$<BOOL:${opt}>:-${opt}>)
             add_executable(test_${_name} test_slhdsa_ct.c $<TARGET_OBJECTS:${_objects}>)
-            target_include_directories(test_${_name} PRIVATE ${PROJECT_SOURCE_DIR}/include
+            target_include_directories(test_${_name} PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
                                                              ${OPENPQC_VALGRIND_INCLUDE_DIR})
             target_compile_options(test_${_name} PRIVATE ${OPENPQC_CT_ISA_FLAGS})
             target_link_libraries(test_${_name} PRIVATE openpqc_core_testrng openpqc_strict_warnings)
@@ -277,7 +277,7 @@ function(spx_program name set id)
     add_executable(${name} ${ARG_SOURCES})
     if(ARG_OPENPQC)
         target_compile_definitions(${name} PRIVATE OPENPQC_TARGET_SET=${id})
-        target_include_directories(${name} PRIVATE ${ARG_INCLUDES} ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(${name} PRIVATE ${ARG_INCLUDES} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     else()
         openpqc_reference_slhdsa_params(${name} ref ${set})
     endif()
@@ -290,7 +290,7 @@ endfunction()
 if(_openpqc)
     # randombytes() of test/spx.c for the openpqc target, from the operating system
     add_library(openpqc_slhdsa_target_rng OBJECT ${_target}/randombytes_system.c)
-    target_include_directories(openpqc_slhdsa_target_rng PRIVATE ${_target} ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(openpqc_slhdsa_target_rng PRIVATE ${_target} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(openpqc_slhdsa_target_rng PRIVATE openpqc_strict_warnings)
     set_target_properties(openpqc_slhdsa_target_rng PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 endif()
@@ -343,7 +343,7 @@ foreach(set IN LISTS OPENPQC_SLHDSA_SETS)
         # the OpenPQC target's implementation of the reference's API, with OpenPQC's warnings
         add_library(openpqc_slhdsa_target_${infix} OBJECT ${_target}/openpqc_target.c)
         target_compile_definitions(openpqc_slhdsa_target_${infix} PRIVATE OPENPQC_TARGET_SET=${id})
-        target_include_directories(openpqc_slhdsa_target_${infix} PRIVATE ${_target} ${PROJECT_SOURCE_DIR}/include)
+        target_include_directories(openpqc_slhdsa_target_${infix} PRIVATE ${_target} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
         target_link_libraries(openpqc_slhdsa_target_${infix} PRIVATE openpqc_strict_warnings)
         set_target_properties(openpqc_slhdsa_target_${infix} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
                                                                        C_EXTENSIONS OFF)

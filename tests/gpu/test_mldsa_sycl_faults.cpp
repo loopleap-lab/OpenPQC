@@ -6,7 +6,7 @@
 // workspace, KeyGen's pair-wise consistency test and the self-test of create, by fault injection
 //
 // A white-box test, as test_mlkem_sycl_faults.cpp and test_slhdsa_sycl_faults.cpp: this translation unit compiles
-// the backend itself (include/ML/DSA/sycl/mldsa_sycl.cpp), with its kernel launches -- Core's for_each_item and
+// the backend itself (src/ML/DSA/sycl/mldsa_sycl.cpp), with its kernel launches -- Core's for_each_item and
 // for_each_team, through which every stage kernel is queued -- renamed to versions that count them and can leave
 // one, or one and all later ones, out (kernels that never run, as when the device faults part way through a call),
 // throw instead (a launch that the SYCL runtime refuses), or have an asynchronous error reported first, the way the

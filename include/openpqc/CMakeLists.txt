@@ -25,7 +25,7 @@
 function(_openpqc_api_objects name source)
     add_library(${name} OBJECT ${source})
     target_include_directories(${name} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
     target_link_libraries(${name} PRIVATE openpqc_strict_warnings)
     set_target_properties(${name} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     openpqc_library_objects(${name})   # cmake/OpenPQCLibrary.cmake

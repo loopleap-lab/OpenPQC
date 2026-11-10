@@ -14,7 +14,7 @@
 // usage: profile_mldsa_stages_sycl [levels=44,65,87] [batch=8192] [trials=7] [device=-1]
 //                                  [cool_to_c=0] [max_attempts=16] [fill=512]
 // Prints CSV: impl,level,op,stage,batch,median_s,share
-#include "../../include/ML/DSA/sycl/mldsa_sycl.cpp"
+#include "../../src/ML/DSA/sycl/mldsa_sycl.cpp"
 
 #include <cstdio>
 #include <functional>

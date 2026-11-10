@@ -59,7 +59,7 @@ constant-time tests at fixed optimization levels); the workflow has not yet run 
   their secret intermediate values), except where the table below says otherwise. An ML-KEM library built with
   `OPENPQC_MLKEM_STACK_BURN=OFF` still destroys the values its code names, but not the copies that the compiler keeps
   in stack slots of its own
-  ([include/ML/KEM/README.md](include/ML/KEM/README.md#choices-that-differ-from-mlkem-native)).
+  ([src/ML/KEM/README.md](src/ML/KEM/README.md#choices-that-differ-from-mlkem-native)).
 
 ## Known issues
 
@@ -142,6 +142,6 @@ signature calls (review finding F073; test `gpu_api`), and a shared GPU library 
 testing interfaces in `OpenPQC::sycl_testing` and the backends' own C APIs internal (test `sycl_exports`). The review
 has not re-verified these changes.
 
-The scheme READMEs ([ML-KEM](include/ML/KEM/README.md), [ML-DSA](include/ML/DSA/README.md),
-[SLH-DSA](include/SLH/DSA/README.md)) and the C headers document each contract in full: return codes, the state of the
+The scheme READMEs ([ML-KEM](src/ML/KEM/README.md), [ML-DSA](src/ML/DSA/README.md),
+[SLH-DSA](src/SLH/DSA/README.md)) and the C headers document each contract in full: return codes, the state of the
 outputs after a failure, what is destroyed, the stack, the threading rules of the GPU contexts.

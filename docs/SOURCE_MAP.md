@@ -6,10 +6,10 @@
 > `include/ML-KEM/src/<file>` → `reference/mlkem-native/mlkem/src/<file>`; `include/Core/src/fips202/<file>`,
 > `ct.{h,c}`, `sys.h`, `cbmc.h` → `reference/mlkem-native/mlkem/src/fips202/<file>`, `verify.{h,c}`, `sys.h`,
 > `cbmc.h` with the upstream `MLK_`/`mlk_` names. The OpenPQC files and the GPU code named in §0 and §5 have been
-> replaced; [include/ML/KEM/README.md](../include/ML/KEM/README.md) maps FIPS 203 to the new code, and
+> replaced; [src/ML/KEM/README.md](../src/ML/KEM/README.md) maps FIPS 203 to the new code, and
 > [GPU_ACCELERATION.md](GPU_ACCELERATION.md) describes the SYCL backend. ML-DSA and SLH-DSA, added later, are not
-> covered here: [include/ML/DSA/README.md](../include/ML/DSA/README.md) and
-> [include/SLH/DSA/README.md](../include/SLH/DSA/README.md) map FIPS 204 and FIPS 205 to their code, and
+> covered here: [src/ML/DSA/README.md](../src/ML/DSA/README.md) and
+> [src/SLH/DSA/README.md](../src/SLH/DSA/README.md) map FIPS 204 and FIPS 205 to their code, and
 > [reference/README.md](../reference/README.md) describes their reference implementations (CRYSTALS-Dilithium,
 > SPHINCS+).
 
@@ -546,7 +546,7 @@ mlkem-native's C code, so that its outputs are byte-identical. The design is in 
 This section describes OpenPQC as it is now (November 2026), not the vendored mlkem-native of the sections above. FIPS
 203 and NIST SP 800-227 place some requirements on the module as a whole, beyond the code; the top-level README
 ("Maturity and scope", "Security notes"), [SECURITY.md](../SECURITY.md) and
-[include/ML/KEM/README.md](../include/ML/KEM/README.md) ("Using ML-KEM in an application") give them in full.
+[src/ML/KEM/README.md](../src/ML/KEM/README.md) ("Using ML-KEM in an application") give them in full.
 
 1. **RBG.** The random values must come from an approved RBG (SP 800-90A/B/C), with at least 128, 192 or 256 bits of
    security strength for ML-KEM-512, -768 or -1024 (§3.3). By default OpenPQC's `opqc_randombytes` asks the operating

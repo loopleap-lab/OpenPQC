@@ -7,7 +7,7 @@
 #
 # The scheme layers, Core's C++ headers and the GPU self-test headers live in an inline namespace of the
 # library's (library_<version>, or library_sycl_<version> in SYCL code) in the library's own translation units
-# (include/Core/abi.hpp), so that an application's copies of their templates, built with other macros or
+# (src/Core/abi.hpp), so that an application's copies of their templates, built with other macros or
 # flags, can never take the place of the library's (review finding F039). An archive that defines an
 # external symbol in namespace openpqc outside those namespaces and outside the GPU backends' runtime
 # (openpqc::gpu and openpqc::<scheme>::gpu) fails the test: a source of the library that lacks

@@ -3,8 +3,8 @@
 These are the detailed analyses behind [`docs/PRIMITIVES.md`](../PRIMITIVES.md), written while restructuring
 mlkem-native into OpenPQC (October 2026). They go down to individual symbols, CBMC bounds and source lines of the
 upstream projects. OpenPQC's own implementation, written later, is described in the group READMEs
-([Core](../../include/Core/README.md), [ML-KEM](../../include/ML/KEM/README.md),
-[ML-DSA](../../include/ML/DSA/README.md), [SLH-DSA](../../include/SLH/DSA/README.md)); mlkem-native and sphincsplus themselves now live, unmodified, in
+([Core](../../src/Core/README.md), [ML-KEM](../../src/ML/KEM/README.md),
+[ML-DSA](../../src/ML/DSA/README.md), [SLH-DSA](../../src/SLH/DSA/README.md)); mlkem-native and sphincsplus themselves now live, unmodified, in
 [`reference/`](../../reference/README.md).
 For a file-by-file guide to what is FIPS 203 and what mlkem-native added, see [`docs/SOURCE_MAP.md`](../SOURCE_MAP.md).
 

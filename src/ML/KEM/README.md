@@ -387,7 +387,7 @@ creates would leak.
 
 ## Build
 
-`include/ML/KEM/CMakeLists.txt` compiles `mlkem.cpp` once, and in a build with the tests, benchmarks or examples also
+`src/ML/KEM/CMakeLists.txt` compiles `mlkem.cpp` once, and in a build with the tests, benchmarks or examples also
 `mlkem_testing.cpp`, the testing interfaces, whose objects go into `OpenPQC::testing` and the two libraries for the
 tests below, never into `openpqc`. The objects of `mlkem.cpp` go into the library `openpqc` (`OpenPQC::openpqc`,
 which applications link; see the top-level README) and into two libraries for the tests and benchmarks, built only

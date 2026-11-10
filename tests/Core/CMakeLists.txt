@@ -141,7 +141,7 @@ if(Python3_Interpreter_FOUND AND OPENPQC_CT_ASM_CLANG)
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_ct_asm.py
                      --cc ${OPENPQC_CT_ASM_CLANG}
                      --source ${CMAKE_CURRENT_SOURCE_DIR}/test_core_ct_shapes.c
-                     --include ${PROJECT_SOURCE_DIR}/include
+                     --include ${PROJECT_SOURCE_DIR}/src
                      --stub ${CMAKE_CURRENT_SOURCE_DIR}/freestanding
                      --work ${CMAKE_CURRENT_BINARY_DIR}/ct_asm)
     set_tests_properties(core_ct_asm PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)

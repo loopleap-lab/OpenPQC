@@ -8,7 +8,7 @@
 #ifndef MLKEM_TEST_TARGET_FIPS202_H
 #define MLKEM_TEST_TARGET_FIPS202_H
 
-#include "../../../../include/Core/opqc_sha3.h"
+#include "../../../../src/Core/opqc_sha3.h"
 #include "mlkem_test_target_common.h"
 
 #define mlk_shake256(out, outlen, in, inlen) \

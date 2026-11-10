@@ -14,7 +14,7 @@
 #ifndef MLKEM_TEST_TARGET_API_H
 #define MLKEM_TEST_TARGET_API_H
 
-#include "../../../../include/ML/KEM/openpqc_mlkem.h"
+#include "../../../../src/ML/KEM/openpqc_mlkem.h"
 #include "../../../../include/openpqc/testing.h"
 #include "mlkem_test_target_common.h"
 

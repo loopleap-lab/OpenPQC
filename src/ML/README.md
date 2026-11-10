@@ -1,7 +1,7 @@
 # ML: what the module-lattice schemes share
 
-`include/ML` holds the code that ML-KEM (FIPS 203, `KEM/`) and ML-DSA (FIPS 204, `DSA/`) have in common and nothing
-else uses; what every scheme shares is in `include/Core`. The rule is the same at both levels: a primitive lives at
+`src/ML` holds the code that ML-KEM (FIPS 203, `KEM/`) and ML-DSA (FIPS 204, `DSA/`) have in common and nothing
+else uses; what every scheme shares is in `src/Core`. The rule is the same at both levels: a primitive lives at
 the lowest level that all its users can see, and it is written once.
 
 | What | File | Used by |

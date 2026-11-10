@@ -99,7 +99,7 @@ endforeach()
 
 # hash_m32: test_hash built for 32-bit x86 (-m32) on an x86-64 host. The stack that Keccak-f and the
 # SHA-2 one-shots write and clear, and the registers they clear, differ on a 32-bit processor
-# (include/Core/README.md), and nothing else in the build is 32-bit. It needs a 32-bit C and C++ library
+# (src/Core/README.md), and nothing else in the build is 32-bit. It needs a 32-bit C and C++ library
 # (Arch Linux: lib32-glibc and lib32-gcc-libs; Debian: gcc-multilib and g++-multilib) and, in a
 # sanitizer build, the sanitizers' 32-bit runtime. Core is header-only apart from opqc_platform.c,
 # which the program compiles itself (openpqc_core is built for the host). The flags are test_hash's,
@@ -124,8 +124,8 @@ int main() { std::string s(40, 'x'); return std::puts(s.c_str()) < 0; }" OPENPQC
     unset(CMAKE_REQUIRED_LINK_OPTIONS)
 endif()
 if(OPENPQC_C_HAS_M32 AND OPENPQC_CXX_HAS_M32)
-    add_executable(test_hash_m32 test_hash.cpp ${PROJECT_SOURCE_DIR}/include/Core/opqc_platform.c)
-    target_include_directories(test_hash_m32 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/include)
+    add_executable(test_hash_m32 test_hash.cpp ${PROJECT_SOURCE_DIR}/src/Core/opqc_platform.c)
+    target_include_directories(test_hash_m32 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_compile_features(test_hash_m32 PRIVATE cxx_std_20)
     target_compile_options(test_hash_m32 PRIVATE -m32 $<$<COMPILE_LANGUAGE:CXX>:-UNDEBUG>)
     target_link_options(test_hash_m32 PRIVATE -m32)
@@ -200,7 +200,8 @@ endif()
 if(Python3_Interpreter_FOUND)
     add_test(NAME c_api_must_check
              COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_must_check.py
-                     ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/must_check
+                     --include-root ${PROJECT_SOURCE_DIR}/include --include-root ${PROJECT_SOURCE_DIR}/src
+                     ${CMAKE_CURRENT_BINARY_DIR}/must_check
                      ${_openpqc_must_check_archives})
     set_tests_properties(c_api_must_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
 endif()
@@ -230,7 +231,7 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 # abi_symbols: every C++ symbol of the header-only layers in the archives is in the library's inline
-# namespace (library_<version>, library_sycl_<version>; include/Core/abi.hpp; review finding F039), so that an application's
+# namespace (library_<version>, library_sycl_<version>; src/Core/abi.hpp; review finding F039), so that an application's
 # copies of the templates, built with other macros or flags, cannot take the place of the library's
 set(_openpqc_abi_archives $<TARGET_FILE:openpqc>)
 if(OPENPQC_HAVE_SYCL)
@@ -250,7 +251,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
              COMMAND ${CMAKE_COMMAND} -DCC=${CMAKE_C_COMPILER}
                      "-DCFLAGS=${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_openpqc_config}}"
                      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/test_c_link.c
-                     "-DINCLUDES=${PROJECT_SOURCE_DIR}/include;${PROJECT_BINARY_DIR}/include"
+                     "-DINCLUDES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src;${PROJECT_BINARY_DIR}/include"
                      -DLIBRARY=$<TARGET_FILE:openpqc> -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test_c_link
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/c_link.cmake)
 endif()
@@ -281,16 +282,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
                      -DLIBDIR=${CMAKE_INSTALL_LIBDIR} -DPKG_CONFIG=${OPENPQC_PKG_CONFIG} ${_openpqc_consumer_sycl}
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/consumer.cmake)
     set_tests_properties(install_consumer PROPERTIES LABELS install TIMEOUT 900 RUN_SERIAL TRUE)
+    # installed_headers: every installed header lies under <prefix>/include/openpqc/, includes only files of the
+    # installation (none of the source tree, src/), and compiles alone against it (tests/installed_headers.cmake)
+    add_test(NAME installed_headers
+             COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${PROJECT_BINARY_DIR} -DWORK=${CMAKE_CURRENT_BINARY_DIR}/installed_headers
+                     -DCC=${CMAKE_C_COMPILER} -DCXX=${CMAKE_CXX_COMPILER}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installed_headers.cmake)
+    set_tests_properties(installed_headers PROPERTIES LABELS install TIMEOUT 600)
 endif()
 
 # The compiled files of each scheme, the C API and its testing interfaces (openpqc/testing.h), for the tests that
 # compile them with definitions or options of their own (pair-wise consistency test, constant time, stack depth)
-set(OPENPQC_MLKEM_SOURCES ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem.cpp
-                          ${PROJECT_SOURCE_DIR}/include/ML/KEM/mlkem_testing.cpp)
-set(OPENPQC_MLDSA_SOURCES ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa.cpp
-                          ${PROJECT_SOURCE_DIR}/include/ML/DSA/mldsa_testing.cpp)
-set(OPENPQC_SLHDSA_SOURCES ${PROJECT_SOURCE_DIR}/include/SLH/DSA/slhdsa.cpp
-                           ${PROJECT_SOURCE_DIR}/include/SLH/DSA/slhdsa_testing.cpp)
+set(OPENPQC_MLKEM_SOURCES ${PROJECT_SOURCE_DIR}/src/ML/KEM/mlkem.cpp
+                          ${PROJECT_SOURCE_DIR}/src/ML/KEM/mlkem_testing.cpp)
+set(OPENPQC_MLDSA_SOURCES ${PROJECT_SOURCE_DIR}/src/ML/DSA/mldsa.cpp
+                          ${PROJECT_SOURCE_DIR}/src/ML/DSA/mldsa_testing.cpp)
+set(OPENPQC_SLHDSA_SOURCES ${PROJECT_SOURCE_DIR}/src/SLH/DSA/slhdsa.cpp
+                           ${PROJECT_SOURCE_DIR}/src/SLH/DSA/slhdsa_testing.cpp)
 
 # ML-KEM (OpenPQC and the reference) and Core
 add_subdirectory(ML-KEM)

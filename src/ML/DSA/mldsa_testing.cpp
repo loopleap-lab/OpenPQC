@@ -6,7 +6,7 @@
 // Signing with rnd given, and Sign_internal and Verify_internal on a formatted message M' (FIPS 204, Algorithms 7
 // and 8): FIPS 204, Section 6, says that, "other than for testing purposes", such interfaces "should not be made
 // available to applications", so they are compiled apart from the library openpqc, which never contains them
-// (review finding M13). Built with the same definitions as mldsa.cpp (include/ML/DSA/CMakeLists.txt), so that the
+// (review finding M13). Built with the same definitions as mldsa.cpp (src/ML/DSA/CMakeLists.txt), so that the
 // two agree. A NULL rnd is refused with OPENPQC_ERR_INVALID_ARGUMENT: these functions never pick a value.
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1

@@ -28,7 +28,7 @@ endif()
 
 # Stack hardening, for everything that links openpqc_strict_warnings, where the compiler has it.
 # ML-DSA keeps whole matrices and vectors of polynomials in its frames: up to about 180 KiB for
-# Sign of ML-DSA-87, many times a guard page (include/ML/DSA/openpqc_mldsa.h, "Stack").
+# Sign of ML-DSA-87, many times a guard page (src/ML/DSA/openpqc_mldsa.h, "Stack").
 #   -fstack-clash-protection   a frame larger than a page is touched page by page from the top, so
 #                              that a stack that is too small ends in a fault at its guard page; a
 #                              frame entered with one subtraction from the stack pointer could write

@@ -3,7 +3,7 @@
 //
 // bench_slhdsa_cpu_mt.cpp  --  CPU baseline: SLH-DSA throughput on 1..T threads, one independent
 // operation stream per thread, for up to three implementations:
-//   openpqc     OpenPQC SLH-DSA (include/SLH/DSA): portable C11/C++20, no SIMD; for the SHA2 sets it
+//   openpqc     OpenPQC SLH-DSA (src/SLH/DSA): portable C11/C++20, no SIMD; for the SHA2 sets it
 //               compresses the block PK.seed || toByte(0, 64 - n) (128 - n for SHA-512) that begins every
 //               hash call of FIPS 205, Section 11.2, once per key and operation and continues each call
 //               from that state

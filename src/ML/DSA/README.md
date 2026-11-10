@@ -628,7 +628,7 @@ arithmetic weighs more: 41–46 % of Sign in the attempts' z, r0, c·t0 and hint
 
 ## Build
 
-`include/ML/DSA/CMakeLists.txt` compiles `mldsa.cpp` once, and in a build with the tests, benchmarks or examples also
+`src/ML/DSA/CMakeLists.txt` compiles `mldsa.cpp` once, and in a build with the tests, benchmarks or examples also
 `mldsa_testing.cpp`, the testing interfaces, whose objects go into `OpenPQC::testing` and the two libraries for the
 tests below, never into `openpqc`. The objects of `mldsa.cpp` go into the library `openpqc` (`OpenPQC::openpqc`,
 which applications link; see the top-level README) and into two libraries for the tests and benchmarks, built only
