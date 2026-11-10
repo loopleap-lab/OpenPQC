@@ -365,7 +365,9 @@ foreach(set IN LISTS OPENPQC_SLHDSA_SETS)
 
     if(Python3_Interpreter_FOUND)
         foreach(program IN LISTS _kat_programs)
-            string(REGEX REPLACE "^(reference_)?PQCgenKAT_sign_" "\\1slhdsa_" test ${program})
+            # PQCgenKAT_sign_<set> -> slhdsa_<set>, reference_PQCgenKAT_sign_<set> -> reference_slhdsa_<set>
+            # (a plain replacement: CMake before 4.1 rejects \1 for the optional group when it does not match)
+            string(REPLACE "PQCgenKAT_sign_" "slhdsa_" test ${program})
             add_test(NAME ${test}_kat
                      COMMAND ${Python3_EXECUTABLE} ${_check} --sha256 ${kat} --file PQCsignKAT_${sk_bytes}.rsp
                              -- $<TARGET_FILE:${program}>)

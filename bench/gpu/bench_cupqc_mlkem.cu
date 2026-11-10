@@ -240,9 +240,10 @@ struct Runner {
 };
 
 struct HostInputs {
-    std::uint8_t* kg;  // n x 64 coins
-    std::uint8_t* en;  // n x pk, then n x 32 m
-    std::uint8_t* de;  // n x ct, then n x sk
+    std::uint8_t* kg;  // nmax x 64 coins
+    std::uint8_t* en;  // nmax x pk, then nmax x 32 m
+    std::uint8_t* de;  // nmax x ct, then nmax x sk
+    std::size_t nmax;  // the second part of en and de starts after nmax entries, for every batch size
 };
 
 template <int L, unsigned BD>
@@ -267,14 +268,14 @@ void add_runners(std::vector<Runner>& rs, cudaStream_t st, std::size_t n, std::u
                   }, {}, {}});
     rs.push_back({impl, "encaps", "e2e", [=] {
                       cp(pk, h.en, PK * n, cudaMemcpyHostToDevice);
-                      cp(ent, h.en + PK * n, 32 * n, cudaMemcpyHostToDevice);
+                      cp(ent, h.en + PK * h.nmax, 32 * n, cudaMemcpyHostToDevice);
                       en_kernel<TE><<<n, TE::BlockDim, 0, st>>>(ct, ss, pk, ent, ws);
                       cp(h_out, ct, CT * n, cudaMemcpyDeviceToHost);
                       cp(h_out + CT * n, ss, 32 * n, cudaMemcpyDeviceToHost);
                   }, {}, {}});
     rs.push_back({impl, "decaps", "e2e", [=] {
                       cp(ct, h.de, CT * n, cudaMemcpyHostToDevice);
-                      cp(sk, h.de + CT * n, SK * n, cudaMemcpyHostToDevice);
+                      cp(sk, h.de + CT * h.nmax, SK * n, cudaMemcpyHostToDevice);
                       de_kernel<TD><<<n, TD::BlockDim, 0, st>>>(ss, ct, sk, ws);
                       cp(h_out, ss, 32 * n, cudaMemcpyDeviceToHost);
                   }, {}, {}});
@@ -307,7 +308,7 @@ void throughput(const std::vector<std::size_t>& batches, int trials, const std::
     CHECK_CUDA(cudaMemcpy(pk.p, h_en.p, PK * nmax, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(ct.p, h_de.p, CT * nmax, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(sk.p, h_de.p + CT * nmax, SK * nmax, cudaMemcpyHostToDevice));
-    const HostInputs hin{h_kg.p, h_en.p, h_de.p};
+    const HostInputs hin{h_kg.p, h_en.p, h_de.p, nmax};
 
     for (const std::size_t n : batches) {
         std::vector<Runner> rs;
