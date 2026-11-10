@@ -1,0 +1,6 @@
+# Keep the Docker build context small: sources only.
+.git
+build*
+tutorial/pqc_demo*
+tutorial/.ipynb_checkpoints
+figures

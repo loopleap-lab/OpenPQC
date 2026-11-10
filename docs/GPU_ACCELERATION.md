@@ -345,7 +345,7 @@ units they are the identity.
 ### 4.2 API
 
 Applications call the GPU API, `openpqc/sycl.h` (library `OpenPQC::sycl`): one context type, `openpqc_gpu`, for all
-21 parameter sets of ML-KEM, ML-DSA and SLH-DSA, created from an `openpqc_alg` (`openpqc/common.h`), with a C++ layer
+18 parameter sets of ML-KEM, ML-DSA and SLH-DSA, created from an `openpqc_alg` (`openpqc/common.h`), with a C++ layer
 over it in `openpqc/sycl.hpp`. It sits on the three backends (`include/openpqc/sycl.cpp`, through
 `Core/sycl/opqc_sycl_backends.hpp`). The backends' own C APIs (`ML/KEM/sycl/openpqc_mlkem_sycl.h`, `opqc_sycl_mlkem_*`,
 and those of ML-DSA and SLH-DSA) are internal: not installed, not exported by the shared `openpqc_sycl`

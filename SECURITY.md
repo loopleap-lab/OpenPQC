@@ -112,7 +112,7 @@ generation with and without the pair-wise consistency test excepted). These guar
 library's own code; an application that compiles the header-only C++ layers itself gets copies in its own build
 configuration, with its own macros and flags. Install rules, a CMake package and
 pkg-config files followed (test `install_consumer`), and a C program links the library without the C++ runtime (test
-`c_link`). Then the unified GPU API (`openpqc/sycl.h`, `sycl.hpp`): one context type for all 21 parameter sets, a
+`c_link`). Then the unified GPU API (`openpqc/sycl.h`, `sycl.hpp`): one context type for all 18 parameter sets, a
 status buffer on every call, the length of the message buffer, against which the device checks the offsets of the
 signature calls (review finding F073; test `gpu_api`), and a shared GPU library that exports this API only, with its
 testing interfaces in `OpenPQC::sycl_testing` and the backends' own C APIs internal (test `sycl_exports`). The review

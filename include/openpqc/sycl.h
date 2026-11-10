@@ -6,7 +6,7 @@
 /*
  * openpqc/sycl.h -- ML-KEM, ML-DSA and SLH-DSA in batches on GPUs and other SYCL devices (OpenPQC::sycl)
  *
- * One context type for all 21 parameter sets: openpqc_gpu_create(&gpu, alg, cfg) makes a context for the
+ * One context type for all 18 parameter sets: openpqc_gpu_create(&gpu, alg, cfg) makes a context for the
  * openpqc_alg alg (openpqc/common.h) on a SYCL device, and every call of it runs n independent operations of
  * that parameter set. The results are byte-identical to the CPU library's (openpqc/kem.h, openpqc/sig.h):
  *

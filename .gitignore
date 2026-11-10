@@ -9,6 +9,7 @@ __pycache__/
 # the original sources of the removed NTT learning library, ...), except the repository's own
 .*
 !.gitignore
+!.dockerignore
 !.gitmodules
 !.gitattributes
 !.github/

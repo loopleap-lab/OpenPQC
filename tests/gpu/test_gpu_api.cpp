@@ -573,6 +573,42 @@ void test_cxx(int index) {
     CHECK(v.status() == openpqc::status::ok && !v.ok());
     for (std::size_t i = 0; i < N; i++)
         CHECK(v[i] == (i == 4 ? openpqc::status::invalid_signature : openpqc::status::ok));
+
+    // host calls of HashSLH-DSA: the pre-hashes PH(M) are packed at a stride (openpqc/sycl.h, Messages), and the
+    // CPU accepts the signatures of the messages M (a set in every development build: SHAKE-256f, id 12)
+    using SLH = openpqc::SLH_DSA_SHAKE_256f;
+    const openpqc_gpu_config slh_cfg{index, 3};
+    openpqc_gpu* probe = nullptr;
+    if (openpqc_gpu_create(&probe, SLH::alg, &slh_cfg) != OPENPQC_OK) {
+        std::printf("  (HashSLH-DSA host calls: SHAKE-256f not in this build)\n");
+        return;
+    }
+    openpqc_gpu_destroy(probe);
+    openpqc::sycl::Context<SLH> slh{slh_cfg};
+    constexpr std::size_t M = 2;
+    std::vector<SLH::public_key> spk(M);
+    std::vector<SLH::secret_key> ssk(M);
+    std::vector<SLH::signature> ssig(M);
+    CHECK(slh.keygen(spk, ssk).ok());
+    std::vector<Bytes> messages, digests;
+    std::vector<std::span<const std::uint8_t>> ph;
+    for (std::size_t i = 0; i < M; i++) {
+        messages.push_back(random_bytes(100 + i));
+        std::array<std::uint8_t, openpqc::max_prehash_bytes> d{};
+        openpqc::prehash(d, openpqc::PreHash::SHA2_256, messages[i]);
+        digests.emplace_back(d.begin(), d.begin() + 32);
+    }
+    for (const Bytes& d : digests) ph.emplace_back(d);
+    const openpqc_sign_opts hash{CTX, CTXLEN, OPENPQC_PREHASH_SHA2_256, 0};
+    const auto r = slh.sign(std::span(ssig), std::span<const std::span<const std::uint8_t>>(ph), &hash,
+                            std::span<const SLH::secret_key>(ssk));
+    CHECK(r.ok());
+    for (std::size_t i = 0; i < M; i++)
+        CHECK(openpqc_sig_verify(SLH::alg, ssig[i].data(), ssig[i].size(), messages[i].data(), messages[i].size(), &hash,
+                                 spk[i].data()) == OPENPQC_OK);
+    const auto rv = slh.verify(std::span<const SLH::signature>(ssig), std::span<const std::span<const std::uint8_t>>(ph),
+                               &hash, std::span<const SLH::public_key>(spk));
+    CHECK(rv.ok());
 }
 
 } // namespace

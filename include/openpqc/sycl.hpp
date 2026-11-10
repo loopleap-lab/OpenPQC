@@ -31,7 +31,9 @@
 //   memory. The result is a Results: the call's status (status()), the status of every operation (operator[]),
 //   and ok() for "the call and every operation succeeded". An output of an operation whose status is not
 //   status::ok is not a result (zeros, as openpqc/sycl.h says). The messages of sign and verify are spans of
-//   bytes, one per operation, packed into one buffer with offsets.
+//   bytes, one per operation, packed into one buffer: at a stride when they all have the same length (so the
+//   pre-hashes PH(M) of SLH-DSA's pre-hash variants, opts->prehash, pass as openpqc/sycl.h asks), else with
+//   offsets.
 //
 //   Device calls (*_async, on Buffer<T>): queued on the context, as the C API's are; with `done`, an event that
 //   completes when the call's work is done (openpqc_gpu_event: waiting for it does not report a device failure,
@@ -392,13 +394,18 @@ private:
         std::uint8_t* host_ = nullptr;
     };
 
-    // The messages of a host call, packed with their offsets
+    // The messages of a host call, packed back to back: at a stride when they all have the same length (which
+    // SLH-DSA's pre-hash variants require of PH(M), openpqc/sycl.h, Messages), else with offsets
     struct Packed {
+        bool strided;
+        std::size_t stride;
         Staged data, offsets;
         std::vector<std::uint8_t> bytes;
         std::vector<std::uint64_t> offs;
         Packed(Context& c, std::span<const std::span<const std::uint8_t>> msgs)
-            : data(c, std::max<std::size_t>(1, total(msgs))), offsets(c, (msgs.size() + 1) * sizeof(std::uint64_t)) {
+            : strided(same_length(msgs)), stride(strided && !msgs.empty() ? msgs[0].size() : 0),
+              data(c, std::max<std::size_t>(1, total(msgs))),
+              offsets(c, strided ? 0 : (msgs.size() + 1) * sizeof(std::uint64_t)) {
             bytes.reserve(total(msgs));
             offs.reserve(msgs.size() + 1);
             offs.push_back(0);
@@ -413,11 +420,18 @@ private:
             for (const auto& m : msgs) t += m.size();
             return t;
         }
+        static bool same_length(std::span<const std::span<const std::uint8_t>> msgs) {
+            for (const auto& m : msgs) {
+                if (m.size() != msgs[0].size()) return false;
+            }
+            return true;
+        }
         openpqc_status upload() {
             const openpqc_status s = data.upload(bytes.data());
-            return s == OPENPQC_OK ? offsets.upload(offs.data()) : s;
+            return s == OPENPQC_OK && !strided ? offsets.upload(offs.data()) : s;
         }
         [[nodiscard]] openpqc_gpu_messages messages() const noexcept {
+            if (strided) return {data.dev(), nullptr, stride, offs.back()};
             return {data.dev(), reinterpret_cast<const std::uint64_t*>(offsets.dev()), 0, offs.back()};
         }
     };

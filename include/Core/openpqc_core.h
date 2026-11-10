@@ -21,7 +21,7 @@
  *     OPENPQC_PREHASH_SHA2_256 (1) ... OPENPQC_PREHASH_SHAKE256 (12), the values of ph
  *   Constant time (Core/opqc_ct.h), header-only:
  *     opqc_ct_memcmp, opqc_ct_cmov, opqc_value_barrier_u32, ...
- *   Operating system (Core/opqc_platform.h), in the library openpqc_core:
+ *   Operating system (Core/opqc_platform.h), in the library openpqc:
  *     opqc_randombytes(out, len), opqc_zeroize(p, len)
  *
  * Preconditions and errors. The incremental sponge follows FIPS 202's order:

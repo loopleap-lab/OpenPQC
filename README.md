@@ -1,20 +1,29 @@
 # OpenPQC
 
-An open-source post-quantum cryptography library for research, with GPU acceleration across vendors: an open
-alternative to NVIDIA cuPQC.
+<p align="center">
+  <img src="figures/openpqc-logo.png" alt="OpenPQC logo: a Q with a subtle key-shaped tail" width="560">
+</p>
 
-- **Readable and structured.** The code follows the standards closely. A header-only **C11 math core** holds the arithmetic,
-  hashing, sampling and encoding, and a **C++20 scheme layer** holds the algorithms of FIPS 203 (ML-KEM), FIPS 204
-  (ML-DSA) and FIPS 205 (SLH-DSA), one function per algorithm, commented with the standard's line numbers.
-- **Vendor-neutral GPUs.** The **SYCL 2020** backends compile the same math core into GPU kernels, behind one GPU API
-  for all 21 parameter sets (`openpqc/sycl.h`). They run with Intel DPC++ and with AdaptiveCpp, on NVIDIA and Intel
-  GPUs and on CPUs.
-- **Checked against references.** [mlkem-native](https://github.com/pq-code-package/mlkem-native), the PQCA's formally
-  verified ML-KEM, [CRYSTALS-Dilithium](https://github.com/pq-crystals/dilithium), the reference implementation of
-  ML-DSA, and [SPHINCS+](https://github.com/sphincs/sphincsplus), the designers' implementation of SLH-DSA, are kept
-  unmodified in `reference/`. The tests compare OpenPQC with them byte for byte, run their test programs (known
-  answers, functional tests, and for ML-KEM NIST ACVP and Wycheproof) against both, and check ML-DSA and SLH-DSA
-  against NIST's ACVP vectors.
+**An open-source framework for post-quantum cryptography across CPUs and GPUs.**
+
+OpenPQC brings standards-oriented implementations, portable GPU acceleration, and hands-on examples into
+one research framework. Explore how post-quantum algorithms work, use them through C and C++ APIs, and
+compare their behavior and performance across hardware platforms.
+
+[Quick start](#quick-start) · [Tutorial](#hands-on-tutorial) · [GPU setup](#gpu-setup) ·
+[API examples](#using-openpqc) · [Benchmarks](#benchmarks) · [Documentation](#documentation) ·
+[Security notes](#security-notes)
+
+- **Follow the standards.** A header-only C11 math core and a C++20 scheme layer implement ML-KEM,
+  ML-DSA, and SLH-DSA. Scheme functions map to FIPS algorithms, with comments referencing their steps.
+- **Share code across hardware.** SYCL 2020 kernels reuse the CPU math core, behind one GPU API for all
+  18 parameter sets (`openpqc/sycl.h`). GPU backends support Intel DPC++ and AdaptiveCpp, with documented
+  runs on NVIDIA and Intel GPUs.
+- **Check against independent implementations.** Differential tests compare results byte for byte
+  with mlkem-native, CRYSTALS-Dilithium, and SPHINCS+. The suite also includes known-answer tests,
+  NIST ACVP vectors, and ML-KEM Wycheproof tests.
+- **Learn by running.** Start with the Jupyter tutorial, then explore standalone API examples,
+  application demos, and CPU/GPU benchmarks.
 
 **Research-grade.** OpenPQC follows the text of FIPS 203, 204 and 205 and passes the NIST ACVP test cases in its
 suite, and in an independent review in October 2026 its outputs matched the reference implementations and OpenSSL in
@@ -22,206 +31,200 @@ every comparison made. It is not FIPS 140-3 validated and not yet hardened for p
 [Maturity and scope](#maturity-and-scope), the [Security notes](#security-notes) and [SECURITY.md](SECURITY.md)
 before you use it, and use a validated module for production and FIPS deployments.
 
-## Layout
+## Supported algorithms
 
-The primitives are organised in groups: Core (shared by every scheme) and one group per scheme.
+| Algorithm | Standard | Parameter sets | CPU and SYCL operations |
+| --- | --- | --- | --- |
+| **ML-KEM** | FIPS 203 | 512, 768, 1024 | Key generation, encapsulation, decapsulation |
+| **ML-DSA** | FIPS 204 | 44, 65, 87 | Key generation, signing, verification; HashML-DSA and external mu |
+| **SLH-DSA** | FIPS 205 | All 12 SHA2/SHAKE sets: 128s/f, 192s/f, 256s/f | Key generation, signing, verification; HashSLH-DSA |
 
-```
-include/
-  openpqc/   the common API: openpqc_status, openpqc_alg and the algorithm table (common.h), the parameter set
-             chosen at run time (kem.h, sig.h), all of the C API (openpqc.h) and of the C++ API (openpqc.hpp:
-             ML_KEM_768 ..., status, secret<N>, visit_kem, visit_sig); the testing interfaces (testing.h,
-             testing.hpp), in the library OpenPQC::testing, for the tests only; the GPU API (sycl.h, sycl.hpp,
-             sycl/interop.hpp, sycl_experimental.h; sycl.cpp): one context type for all 21 parameter sets, in
-             OpenPQC::sycl, with its testing interfaces (sycl_testing.h) in OpenPQC::sycl_testing, for the tests
-             only; hash functions for an application's own SYCL kernels (sycl/device.hpp, header-only)
-  Core/      shared by every scheme: Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11, header-only), constant-time
-             helpers, OS randomness and zeroization, C++ wrappers, the pre-hash functions of HashML-DSA and
-             HashSLH-DSA (prehash.hpp); sycl/: the GPU runtime, team, sponge, SHA-2 and message helpers of all
-             GPU backends                                                           -> Core/README.md
-  ML/        shared by the module-lattice schemes: math/ml_bitpack.h (the bit packing of both standards)
-                                                                                    -> ML/README.md
-  ML/KEM/    FIPS 203, ML-KEM-512/768/1024:
-               math/    C11 math core (Z_q, NTT, compression, encoding, sampling)
-               scheme/  C++20: K-PKE, ML-KEM, input checks, one function per FIPS 203 algorithm
-               sycl/    batched ML-KEM on GPUs (SYCL 2020): the backend under the GPU API
-               openpqc_mlkem.h (C API), mlkem.hpp (C++ API)                         -> ML/KEM/README.md
-  ML/DSA/    FIPS 204, ML-DSA-44/65/87 and HashML-DSA:
-               math/    C11 math core (Z_q, NTT, rounding and hints, encoding, sampling)
-               scheme/  C++20: one function per FIPS 204 algorithm, HashML-DSA, external mu
-               sycl/    batched ML-DSA on GPUs (SYCL 2020): the backend under the GPU API
-               openpqc_mldsa.h (C API), mldsa.hpp (C++ API)                         -> ML/DSA/README.md
-  SLH/DSA/   FIPS 205, the twelve SLH-DSA parameter sets and HashSLH-DSA:
-               math/    C11 math core (toInt, toByte, base_2b, the address ADRS, HMAC and MGF1)
-               scheme/  C++20: WOTS+, XMSS, the hypertree, FORS, one function per FIPS 205 algorithm
-               sycl/    batched SLH-DSA on GPUs (SYCL 2020): the backend under the GPU API
-               openpqc_slhdsa.h (C API), slhdsa.hpp (C++ API)                       -> SLH/DSA/README.md
-reference/   mlkem-native, CRYSTALS-Dilithium and SPHINCS+, unmodified: test oracles and CPU baselines
-                                                                                    -> reference/README.md
-tests/       C++ tests; tests/Core; tests/ML-KEM, tests/ML-DSA, tests/SLH-DSA (the references' test programs
-             against both implementations, differential, math-core, constant-time and stack-residue tests, ACVP);
-             the C APIs' error paths; tests/gpu (the GPU API and the backends against the CPU on every device,
-             the error contract, fault injection, the device hash functions)
-bench/       CPU and GPU benchmarks, run_benchmarks.sh, compare_gpu.py
-examples/    demo_cpu, demo_gpu, live_demo: how to use ML-KEM, ML-DSA and SLH-DSA, on the CPU and on a GPU;
-             device_hash: OpenPQC's hash functions in an application's own SYCL kernel
-                                                                                    -> examples/README.md
-docs/        GPU_ACCELERATION.md (the GPU design, the measurements and the comparison with published GPU work),
-             PRIMITIVES.md (the mathematical primitives of the schemes and their groups), catalog/ (per-symbol
-             catalogs of the upstream projects), SOURCE_MAP.md (mlkem-native file by file: what is FIPS 203 and
-             what mlkem-native added)
-                                                                                    -> docs/GPU_ACCELERATION.md
-scripts/     vendor_mlkem_native.py, vendor_dilithium.py, vendor_sphincsplus.py (update reference/ and the test
-             programs from upstream)
-cmake/       warning flags, stack-clash protection and the frame-size limit, native-backend detection for the
-             reference, the symbols that the shared GPU library exports (openpqc_sycl.map)
-CMakePresets.json, .github/workflows/ci.yml
-             the configurations that CI builds and tests: GCC and Clang, sanitizers, constant time at fixed levels
-SECURITY.md  how to report a vulnerability, the configurations that are tested, the open issues
-```
+The shared core provides Keccak-f[1600], SHA-3, SHAKE, SHA-2, the twelve pre-hash functions used by
+HashML-DSA and HashSLH-DSA, constant-time helpers, OS randomness, and zeroization.
 
-## Build and test
+All of it is one library, `openpqc` (CMake target `OpenPQC::openpqc`). The GPU API, `openpqc/sycl.h` in the
+library `openpqc_sycl` (`OpenPQC::sycl`), runs operations in batches, with one context type for all 18 parameter
+sets. SLH-DSA currently uses a baseline GPU pipeline; further optimization experiments are planned. FN-DSA is
+planned (waiting for FIPS 206) and is not yet implemented. See [Status](#status) for what each part implements
+and how it is tested, and the [scheme documentation](#documentation) for API coverage and backend design details.
 
-CPU only (a C11 and C++20 compiler; tested on x86-64 Linux with GCC 16, Clang 23 and the Clang of DPC++):
+## Quick start
+
+For a native build, use CMake 3.20 or newer and compilers with C11 and C++20 support (tested on x86-64 Linux
+with GCC 16, Clang 23 and the Clang of DPC++). For a tutorial environment with the tools preinstalled, use the
+[Docker instructions](#hands-on-tutorial).
+
+### 1. Get the source
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+git clone https://github.com/UCF-ML-Research/OpenPQC.git
+cd OpenPQC
+```
+
+Reference implementations are already vendored in the repository. Initializing the upstream submodules
+is not required to build or run the tests.
+
+### 2. Build and run on the CPU
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DOPENPQC_SYCL=OFF \
+  -DOPENPQC_BUILD_TESTS=ON -DOPENPQC_BUILD_EXAMPLES=ON
 cmake --build build -j
-ctest --test-dir build -LE network -j4          # offline tests
-ctest --test-dir build -LE "network|slow" -j4   # quick run: the offline tests without the slow ones
-ctest --test-dir build -L network               # ACVP and Wycheproof (download the vectors on first use)
+./build/examples/demo_cpu
 ```
 
-Without `CMAKE_BUILD_TYPE` the build is a Release build (-O3 with GCC and Clang). `-DCMAKE_BUILD_TYPE=Debug` gives a
-debug build (-O0): correct, but slow (the review measured ML-KEM-768 KeyGen 13 times slower than in Release). The
-stack sizes that the headers document are those of optimized builds, with the -O0 figures given apart. The label
-`slow` marks the tests that take more than about a minute: SLH-DSA's KATs of the s parameter sets, its differential,
-constant-time and ACVP tests, the constant-time tests of the libraries compiled at fixed optimization levels
-(`mlkemNNN_O1_ct` … `_Os_ct`, `slhdsa_O2_ct`), and SLH-DSA's GPU test (1–10 minutes each with GCC 16 on an i7-11370H,
-the GPU test longer; see [include/SLH/DSA/README.md](include/SLH/DSA/README.md#tests)). Configuring lists every test
-that it leaves out and why (no valgrind, Python 3, OpenSSL, Clang, threads, 32-bit libraries or a linker with
-`--wrap`, no AVX2 build of the reference, a host that is not x86-64, a build that is not Linux with GCC or Clang, a
-sanitizer build), and CTest reports those tests as skipped (in a sanitizer build four constant-time tests are
-registered; CMake 3.28 or later disables them and CTest reports them as not run, while older CMake warns that they
-will fail), with one exception: the ML-KEM no-burn and thread-stack tests (`mlkem_stack_noburn`, `mlkem_thread_stack`
-and their `_pct` variants) are left out without a message where the build is not Linux with GCC or Clang, and the
-thread-stack tests also where threads are missing. `-DOPENPQC_REQUIRE_FULL_TESTS=ON` turns a missing tool into a
-configuration error instead.
+`demo_cpu` runs ML-KEM-768, ML-DSA-65, and SLH-DSA-SHA2-128f. The explicit `OPENPQC_SYCL=OFF`
+setting keeps this build CPU-only even when a SYCL compiler is installed.
 
-`CMakePresets.json` holds the configurations that CI builds (build trees under `build-presets/`), with
-`OPENPQC_REQUIRE_FULL_TESTS` on:
+### 3. Run the tests
 
 ```sh
-cmake --workflow --preset gcc-release           # configure, build, every offline test; also clang-release
-cmake --workflow --preset gcc-asan-ubsan        # AddressSanitizer and UBSan at -O1, the quick tests; also clang-asan-ubsan
-cmake --preset ct-clang-O2 && cmake --build --preset ct-clang-O2 && ctest --preset ct-clang-O2
-                                                # constant-time tests at one level: ct-{gcc,clang}-{O0,O2,O3,Os}
-ctest --preset gcc-release-network              # ACVP and Wycheproof, after the gcc-release workflow
-cmake --workflow --preset gcc-release-pct       # ML-KEM and ML-DSA with their pair-wise consistency tests compiled in,
-                                                # and their quick tests; also clang-release-pct
+# Quick check: exclude tests that need network access or take longer to run.
+ctest --test-dir build --output-on-failure -LE "network|slow" -j4
+
+# Full offline suite, including the slow tests.
+ctest --test-dir build --output-on-failure -LE network -j4
+
+# ACVP and Wycheproof tests; vectors are downloaded on first use.
+ctest --test-dir build --output-on-failure -L network
 ```
 
-`.github/workflows/ci.yml` runs these presets in an Arch Linux container (GCC 16, Clang 23, valgrind); it has not
-yet run on a hosted runner.
+The `slow` label includes several SLH-DSA tests. See the
+[SLH-DSA testing notes](include/SLH/DSA/README.md#tests) for their scope and expected runtime, and
+[Running the tests](#running-the-tests) for the labels, the tests that configuring leaves out, and the
+configurations that CI runs.
 
-With the SYCL backend, using **DPC++** (build the whole project with its compilers):
+## Hands-on tutorial
+
+The [Jupyter walkthrough](tutorial/README.md) introduces all three schemes through Python and C++.
+Generate keys, establish a shared secret, sign and verify messages, explore tampering behavior,
+and compare key sizes, signature sizes, and timings with classical cryptography.
+
+From the repository root:
+
+```sh
+docker build -f tutorial/Dockerfile -t openpqc-tutorial .
+docker run --rm -p 127.0.0.1:8888:8888 openpqc-tutorial
+```
+
+Open [JupyterLab](http://localhost:8888/lab?token=openpqc) to start the notebook. The image includes
+JupyterLab, the compiler, and a prebuilt CPU library. The container is removed when it exits;
+see the [tutorial instructions](tutorial/README.md) to save notebook edits or run natively.
+
+The Docker image is **CPU-only**. The notebook's GPU section can run a native `demo_gpu` build
+created with DPC++ or AdaptiveCpp. For a staged presentation, see the
+[live demo](examples/README.md#live-demo-for-a-presentation).
+
+## GPU setup
+
+Choose one SYCL toolchain below. You also need the runtime and drivers for your target device.
+`OPENPQC_SYCL=ON` makes configuration fail if a supported SYCL toolchain cannot be found.
+
+### Intel DPC++
+
+Build the project with DPC++'s C and C++ compilers. Replace `/path/to/dpcpp` with your installation
+path. This example targets NVIDIA CUDA and Intel SPIR-V devices; adjust the targets and NVIDIA
+architecture (`sm_86` here) for your toolchain and hardware.
 
 ```sh
 cmake -S . -B build-dpcpp -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=<dpcpp>/bin/clang -DCMAKE_CXX_COMPILER=<dpcpp>/bin/clang++ \
-      -DOPENPQC_SYCL_TARGETS=nvptx64-nvidia-cuda,spir64 \
-      "-DOPENPQC_SYCL_FLAGS=-Xsycl-target-backend=nvptx64-nvidia-cuda --offload-arch=sm_86"
+  -DCMAKE_C_COMPILER="/path/to/dpcpp/bin/clang" \
+  -DCMAKE_CXX_COMPILER="/path/to/dpcpp/bin/clang++" \
+  -DOPENPQC_SYCL=ON \
+  -DOPENPQC_BUILD_TESTS=ON -DOPENPQC_BUILD_EXAMPLES=ON \
+  -DOPENPQC_SYCL_TARGETS=nvptx64-nvidia-cuda,spir64 \
+  "-DOPENPQC_SYCL_FLAGS=-Xsycl-target-backend=nvptx64-nvidia-cuda --offload-arch=sm_86"
+cmake --build build-dpcpp -j
+./build-dpcpp/examples/demo_gpu
+ctest --test-dir build-dpcpp --output-on-failure -L gpu
 ```
 
-or using **AdaptiveCpp** (any compiler for the rest; device code is JIT-compiled for whatever device is present):
+### AdaptiveCpp
+
+AdaptiveCpp compiles the device code; a separate host compiler can build the rest of the project.
+Replace `/path/to/acpp` with your installation path. The `generic` target enables runtime compilation
+for available devices supported by your AdaptiveCpp installation.
 
 ```sh
 cmake -S . -B build-acpp -DCMAKE_BUILD_TYPE=Release \
-      -DAdaptiveCpp_DIR=<acpp>/lib/cmake/AdaptiveCpp -DACPP_TARGETS=generic
+  -DOPENPQC_SYCL=ON \
+  -DOPENPQC_BUILD_TESTS=ON -DOPENPQC_BUILD_EXAMPLES=ON \
+  -DAdaptiveCpp_DIR="/path/to/acpp/lib/cmake/AdaptiveCpp" \
+  -DACPP_TARGETS=generic
+cmake --build build-acpp -j
+./build-acpp/examples/demo_gpu
+ctest --test-dir build-acpp --output-on-failure -L gpu
 ```
 
-`ctest -L gpu` then runs the GPU tests on every SYCL device of the machine: `gpu_api` (the GPU API, `openpqc/sycl.h`
-and `sycl.hpp`, linked as an application links it: every parameter set of the build against the CPU library, the order
-of checks, messages outside their buffer, launches of 3 operations, a context on the application's SYCL context, the
-C++ layer), `device_hash` (the hash functions of `openpqc/sycl/device.hpp` against Core's CPU functions, 1856 cases),
-`mlkem_sycl`, `mldsa_sycl` and `slhdsa_sycl` (the backends' own C APIs: byte identity with the CPU library, the status
-and error contract, fresh randomness, two threads on one context), `mlkem_sycl_faults`, `mldsa_sycl_faults` and
-`slhdsa_sycl_faults` (device work that fails part way, by fault injection: fail-closed status and outputs,
-zeroization, the failed context), `core_sycl` (the helpers the backends share), and `core_sycl_sticky`,
-`mldsa_sycl_sticky` and `slhdsa_sycl_faults_sticky`, which cause a real fault on an NVIDIA GPU in a process of their
-own (skipped without one). Without the label, `sycl_exports` checks that the shared `openpqc_sycl` exports the GPU API
-(`openpqc_gpu_*`) and nothing else, with `openpqc_sycl_testing` as the control (Linux). The first run on an Intel GPU
-compiles the kernels for minutes (about 3.5 minutes for SLH-DSA's twelve sets). DPC++ generates the device code when
-it links the GPU library `openpqc_sycl`: once, as it is a shared library by default, a second time for
-`openpqc_sycl_testing` (the same objects, for the white-box tests), and again for each white-box test and benchmark
-that compiles a backend's source itself.
+`demo_gpu` runs the three schemes in batches on the GPU, checked against the CPU and timed against it. The GPU
+tests compare the GPU API and the backends with the CPU library on every available SYCL device
+([GPU tests](#gpu-tests) lists them). The first run on an Intel GPU compiles the kernels for minutes (about
+3.5 minutes for SLH-DSA's twelve sets). DPC++ generates the device code when it links the GPU library
+`openpqc_sycl`: once, as it is a shared library by default, a second time for `openpqc_sycl_testing` (the same
+objects, for the white-box tests), and again for each white-box test and benchmark that compiles a backend's
+source itself. With all twelve SLH-DSA GPU parameter sets each of these links can take several minutes; see
+[build options](#build-options) and the [demo setup](examples/README.md#build-and-run) for a smaller
+development build.
 
-| Option                                             | Default        | Meaning                                                                                                                                                                                                                                                                        |
-| -------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `OPENPQC_SYCL`                                     | AUTO           | build the GPU library `openpqc_sycl` (the GPU API and the SYCL backends) when DPC++ (`-fsycl`) or AdaptiveCpp is found; ON makes it required. OFF by default when OpenPQC is a subproject (`add_subdirectory`, FetchContent): the parent project asks for it with ON |
-| `OPENPQC_SYCL_TARGETS`, `OPENPQC_SYCL_FLAGS`       | empty          | DPC++: devices to compile for, and extra flags for the SYCL code (e.g. `-DOPQC_SHA2_UNROLL_PASSES=1`, which keeps the SHA-2 rounds in loops: the same results, a DPC++ link of SLH-DSA's backend in about 2 instead of 10 minutes, SHA-256 on the GPUs measured 6–10 % slower) |
-| `OPENPQC_SLHDSA_SYCL_SETS`                         | empty          | development only: the SLH-DSA parameter-set ids (1–12, separated by commas, e.g. `3,4`; the CMake list form `3;4` does not build) that the SYCL backend contains; empty: all twelve. DPC++ generates the device code of every set when it links `openpqc_sycl` and each white-box test that compiles the backend, about 10 minutes and 1.2 GiB for all twelve |
-| `OPENPQC_MLKEM_KEYGEN_PCT`                         | OFF            | ML-KEM's KeyGen runs the pair-wise consistency test of FIPS 203 §7.1 (CPU library; SLH-DSA's test is a compile definition, see its README)                                                                                                                                     |
-| `OPENPQC_MLDSA_KEYGEN_PCT`                         | OFF            | ML-DSA's KeyGen runs the pair-wise consistency test of FIPS 140-3: it signs and verifies with each new key pair (CPU library; the GPU backend takes the compile definition of the same name, which the option does not give it)                                                |
-| `OPENPQC_WITH_MLKEM`, `_MLDSA`, `_SLHDSA`         | ON             | the schemes the libraries contain (`OPENPQC_HAVE_*` in `Core/openpqc_version.h` say which); the tests, benchmarks and examples need all three |
-| `BUILD_SHARED_LIBS`                                | OFF            | build the library `openpqc` as a shared library; it exports the C APIs only |
-| `OPENPQC_SYCL_SHARED`                              | ON             | build the GPU library `openpqc_sycl` as a shared library, which DPC++ links the device code into once; OFF: static, and every program that uses it is linked as SYCL code (`-fsycl` and the device targets). Shared, it exports the GPU API only (test `sycl_exports`); static, it also contains the backends' own functions, which no installed header declares |
-| `OPENPQC_NATIVE`                                   | ON             | build the reference (mlkem-native) with its SIMD/assembly backends where the CPU supports them                                                                                                                                                                                 |
-| `OPENPQC_BUILD_TESTS`, `_BENCHMARKS`, `_EXAMPLES`  | ON (top level) |                                                                                                                                                                                                                                                                                |
-| `OPENPQC_REQUIRE_FULL_TESTS`                       | OFF            | fail the configuration when a tool that tests need is missing (Python 3, OpenSSL, valgrind, threads, Clang, and on x86-64 the 32-bit C and C++ libraries for `hash_m32`) instead of leaving those tests out                                                                       |
-| `OPENPQC_SANITIZE`                                 | empty          | sanitizers for every target (GCC, Clang), e.g. `address,undefined`; the constant-time tests are then left out (valgrind cannot run them)                                                                                                                                       |
-| `OPENPQC_TEST_TIMEOUT_FACTOR`                      | empty          | multiplies the TIMEOUT of every test; empty: 10 in a sanitizer build, 3 in a Debug build, 1 otherwise                                                                                                                                                                         |
-| `OPENPQC_WERROR`                                   | ON (top level) | `-Werror` for the targets that link `openpqc_strict_warnings` (Core's and the schemes' CPU libraries, most of their tests, the examples; not the SYCL backends, the GPU tests or the benchmarks), and for the mlkem-native C code that the tests and benchmarks compile (`mlkem_native.c` and `mlkem_native_all.c` from `reference/`, and mlkem-native's test programs in `tests/ML-KEM/src`) |
-| `OPENPQC_MAX_FRAME_BYTES`                          | 196608         | the largest stack frame in the targets that link `openpqc_strict_warnings` (row above), in optimized builds without AddressSanitizer, as a warning (an error with `OPENPQC_WERROR`); 0: no limit. Core's and the schemes' CPU libraries are also compiled with `-fstack-clash-protection` where the compiler has it (not the SYCL backends, and not the copies of the scheme libraries that the constant-time tests compile) |
-| `OPENPQC_BENCH_CYCLES`                             | PERF           | cycle counter for the single-thread CPU benchmarks: NO, PERF, PMU, MAC                                                                                                                                                                                                         |
-| `OPENPQC_VALGRIND`, `OPENPQC_VALGRIND_INCLUDE_DIR` | found on PATH  | valgrind for the constant-time tests: `core_*_ct`, `mlkemNNN_ct`, `mldsa_ct`, `slhdsa_ct` at the build's optimization level, and the same with the libraries compiled at fixed levels (`mlkemNNN_O1_ct` … `_Os_ct`, `mldsa_O1_ct` … `_Os_ct`, `slhdsa_O2_ct`); OFF leaves them out (CTest reports them as skipped) |
-| `OPENPQC_CUPQC_DIR`                                | empty          | path to an NVIDIA cuPQC SDK: builds the optional baseline benchmark (its results are covered by NVIDIA's licence, and this repository does not publish them) |
+## Using OpenPQC
 
-### Install and use
+### C and C++ APIs
 
-`cmake --install build --prefix <prefix>` installs the library `openpqc` (static, or shared with
-`-DBUILD_SHARED_LIBS=ON`), the GPU library `openpqc_sycl` if it was built, the headers of their APIs under
-`<prefix>/include/openpqc` (included as `"openpqc/openpqc.h"`, `"openpqc/openpqc.hpp"`, `"ML/KEM/openpqc_mlkem.h"`,
-`"Core/openpqc_version.h"`, `"openpqc/sycl.h"`, ...; the package's include directories are `<prefix>/include` and
-`<prefix>/include/openpqc`), a CMake package and pkg-config files. For the GPU library these headers are the GPU API
-(`openpqc/sycl.h`, `sycl.hpp`, `sycl_experimental.h`, `sycl/interop.hpp`) and the header-only hash functions for an
-application's own kernels (`openpqc/sycl/device.hpp`) with the three `Core/sycl` headers they are made of
-(`opqc_sycl_sha2.hpp`, `_sponge.hpp`, `_team.hpp`); the backends' own C headers (`ML/KEM/sycl/openpqc_mlkem_sycl.h`,
-...) are internal and stay in the source tree. Nothing of the tests is installed, the testing interfaces
-(`openpqc/testing.h` and `openpqc/sycl_testing.h`, the libraries `OpenPQC::testing` and `OpenPQC::sycl_testing`)
-included.
+OpenPQC is one library, `openpqc` (CMake target `OpenPQC::openpqc`), with a C API and a C++ API for every
+scheme. Batches on a GPU are in a second library, `openpqc_sycl` (`OpenPQC::sycl`), with a C API and a C++
+layer over it. The [complete examples](examples/README.md#the-apis-in-one-table) cover each interface.
 
-```cmake
-find_package(OpenPQC 0.3 REQUIRED)                       # COMPONENTS sycl: also the GPU library
-target_link_libraries(app PRIVATE OpenPQC::openpqc)      # OpenPQC::sycl for the GPU API (openpqc/sycl.h)
-```
+| Interface | C header | C++ header | CMake target |
+| --- | --- | --- | --- |
+| The whole API | `openpqc/openpqc.h` | `openpqc/openpqc.hpp` | `OpenPQC::openpqc` |
+| Status codes, parameter-set ids and sizes (`openpqc_status`, `openpqc_alg`, `openpqc_alg_info_get`) | `openpqc/common.h` | `openpqc/common.hpp` (`openpqc::status`, `openpqc::secret<N>`) | `OpenPQC::openpqc` |
+| Parameter set chosen at run time | `openpqc/kem.h`, `openpqc/sig.h` | `openpqc/openpqc.hpp` (`visit_kem`, `visit_sig`) | `OpenPQC::openpqc` |
+| ML-KEM | `ML/KEM/openpqc_mlkem.h` | `ML/KEM/mlkem.hpp` | `OpenPQC::openpqc` |
+| ML-DSA | `ML/DSA/openpqc_mldsa.h` | `ML/DSA/mldsa.hpp` | `OpenPQC::openpqc` |
+| SLH-DSA | `SLH/DSA/openpqc_slhdsa.h` | `SLH/DSA/slhdsa.hpp` | `OpenPQC::openpqc` |
+| Shared core: hash functions, constant-time helpers, zeroization | `Core/openpqc_core.h` | `Core/hash.hpp` | `OpenPQC::openpqc` |
+| Batches on a GPU | `openpqc/sycl.h`, `openpqc/sycl_experimental.h` | `openpqc/sycl.hpp`, `openpqc/sycl/interop.hpp` | `OpenPQC::sycl` |
+| Hash functions in an application's own SYCL kernels | – | `openpqc/sycl/device.hpp` | Header-only, installed with `OpenPQC::sycl` |
+| Testing interfaces: randomness and formatted messages chosen by the caller (never installed) | `openpqc/testing.h`, `openpqc/sycl_testing.h` | `openpqc/testing.hpp` | `OpenPQC::testing`, `OpenPQC::sycl_testing` |
 
-```sh
-cc app.c $(pkg-config --cflags --libs openpqc)           # openpqc-sycl for the GPU API (openpqc/sycl.h)
-```
-
-A project that includes OpenPQC with `add_subdirectory` or FetchContent uses the same target names. The library needs
-nothing of the C++ runtime, so a program in C links it with the C compiler alone, also from a CMake project in C only.
-`openpqc_version()` returns the version of the library a program runs with (`Core/openpqc_version.h`). The shared GPU
-library needs its SYCL implementation's runtime on the library path (DPC++'s or AdaptiveCpp's `lib` directory):
-OpenPQC sets no rpath for it in installed files or in the programs of projects that use it.
-
-## Usage
-
-Complete programs: [examples/](examples/README.md) (`demo_cpu`: the three schemes on the CPU; `demo_gpu`: the same in
-batches on a GPU, checked against the CPU and timed against it; `device_hash`: OpenPQC's hash functions in an
-application's own SYCL kernel).
+For example, this C program performs an ML-KEM-768 round trip, checks each operation, compares
+the shared secrets, and clears the secret buffers before returning:
 
 ```c
+#include "Core/openpqc_core.h"           /* opqc_ct_memcmp, opqc_zeroize */
 #include "openpqc/openpqc.h"             /* link OpenPQC::openpqc */
 
-uint8_t pk[OPENPQC_MLKEM768_PUBLICKEYBYTES], sk[OPENPQC_MLKEM768_SECRETKEYBYTES];
-uint8_t ct[OPENPQC_MLKEM768_CIPHERTEXTBYTES], ss[OPENPQC_MLKEM_BYTES], ss2[OPENPQC_MLKEM_BYTES];
-if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||     /* randomness from the operating system */
-    openpqc_mlkem768_encaps(ct, ss, pk) != OPENPQC_OK || /* checks pk first (FIPS 203, Section 7.2) */
-    openpqc_mlkem768_decaps(ss2, ct, sk) != OPENPQC_OK)  /* ss2 == ss */
-    return -1;                                            /* use none of pk, sk, ct, ss, ss2 */
+int main(void)
+{
+    uint8_t pk[OPENPQC_MLKEM768_PUBLICKEYBYTES], sk[OPENPQC_MLKEM768_SECRETKEYBYTES];
+    uint8_t ct[OPENPQC_MLKEM768_CIPHERTEXTBYTES];
+    uint8_t ss_enc[OPENPQC_MLKEM_BYTES], ss_dec[OPENPQC_MLKEM_BYTES];
+    int result = 1;
 
+    if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||         /* randomness from the operating system */
+        openpqc_mlkem768_encaps(ct, ss_enc, pk) != OPENPQC_OK || /* checks pk first (FIPS 203, Section 7.2) */
+        openpqc_mlkem768_decaps(ss_dec, ct, sk) != OPENPQC_OK) {
+        goto cleanup;                                             /* use none of pk, sk, ct, ss_enc, ss_dec */
+    }
+    result = opqc_ct_memcmp(ss_enc, ss_dec, sizeof ss_enc) != 0;
+
+cleanup:
+    opqc_zeroize(sk, sizeof sk);
+    opqc_zeroize(ss_enc, sizeof ss_enc);
+    opqc_zeroize(ss_dec, sizeof ss_dec);
+    return result;
+}
+```
+
+A zero exit status means the round trip succeeded. ML-KEM uses **implicit rejection**: an invalid
+ciphertext of the expected length produces a fallback secret (`decaps` returns `OPENPQC_OK`), rather than a
+ciphertext-validity error. Signature verification, by contrast, reports invalid signatures. The
+[ML-KEM examples](examples/README.md) demonstrate these failure cases.
+
+Signatures, and any parameter set chosen at run time:
+
+```c
 uint8_t dpk[OPENPQC_MLDSA65_PUBLICKEYBYTES], dsk[OPENPQC_MLDSA65_SECRETKEYBYTES], sig[OPENPQC_MLDSA65_BYTES];
 if (openpqc_mldsa65_keygen(dpk, dsk) != OPENPQC_OK ||
     openpqc_mldsa65_sign(sig, msg, msglen, ctx, ctxlen, dsk) != OPENPQC_OK)    /* hedged; ctx may be NULL, 0 */
@@ -276,8 +279,10 @@ instantiates these compiles copies of its own, in its own build configuration: w
 guarantees (its pair-wise consistency test, stack burn and value barriers) holds for the C APIs and the library's
 code, whose copies have names of their own (`Core/abi.hpp`).
 
+### GPU API
+
 Batched operations on a GPU are in the library `openpqc_sycl` (`OpenPQC::sycl`), whose API is `openpqc/sycl.h`: one
-context type, `openpqc_gpu`, for all 21 parameter sets, created from an `openpqc_alg`
+context type, `openpqc_gpu`, for all 18 parameter sets, created from an `openpqc_alg`
 (`openpqc_gpu_create(&gpu, OPENPQC_ML_KEM_768, &cfg)`), and every call of it runs n operations of that set on buffers
 of USM memory of the context (`openpqc_gpu_malloc`), with a status entry per operation, required on every call, and
 results byte-identical to the CPU library's (`openpqc_gpu_kem_keygen`, `_encaps`, `_decaps`, `openpqc_gpu_sig_keygen`,
@@ -285,31 +290,277 @@ results byte-identical to the CPU library's (`openpqc_gpu_kem_keygen`, `_encaps`
 host data staged through page-locked memory, the results of every operation, buffers overwritten with zeros when they
 are freed), `openpqc/sycl/interop.hpp` creates a context in an application's SYCL context, and
 `openpqc/sycl/device.hpp` has hash functions for an application's own kernels. Randomness that the caller chooses is
-for testing only, in `openpqc/sycl_testing.h` (`OpenPQC::sycl_testing`, never installed). Examples:
+for testing only, in `openpqc/sycl_testing.h` (`OpenPQC::sycl_testing`, never installed).
+
+```cpp
+#include "openpqc/openpqc.hpp"
+#include "openpqc/sycl.hpp"                      // link OpenPQC::sycl
+
+using KEM = openpqc::ML_KEM_768;
+openpqc::sycl::Context<KEM> gpu;                 // default device and max_batch; throws openpqc::error if it fails
+std::vector<KEM::public_key> pk(n);  std::vector<KEM::secret_key> sk(n);
+std::vector<KEM::ciphertext> ct(n);  std::vector<KEM::shared_secret> ss(n);
+openpqc::check(gpu.keygen(pk, sk).status());     // host data: staged through page-locked memory and back
+auto r = gpu.encaps(ct, ss, pk);                 // r.ok(): the call and every operation; r[i]: operation i
+```
+
+The backends' own C APIs (`ML/KEM/sycl/openpqc_mlkem_sycl.h` with `opqc_sycl_mlkem_*`, and those of ML-DSA and
+SLH-DSA) are internal: not installed, not exported by the shared `openpqc_sycl`, and used through
+`OpenPQC::sycl_testing` by the white-box tests and the benchmarks only. Examples: the
+[GPU examples](examples/README.md#using-the-gpu-api-in-five-steps) and
 [docs/GPU_ACCELERATION.md §4.2](docs/GPU_ACCELERATION.md#42-api); what each scheme's calls do on the device:
 [include/ML/KEM/README.md](include/ML/KEM/README.md#gpu-backend-sycl),
 [include/ML/DSA/README.md](include/ML/DSA/README.md#gpu-backend-sycl) and
 [include/SLH/DSA/README.md](include/SLH/DSA/README.md#gpu-backend-sycl).
 
-## Status
+### Add OpenPQC to a CMake project
+
+With the repository at `third_party/OpenPQC` and the program above saved as `main.c`:
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(openpqc_example LANGUAGES C CXX)
+
+add_subdirectory(third_party/OpenPQC)
+add_executable(openpqc_example main.c)
+target_compile_features(openpqc_example PRIVATE c_std_11)
+target_link_libraries(openpqc_example PRIVATE OpenPQC::openpqc)
+```
+
+`OpenPQC::openpqc` links the shared core and all three schemes. In a project that includes OpenPQC with
+`add_subdirectory` or FetchContent, `OPENPQC_SYCL` is `OFF` by default; set it to `ON` before including OpenPQC
+to build the GPU library, `OpenPQC::sycl`. The target names are those of the installed package.
+
+### Install and use
+
+`cmake --install build --prefix <prefix>` installs the library `openpqc` (static, or shared with
+`-DBUILD_SHARED_LIBS=ON`), the GPU library `openpqc_sycl` if it was built, the headers of their APIs under
+`<prefix>/include/openpqc` (included as `"openpqc/openpqc.h"`, `"openpqc/openpqc.hpp"`, `"ML/KEM/openpqc_mlkem.h"`,
+`"Core/openpqc_version.h"`, `"openpqc/sycl.h"`, ...; the package's include directories are `<prefix>/include` and
+`<prefix>/include/openpqc`), a CMake package and pkg-config files. For the GPU library these headers are the GPU API
+(`openpqc/sycl.h`, `sycl.hpp`, `sycl_experimental.h`, `sycl/interop.hpp`) and the header-only hash functions for an
+application's own kernels (`openpqc/sycl/device.hpp`) with the three `Core/sycl` headers they are made of
+(`opqc_sycl_sha2.hpp`, `_sponge.hpp`, `_team.hpp`); the backends' own C headers (`ML/KEM/sycl/openpqc_mlkem_sycl.h`,
+...) are internal and stay in the source tree. Nothing of the tests is installed, the testing interfaces
+(`openpqc/testing.h` and `openpqc/sycl_testing.h`, the libraries `OpenPQC::testing` and `OpenPQC::sycl_testing`)
+included.
+
+```cmake
+find_package(OpenPQC 0.3 REQUIRED)                       # COMPONENTS sycl: also the GPU library
+target_link_libraries(app PRIVATE OpenPQC::openpqc)      # OpenPQC::sycl for the GPU API (openpqc/sycl.h)
+```
+
+```sh
+cc app.c $(pkg-config --cflags --libs openpqc)           # openpqc-sycl for the GPU API (openpqc/sycl.h)
+```
+
+The library needs nothing of the C++ runtime, so a program in C links it with the C compiler alone, also from a
+CMake project in C only. `openpqc_version()` returns the version of the library a program runs with
+(`Core/openpqc_version.h`). The shared GPU library needs its SYCL implementation's runtime on the library path
+(DPC++'s or AdaptiveCpp's `lib` directory): OpenPQC sets no rpath for it in installed files or in the programs of
+projects that use it.
+
+## Application demos
+
+The [application examples](applications/README.md) combine the primitives into larger workflows:
+
+| Demo | Workflow |
+| --- | --- |
+| `pq_handshake` | A TLS 1.3-like handshake using ML-KEM and ML-DSA |
+| `pqcrypt` | File encryption and signing |
+| `handshake_offload` | Handshake processing on CPU threads and in GPU batches |
+| `batch_verify` | Verification of signed packages on CPUs and GPUs |
+| `secure_boot` | Firmware updates with an SLH-DSA root key and ML-DSA release keys |
+| `timestamp_authority` | SLH-DSA time-stamp signing on CPUs and GPUs |
+
+Each demo checks its own results, including the attacks it stages, so CTest runs them as tests
+(`ctest -L applications`). `handshake_offload`, `batch_verify` and `timestamp_authority` use the GPU API
+(`OpenPQC::sycl`) and are built only with the SYCL backend; with `--cpu-only` they run without a GPU.
+
+These are research and teaching demos. Their symmetric encryption and key-derivation helpers are
+demo constructions; the applications are not production protocol implementations. See the
+[application documentation](applications/README.md) for commands, assumptions, and limitations.
+
+## Validation
+
+OpenPQC's tests cover the math core, scheme APIs, and CPU/GPU agreement:
+
+- **Independent references:** byte-for-byte comparisons with
+  [mlkem-native](https://github.com/pq-code-package/mlkem-native),
+  [CRYSTALS-Dilithium](https://github.com/pq-crystals/dilithium), and
+  [SPHINCS+](https://github.com/sphincs/sphincsplus).
+- **Test vectors:** known-answer tests and NIST ACVP vectors for all three schemes, plus
+  Wycheproof tests for ML-KEM.
+- **Implementation checks:** math-core tests, malformed-input cases, Valgrind-based constant-time
+  tests, stack-residue tests, and comparisons between SYCL and CPU results, with the GPU error contract
+  and fault injection.
+
+The reference implementations are vendored without source changes and built only for tests and
+benchmarks. See [reference/README.md](reference/README.md) for pinned upstream versions,
+test integration, and update instructions.
+
+### Status
 
 "Implemented" below means every algorithm and parameter set of the standard, with outputs byte-identical to the
 reference implementations; it does not mean ready for production ([Maturity and scope](#maturity-and-scope)).
 
-| Group   | CPU                                                                                                                                                                                                             | GPU                                                                                                                                                                                                                                                                                       | Tests                                                                                                                                                                                                                                                                                                                     |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Core    | Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11); the twelve pre-hash functions of HashML-DSA and HashSLH-DSA with their OIDs; constant-time helpers, OS randomness that fails closed, zeroization and stack clearing | the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message and workspace helpers; the context that the three backends share: a lock, a failed state after a device error, wiping of the workspace, page-locked coin staging              | known answers, incremental vs one-shot, the sponge's phase checks, stack and register residue (also 32-bit x86), constant time at -O0 to -Os (valgrind) and branch-free assembly on seven processors (compile only), the RNG's failure paths, the OID table; on the GPU the helpers and the context's failure handling |
-| ML-KEM  | implemented (512/768/1024), C11/C++20; optional pair-wise consistency test                                                                                                                                      | SYCL: batched KeyGen/Encaps/Decaps, randomized and derandomized, all parameter sets; status required and fail-closed, a known-answer self-test when a context is created; no pair-wise consistency test                                                                                   | KAT, ACVP (435 cases), Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind constant-time tests (also of the library at fixed optimization levels), stack-residue tests, fresh randomness, the pair-wise consistency test; SYCL: byte identity, the error contract and fault injection on every device |
-| ML-DSA  | implemented (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20; malformed private keys refused, key checks; optional pair-wise consistency test                                     | SYCL: batched KeyGen/Sign/Verify (messages or mu), randomized and derandomized, all parameter sets; verification status required and fail-closed, a known-answer self-test when a context is created, the optional pair-wise consistency test; the signer does not check private keys | KAT, ACVP (1335 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), exhaustive math tests, valgrind constant-time tests (also at fixed levels), malformed private keys, stack-residue and thread-stack tests; SYCL: byte identity, the error contract and fault injection on every device |
-| SLH-DSA | implemented (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic and hedged signing, the internal functions), C11/C++20; optional pair-wise consistency test          | SYCL: batched KeyGen/Sign/Verify, also pre-hash, internal and one-key, randomized and derandomized, all parameter sets; verification status fail-closed; no self-test and no pair-wise consistency test; the baseline pipeline only (the optimisation experiments are planned, not done) | KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), math-core tests against transcriptions of the standard, valgrind constant-time test (also at -O2), stack-residue and short-stack tests; SYCL: byte identity, fresh randomness and fault injection on every device |
-| FN-DSA  | planned, waiting for FIPS 206                                                                                                                                                                                   | planned                                                                                                                                                                                                                                                                                   | -                                                                                                                                                                                                                                                                                                                         |
+| Group | CPU | GPU | Tests |
+| --- | --- | --- | --- |
+| Core | Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11); the twelve pre-hash functions of HashML-DSA and HashSLH-DSA with their OIDs; constant-time helpers, OS randomness that fails closed, zeroization and stack clearing | the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message and workspace helpers; the context that the three backends share: a lock, a failed state after a device error, wiping of the workspace, page-locked coin staging | known answers, incremental vs one-shot, the sponge's phase checks, stack and register residue (also 32-bit x86), constant time at -O0 to -Os (valgrind) and branch-free assembly on seven processors (compile only), the RNG's failure paths, the OID table; on the GPU the helpers and the context's failure handling |
+| ML-KEM | implemented (512/768/1024), C11/C++20; optional pair-wise consistency test | SYCL: batched KeyGen (also from seeds d ‖ z)/Encaps/Decaps through the GPU API (`openpqc/sycl.h`), all parameter sets; status required on every call and fail-closed, a known-answer self-test when a context is created; Encaps with given randomness only in the testing library (`OpenPQC::sycl_testing`); no pair-wise consistency test | KAT, ACVP (435 cases), Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind constant-time tests (also of the library at fixed optimization levels), stack-residue tests, fresh randomness, the pair-wise consistency test; SYCL: byte identity, the error contract and fault injection on every device |
+| ML-DSA | implemented (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20; malformed private keys refused, key checks; optional pair-wise consistency test | SYCL: batched KeyGen (also from seeds xi)/Sign/Verify (messages or mu; hedged or deterministic; one key per operation or one for all), all parameter sets; status required on every call and fail-closed, a known-answer self-test when a context is created, the optional pair-wise consistency test; HashML-DSA through mu; signing with given randomness only in the testing library; the signer does not check private keys | KAT, ACVP (1335 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), exhaustive math tests, valgrind constant-time tests (also at fixed levels), malformed private keys, stack-residue and thread-stack tests; SYCL: byte identity, the error contract and fault injection on every device |
+| SLH-DSA | implemented (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic and hedged signing, the internal functions), C11/C++20; optional pair-wise consistency test | SYCL: batched KeyGen/Sign/Verify, also pre-hash (PH(M) given) and one-key, hedged or deterministic, all parameter sets; status required on every call and fail-closed; the internal functions and signing with given randomness only in the backend's internal API and the testing library; no self-test and no pair-wise consistency test; the baseline pipeline only (the optimisation experiments are planned, not done) | KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), math-core tests against transcriptions of the standard, valgrind constant-time test (also at -O2), stack-residue and short-stack tests; SYCL: byte identity, fresh randomness and fault injection on every device |
+| FN-DSA | planned, waiting for FIPS 206 | planned | - |
 
-The GPU designs: [include/ML/KEM/README.md](include/ML/KEM/README.md#gpu-backend-sycl),
-[include/ML/DSA/README.md](include/ML/DSA/README.md#gpu-backend-sycl) and
-[include/SLH/DSA/README.md](include/SLH/DSA/README.md#gpu-backend-sycl), with the experiments behind them.
-`bench/run_benchmarks.sh OUT_DIR` measures the CPU and GPU performance on your machine; ML-DSA's and SLH-DSA's results
-on one laptop are in [include/ML/DSA/README.md](include/ML/DSA/README.md#performance) and
-[include/SLH/DSA/README.md](include/SLH/DSA/README.md#performance).
+### Running the tests
+
+The label `slow` marks the tests that take more than about a minute: SLH-DSA's KATs of the s parameter sets, its
+differential, constant-time and ACVP tests, the constant-time tests of the libraries compiled at fixed optimization
+levels (`mlkemNNN_O1_ct` … `_Os_ct`, `slhdsa_O2_ct`), and SLH-DSA's GPU test (1–10 minutes each with GCC 16 on an
+i7-11370H, the GPU test longer; see [include/SLH/DSA/README.md](include/SLH/DSA/README.md#tests)). Configuring lists
+every test that it leaves out and why (no valgrind, Python 3, OpenSSL, Clang, threads, 32-bit libraries or a linker
+with `--wrap`, no AVX2 build of the reference, a host that is not x86-64, a build that is not Linux with GCC or Clang,
+a sanitizer build), and CTest reports those tests as skipped (in a sanitizer build four constant-time tests are
+registered; CMake 3.28 or later disables them and CTest reports them as not run, while older CMake warns that they
+will fail), with one exception: the ML-KEM no-burn and thread-stack tests (`mlkem_stack_noburn`, `mlkem_thread_stack`
+and their `_pct` variants) are left out without a message where the build is not Linux with GCC or Clang, and the
+thread-stack tests also where threads are missing. `-DOPENPQC_REQUIRE_FULL_TESTS=ON` turns a missing tool into a
+configuration error instead.
+
+Besides the schemes' own tests, the suite checks the library's interfaces: `runtime_api` (every function that
+chooses the parameter set at run time against the per-set function it stands for), `c_api_errors` (every error path
+of the C APIs), `c_api_must_check` (every function of the C headers warns when its result is ignored),
+`production_symbols` (the library `openpqc` contains no testing interface, with `OpenPQC::testing` as the control),
+`abi_symbols` (the C++ symbols of the header-only layers are in the library's inline namespace), `c_link` (a C program
+links the library with the C compiler alone) and `install_consumer` (label `install`: the installed package used from
+a C and a C++ project, the GPU library and pkg-config; Linux with GCC or Clang).
+
+### GPU tests
+
+`ctest -L gpu` runs the GPU tests on every SYCL device of the machine: `gpu_api` (the GPU API, `openpqc/sycl.h`
+and `sycl.hpp`, linked as an application links it: every parameter set of the build against the CPU library, the order
+of checks, messages outside their buffer, launches of 3 operations, a context on the application's SYCL context, the
+C++ layer), `device_hash` (the hash functions of `openpqc/sycl/device.hpp` against Core's CPU functions, 1856 cases),
+`mlkem_sycl`, `mldsa_sycl` and `slhdsa_sycl` (the backends' own C APIs: byte identity with the CPU library, the status
+and error contract, fresh randomness, two threads on one context), `mlkem_sycl_faults`, `mldsa_sycl_faults` and
+`slhdsa_sycl_faults` (device work that fails part way, by fault injection: fail-closed status and outputs,
+zeroization, the failed context), `core_sycl` (the helpers the backends share), and `core_sycl_sticky`,
+`mldsa_sycl_sticky` and `slhdsa_sycl_faults_sticky`, which cause a real fault on an NVIDIA GPU in a process of their
+own (skipped without one). Without the label, `sycl_exports` checks that the shared `openpqc_sycl` exports the GPU API
+(`openpqc_gpu_*`) and nothing else, with `openpqc_sycl_testing` as the control (Linux).
+
+### CI presets
+
+`CMakePresets.json` holds the configurations that CI builds (build trees under `build-presets/`), with
+`OPENPQC_REQUIRE_FULL_TESTS` on:
+
+```sh
+cmake --workflow --preset gcc-release           # configure, build, every offline test; also clang-release
+cmake --workflow --preset gcc-asan-ubsan        # AddressSanitizer and UBSan at -O1, the quick tests; also clang-asan-ubsan
+cmake --preset ct-clang-O2 && cmake --build --preset ct-clang-O2 && ctest --preset ct-clang-O2
+                                                # constant-time tests at one level: ct-{gcc,clang}-{O0,O2,O3,Os}
+ctest --preset gcc-release-network              # ACVP and Wycheproof, after the gcc-release workflow
+cmake --workflow --preset gcc-release-pct       # ML-KEM and ML-DSA with their pair-wise consistency tests compiled in,
+                                                # and their quick tests; also clang-release-pct
+```
+
+`.github/workflows/ci.yml` runs these presets in an Arch Linux container (GCC 16, Clang 23, valgrind); it has not
+yet run on a hosted runner.
+
+## Benchmarks
+
+The benchmark suite measures CPU latency and throughput, GPU batch throughput, and pipeline stages.
+On Linux, collect CPU measurements from a build with benchmarks enabled:
+
+```sh
+cmake -S . -B build -DOPENPQC_BUILD_BENCHMARKS=ON
+cmake --build build -j
+bench/run_benchmarks.sh results/local
+```
+
+For GPU runs, configure `SYCL_RUNS` with the build directory and device index as described in
+[run_benchmarks.sh](bench/run_benchmarks.sh). Record the compiler, device, batch size, and transfer
+costs when comparing results; batch throughput and single-operation latency measure different things.
+
+- [ML-DSA results and methodology](include/ML/DSA/README.md#performance)
+- [SLH-DSA results and methodology](include/SLH/DSA/README.md#performance)
+- [HiPerGator runs and results](bench/hipergator/README.md) for Intel Xeon, AMD EPYC, NVIDIA L4, and NVIDIA B200
+- [Cross-platform plotting script](bench/plot_platforms.py)
+- The GPU designs, with the experiments behind them: [ML-KEM](include/ML/KEM/README.md#gpu-backend-sycl),
+  [ML-DSA](include/ML/DSA/README.md#gpu-backend-sycl) and [SLH-DSA](include/SLH/DSA/README.md#gpu-backend-sycl);
+  the measurements and the comparison with published GPU work in
+  [docs/GPU_ACCELERATION.md](docs/GPU_ACCELERATION.md)
+
+## Documentation
+
+The primitives are organised in groups under `include/`: Core, shared by every scheme, and one group per scheme,
+each with a README.
+
+| Path | Contents |
+| --- | --- |
+| [include/openpqc/](include/openpqc/) | The public API: `common.h` (`openpqc_status`, `openpqc_alg` and the algorithm table), `kem.h` and `sig.h` (the parameter set chosen at run time), `openpqc.h` (all of the C API), `openpqc.hpp` (the C++ API: `ML_KEM_768`, ..., `status`, `secret<N>`, `visit_kem`, `visit_sig`); the GPU API (`sycl.h`, `sycl.hpp`, `sycl/interop.hpp`, `sycl_experimental.h`; `sycl.cpp`) and `sycl/device.hpp`; the testing interfaces (`testing.h`, `testing.hpp`, `sycl_testing.h`), for the tests only |
+| [include/Core/](include/Core/README.md) | Hash functions (Keccak-f[1600], SHA-3, SHAKE, SHA-2; C11, header-only), constant-time helpers, randomness, zeroization, C++ wrappers and the pre-hash functions of HashML-DSA and HashSLH-DSA (`prehash.hpp`); `sycl/`: the GPU runtime, team, sponge, SHA-2 and message helpers shared by the GPU backends |
+| [include/ML/](include/ML/README.md) | Utilities shared by the module-lattice schemes: `math/ml_bitpack.h`, the bit packing of both standards |
+| [include/ML/KEM/](include/ML/KEM/README.md) | ML-KEM-512/768/1024 (FIPS 203): `math/` (C11 math core: Z_q, NTT, compression, encoding, sampling), `scheme/` (C++20: K-PKE, ML-KEM, input checks, one function per FIPS 203 algorithm), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_mlkem.h` and the C++ API `mlkem.hpp` |
+| [include/ML/DSA/](include/ML/DSA/README.md) | ML-DSA-44/65/87 and HashML-DSA (FIPS 204): `math/` (C11 math core: Z_q, NTT, rounding and hints, encoding, sampling), `scheme/` (C++20: one function per FIPS 204 algorithm, HashML-DSA, external mu), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_mldsa.h` and the C++ API `mldsa.hpp` |
+| [include/SLH/DSA/](include/SLH/DSA/README.md) | The twelve SLH-DSA parameter sets and HashSLH-DSA (FIPS 205): `math/` (C11 math core: toInt, toByte, base_2b, the address ADRS, HMAC and MGF1), `scheme/` (C++20: WOTS+, XMSS, the hypertree, FORS, one function per FIPS 205 algorithm), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_slhdsa.h` and the C++ API `slhdsa.hpp` |
+| [docs/](docs/) | `GPU_ACCELERATION.md` (the GPU design, the measurements and the comparison with published GPU work), `PRIMITIVES.md` (the mathematical primitives of the schemes and their groups), `catalog/` (per-symbol catalogs of the upstream projects), `SOURCE_MAP.md` (mlkem-native file by file: what is FIPS 203 and what mlkem-native added) |
+| [tutorial/](tutorial/README.md) | Interactive Jupyter walkthrough and Docker environment |
+| [examples/](examples/README.md) | C, C++, and GPU API examples; CPU, GPU, and presentation demos (`demo_cpu`, `demo_gpu`, `live_demo`); `device_hash`: OpenPQC's hash functions in an application's own SYCL kernel |
+| [applications/](applications/README.md) | Application demos built from the three schemes |
+| [tests/](tests/) | Core, scheme, reference, API and GPU tests: `tests/Core`; `tests/ML-KEM`, `tests/ML-DSA`, `tests/SLH-DSA` (the references' test programs against both implementations, differential, math-core, constant-time and stack-residue tests, ACVP); the C APIs' error paths; `tests/gpu` (the GPU API and the backends against the CPU on every device, the error contract, fault injection, the device hash functions) |
+| [bench/](bench/) | CPU/GPU benchmarks and plotting tools (`run_benchmarks.sh`, `compare_gpu.py`, `plot_platforms.py`, `plot_latency.py`); `hipergator/`: [scripts for HiPerGator](bench/hipergator/README.md) |
+| [figures/](figures/) | The logo and the HiPerGator plots of [bench/hipergator/README.md](bench/hipergator/README.md) |
+| [reference/](reference/README.md) | Vendored upstream implementations, unmodified, and their provenance: test oracles and CPU baselines |
+| [scripts/](scripts/) | Scripts for refreshing vendored references and tests (`vendor_mlkem_native.py`, `vendor_dilithium.py`, `vendor_sphincsplus.py`) |
+| [cmake/](cmake/) | Build helpers, warning flags, stack-clash protection and the frame-size limit, reference backend detection, the package and pkg-config templates, the symbols that the shared GPU library exports (`openpqc_sycl.map`) |
+| [CMakePresets.json](CMakePresets.json), [.github/workflows/ci.yml](.github/workflows/ci.yml) | The configurations that CI builds and tests: GCC and Clang, sanitizers, constant time at fixed levels |
+| [SECURITY.md](SECURITY.md) | How to report a vulnerability, the configurations that are tested, the open issues |
+
+## Build options
+
+Pass these options to CMake as `-DNAME=value`. Without `CMAKE_BUILD_TYPE` the build is a Release build (-O3 with
+GCC and Clang). `-DCMAKE_BUILD_TYPE=Debug` gives a debug build (-O0): correct, but slow (the review measured
+ML-KEM-768 KeyGen 13 times slower than in Release). The stack sizes that the headers document are those of optimized
+builds, with the -O0 figures given apart.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `OPENPQC_SYCL` | `AUTO` | Build the GPU library `openpqc_sycl` (the GPU API and the SYCL backends) when DPC++ (`-fsycl`) or AdaptiveCpp is found; `ON` requires it, `OFF` disables it. `OFF` by default when OpenPQC is a subproject (`add_subdirectory`, FetchContent): the parent project asks for it with `ON` |
+| `OPENPQC_BUILD_TESTS` | `ON` at top level | Build the test suite |
+| `OPENPQC_BUILD_BENCHMARKS` | `ON` at top level | Build CPU and available GPU benchmarks |
+| `OPENPQC_BUILD_EXAMPLES` | `ON` at top level | Build API examples, demos, and application demos |
+| `OPENPQC_WERROR` | `ON` at top level | Treat warnings in OpenPQC code as errors: `-Werror` for the targets that link `openpqc_strict_warnings` (Core's and the schemes' CPU libraries, most of their tests, the examples; not the SYCL backends, the GPU tests or the benchmarks), and for the mlkem-native C code that the tests and benchmarks compile (`mlkem_native.c` and `mlkem_native_all.c` from `reference/`, and mlkem-native's test programs in `tests/ML-KEM/src`) |
+| `BUILD_SHARED_LIBS` | `OFF` | Build the library `openpqc` as a shared library; it exports the C APIs only |
+| `OPENPQC_SYCL_SHARED` | `ON` | Build the GPU library `openpqc_sycl` as a shared library, which DPC++ links the device code into once; `OFF`: static, and every program that uses it is linked as SYCL code (`-fsycl` and the device targets). Shared, it exports the GPU API only (test `sycl_exports`); static, it also contains the backends' own functions, which no installed header declares |
+| `OPENPQC_WITH_MLKEM`, `_MLDSA`, `_SLHDSA` | `ON` | The schemes the libraries contain (`OPENPQC_HAVE_*` in `Core/openpqc_version.h` say which); the tests, benchmarks and examples need all three |
+| `OPENPQC_NATIVE` | `ON` | Enable supported SIMD/assembly backends in the mlkem-native reference |
+
+<details>
+<summary>Advanced GPU, build, test, and benchmark options</summary>
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `OPENPQC_SYCL_TARGETS` | Empty | DPC++ device targets passed through `-fsycl-targets` |
+| `OPENPQC_SYCL_FLAGS` | Empty | Extra flags for SYCL sources and, with DPC++, linking; e.g. `-DOPQC_SHA2_UNROLL_PASSES=1`, which keeps the SHA-2 rounds in loops: the same results, a DPC++ link of SLH-DSA's backend in about 2 instead of 10 minutes, SHA-256 on the GPUs measured 6–10 % slower |
+| `OPENPQC_SLHDSA_SYCL_SETS` | Empty: all 12 | Development builds: select SLH-DSA GPU parameter-set IDs (1–12, separated by commas, e.g. `3,4`; the CMake list form `3;4` does not build). DPC++ generates the device code of every set when it links `openpqc_sycl` and each white-box test that compiles the backend, about 10 minutes and 1.2 GiB for all twelve |
+| `OPENPQC_MLKEM_KEYGEN_PCT` | `OFF` | ML-KEM's KeyGen runs the pair-wise consistency test of FIPS 203 §7.1 (CPU library; SLH-DSA's test is a compile definition, see its README) |
+| `OPENPQC_MLDSA_KEYGEN_PCT` | `OFF` | ML-DSA's KeyGen runs the pair-wise consistency test of FIPS 140-3: it signs and verifies with each new key pair (CPU library; the GPU backend takes the compile definition of the same name, which the option does not give it) |
+| `OPENPQC_REQUIRE_FULL_TESTS` | `OFF` | Fail the configuration when a tool that tests need is missing (Python 3, OpenSSL, valgrind, threads, Clang, and on x86-64 the 32-bit C and C++ libraries for `hash_m32`) instead of leaving those tests out |
+| `OPENPQC_SANITIZE` | Empty | Sanitizers for every target (GCC, Clang), e.g. `address,undefined`; the constant-time tests are then left out (valgrind cannot run them) |
+| `OPENPQC_TEST_TIMEOUT_FACTOR` | Empty | Multiplies the TIMEOUT of every test; empty: 10 in a sanitizer build, 3 in a Debug build, 1 otherwise |
+| `OPENPQC_MAX_FRAME_BYTES` | `196608` | The largest stack frame in the targets that link `openpqc_strict_warnings` (see `OPENPQC_WERROR`), in optimized builds without AddressSanitizer, as a warning (an error with `OPENPQC_WERROR`); 0: no limit. Core's and the schemes' CPU libraries are also compiled with `-fstack-clash-protection` where the compiler has it (not the SYCL backends, and not the copies of the scheme libraries that the constant-time tests compile) |
+| `OPENPQC_BENCH_CYCLES` | `PERF` | Cycle counter for the single-thread CPU benchmarks: `NO`, `PERF`, `PMU`, or `MAC` |
+| `OPENPQC_VALGRIND` | Found on `PATH` | Valgrind executable for the constant-time tests: `core_*_ct`, `mlkemNNN_ct`, `mldsa_ct`, `slhdsa_ct` at the build's optimization level, and the same with the libraries compiled at fixed levels (`mlkemNNN_O1_ct` … `_Os_ct`, `mldsa_O1_ct` … `_Os_ct`, `slhdsa_O2_ct`); `OFF` leaves them out (CTest reports them as skipped) |
+| `OPENPQC_VALGRIND_INCLUDE_DIR` | Auto-detected | Valgrind headers for the constant-time tests |
+| `OPENPQC_CUPQC_DIR` | Empty | Optional NVIDIA cuPQC SDK path: builds the cuPQC baseline benchmarks (needs CUDA); their results are covered by NVIDIA's licence, and this repository does not publish them |
+
+Restricting SLH-DSA GPU parameter sets reduces DPC++ link time but leaves the omitted sets unavailable
+in that build (`openpqc_gpu_create` returns `OPENPQC_ERR_UNSUPPORTED` for them). The
+[SLH-DSA backend documentation](include/SLH/DSA/README.md#gpu-backend-sycl) describes this option and
+SHA-2 loop-unrolling tradeoffs.
+
+</details>
 
 ## Maturity and scope
 
@@ -435,19 +686,19 @@ create a new one. After a sticky fault on CUDA (an invalid address) that is not 
 fails, a new create on it fails too, and only a new process can use the device again. The buffer checks ask the SYCL
 runtime, which does not tell a freed buffer from a live one under DPC++'s Level Zero and on AdaptiveCpp's OpenMP host
 device, that host device takes every pointer for its own (a call with another GPU's device memory ended the process
-there), and DPC++ and AdaptiveCpp take USM memory of another SYCL context on the same device for the context's: pass only buffers of
-the context that are still allocated, and for the application's own allocations create the context in its SYCL
+there), and DPC++ and AdaptiveCpp take USM memory of another SYCL context on the same device for the context's:
+pass only buffers of the context that are still allocated, and for the application's own allocations create the context in its SYCL
 context (`openpqc_gpu_create_on`). SLH-DSA's context runs no self-test when it is created, and no GPU KeyGen has a
 pair-wise consistency test except ML-DSA's when `openpqc_mldsa_sycl` is built with the definition
 `OPENPQC_MLDSA_KEYGEN_PCT` (the CMake option of that name gives it to the CPU library only); the ML-DSA signer does
 not check private keys (check imported keys with the CPU library's `openpqc_mldsaNN_check_sk` or
 `openpqc_sig_check_secret_key`).
 
-## Licensing
+## License
 
-OpenPQC is licensed under Apache-2.0 OR ISC OR MIT, see [LICENSE](LICENSE). The copies in `reference/` keep their own
-licences: mlkem-native (`reference/mlkem-native/LICENSE`, also Apache-2.0 OR ISC OR MIT), CRYSTALS-Dilithium
-(`reference/dilithium/LICENSE`: public domain (CC0), or Apache-2.0, or GPL-2.0) and SPHINCS+
-(`reference/sphincsplus/LICENSE`: public domain or CC0-1.0 or 0BSD or MIT-0, with NIST's files for the KATs under
-their own terms, see [reference/README.md](reference/README.md)). None is part of the OpenPQC libraries; they are built
-only for the tests and benchmarks.
+OpenPQC is available under **Apache-2.0 OR ISC OR MIT**; choose any of these licenses.
+See [LICENSE](LICENSE).
+
+Vendored reference implementations retain their own licenses: mlkem-native uses the same three-way
+choice; CRYSTALS-Dilithium and SPHINCS+ have separate terms, including terms for NIST KAT files.
+See [reference/README.md](reference/README.md) and the licenses in each reference directory.
