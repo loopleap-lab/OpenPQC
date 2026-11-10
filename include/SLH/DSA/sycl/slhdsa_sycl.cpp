@@ -1442,17 +1442,24 @@ int keygen_checked(opqc_sycl_slhdsa* ctx, std::uint8_t* pk, std::uint8_t* sk, co
     });
 }
 
+// The workspace that create allocates for param_set and max_batch (Core's workspace_bytes, the layout of
+// allocate: the sections, then HEAD_BYTES of context string and OID, then sync's word), and the arguments create
+// takes: a parameter set of this build, and 1 to as many operations per launch as keep the largest launch below
+// 2^31 work-items (SYCL ids are assumed to fit an int). 0 for any other argument, and for more than size_t holds.
+std::size_t workspace_size(int param_set, std::size_t max_batch) {
+    std::size_t total = 0;
+    with_set(param_set, [&](auto p) {
+        using P = decltype(p);
+        if (max_batch == 0 || max_batch > static_cast<std::size_t>(INT_MAX) / gpu::items_per_op<P>()) return;
+        total = openpqc::gpu::workspace_bytes(gpu::section_bytes<P>(), max_batch, gpu::HEAD_BYTES);
+    });
+    return total;
+}
+
 } // namespace
 
 extern "C" std::size_t opqc_sycl_slhdsa_workspace_bytes(int param_set, std::size_t max_batch) {
-    std::size_t total = 0;
-    with_set(param_set, [&](auto p) {
-        for (std::size_t b : gpu::section_bytes<decltype(p)>())
-            total += (b * max_batch + openpqc::gpu::WORKSPACE_ALIGN - 1) / openpqc::gpu::WORKSPACE_ALIGN *
-                     openpqc::gpu::WORKSPACE_ALIGN;
-        total += gpu::HEAD_BYTES;
-    });
-    return total;
+    return workspace_size(param_set, max_batch);
 }
 
 namespace {
@@ -1915,8 +1922,12 @@ int openpqc::gpu::slhdsa_create(opqc_sycl_slhdsa** out, int param_set, std::size
     return create_context(out, param_set, max_batch, -1, &dev, app);
 }
 
+std::size_t openpqc::gpu::slhdsa_workspace_bytes(int param_set, std::size_t max_batch) {
+    return workspace_size(param_set, max_batch);
+}
+
 openpqc::gpu::Handle openpqc::gpu::handle(opqc_sycl_slhdsa* ctx) {
-    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch};
+    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch, ctx->mem_bytes};
 }
 
 int openpqc::gpu::slhdsa_sign(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const Messages& msgs,

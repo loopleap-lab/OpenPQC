@@ -31,12 +31,14 @@ namespace openpqc::gpu {
 
 // What the API sees of a backend context: its queue (the SYCL context and whether the context has failed), the
 // lock that every call of the backend takes (recursive: the API holds it across the backend's call and its own
-// work before and after it), its device's name and its operations per launch
+// work before and after it), its device's name, its operations per launch, and the bytes of its workspace (as
+// allocated: the testing interface openpqc_testing_gpu_workspace_allocated)
 struct Handle {
     ContextQueue* queue;
     std::recursive_mutex* mutex;
     const std::string* device_name;
     std::size_t max_batch;
+    std::size_t workspace_bytes;
 };
 
 // Where a signing call's randomness comes from: the caller (rnd or addrnd, n values in device memory: the
@@ -51,6 +53,13 @@ int mldsa_create(opqc_sycl_mldsa** out, int level, std::size_t max_batch, const 
                  const sycl::context* app);
 int slhdsa_create(opqc_sycl_slhdsa** out, int param_set, std::size_t max_batch, const sycl::device& dev,
                   const sycl::context* app);
+
+// The bytes of device memory of the workspace that create allocates for the parameter set and max_batch
+// (Core/sycl/opqc_sycl_context.hpp, workspace_bytes), without a device; 0 for an argument that create refuses
+// (also, for SLH-DSA, a parameter set that this build leaves out) or a workspace larger than size_t
+std::size_t mlkem_workspace_bytes(int level, std::size_t max_batch);
+std::size_t mldsa_workspace_bytes(int level, std::size_t max_batch);
+std::size_t slhdsa_workspace_bytes(int param_set, std::size_t max_batch);
 
 Handle handle(opqc_sycl_mlkem* ctx);
 Handle handle(opqc_sycl_mldsa* ctx);

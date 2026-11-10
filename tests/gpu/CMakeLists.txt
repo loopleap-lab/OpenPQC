@@ -38,6 +38,13 @@ if(OPENPQC_HAVE_SYCL)
     add_test(NAME gpu_api COMMAND test_gpu_api)
     set_tests_properties(gpu_api PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 3600)
 
+    # openpqc_gpu_workspace_bytes and openpqc_gpu_supports against the contexts that create makes, for every
+    # parameter set of the build on the first device (the testing library: openpqc_testing_gpu_workspace_allocated)
+    add_executable(test_gpu_workspace test_gpu_workspace.cpp)
+    target_link_libraries(test_gpu_workspace PRIVATE OpenPQC::sycl_testing OpenPQC::openpqc openpqc_strict_warnings)
+    add_test(NAME gpu_workspace COMMAND test_gpu_workspace)
+    set_tests_properties(gpu_workspace PROPERTIES SKIP_RETURN_CODE 77 LABELS gpu TIMEOUT 1800)
+
     # ML-KEM: the three parameter sets, the status and error contract, fresh coins and two threads on one context,
     # on every device
     add_executable(test_mlkem_sycl test_mlkem_sycl.cpp)

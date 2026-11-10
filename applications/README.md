@@ -550,9 +550,9 @@ A time-stamping authority (TSA, as in RFC 3161: a service that vouches that a do
 | Setup: the TSA, and a second TSA whose key makes one forgery, each make a key pair. The key id in every token is the SHA3-256 hash of the TSA's public key | SLH-DSA-SHA2-128f / 128s KeyGen, SHA3-256 | `openpqc_sig_keygen` (the parameter set as an `openpqc_alg`), `opqc_sha3_256` |
 | Each client hashes its document (random bytes, 64 B to 4 KiB). Only the hash (the message imprint) goes to the TSA | SHA3-256 | `opqc_randombytes`, `opqc_sha3_256` |
 | CPU server: T threads each take the next request, encode its TSTInfo and sign it with the context string `"openpqc-demo timestamp token"` (a label bound into the signature, so that signatures the key makes for other purposes never verify as tokens) | SLH-DSA Sign, hedged (fresh randomness in every signature) | `openpqc_sig_sign` |
-| GPU server, once per set: a context sized for the largest batch (at most 2 GiB of workspace), device and page-locked host buffers (pinned memory, faster to copy), and the secret key, copied to the device once from page-locked memory that is wiped right after | the GPU API (`openpqc/sycl.h`) | `openpqc_gpu_create`, `openpqc_gpu_malloc`, `openpqc_gpu_malloc_host`, `openpqc_gpu_memcpy`, `opqc_zeroize` |
+| GPU server, once per set: whether the GPU library has the set, a context sized for the largest batch (at most 2 GiB of workspace, which the library reports before the context exists), device and page-locked host buffers (pinned memory, faster to copy), and the secret key, copied to the device once from page-locked memory that is wiped right after | the GPU API (`openpqc/sycl.h`) | `openpqc_gpu_supports`, `openpqc_gpu_workspace_bytes`, `openpqc_gpu_create`, `openpqc_gpu_malloc`, `openpqc_gpu_malloc_host`, `openpqc_gpu_memcpy`, `opqc_zeroize` |
 | GPU server, per batch: B TSTInfos go in (all 88 bytes long: a stride, no offsets), and B signatures under the one TSA key come back, with a status array: an entry other than `OPENPQC_OK` means no signature | SLH-DSA Sign, hedged, one-key GPU batch | `openpqc_gpu_memcpy_async`, `openpqc_gpu_sig_sign` with `OPENPQC_GPU_ONE_KEY`, `openpqc_gpu_sync` |
-| After the last batch, the device copy of the secret key is overwritten before it is freed (`openpqc_gpu_free` overwrites it too, but reports nothing) | — | `openpqc_gpu_memcpy`, `openpqc_gpu_free`, `openpqc_gpu_destroy` |
+| After the last batch, the device copy of the secret key is freed: `openpqc_gpu_free` overwrites it with zeros and reports whether it could (the program fails if it could not) | — | `openpqc_gpu_free`, `openpqc_gpu_destroy` |
 | Auditor: checks the archive's structure (fields, key id, serials going up by one, genTimes never going back), then every signature in one GPU call. It has its own context and only the public key | SLH-DSA Verify, one-key GPU batch | `openpqc_gpu_sig_verify` with `OPENPQC_GPU_ONE_KEY`, `openpqc_gpu_memcpy` (status array back) |
 | Auditor: every signature again, on T CPU threads | SLH-DSA Verify | `openpqc_sig_verify` |
 | Forgeries made from archived tokens: the document hash replaced, genTime moved back one day, the same TSTInfo signed with the second TSA's key. The GPU and the CPU must reject all three and accept the originals; the third must verify under the second TSA's key (a sound signature, made with the wrong key) | SLH-DSA Sign (second key), Verify | `openpqc_sig_sign`, `openpqc_gpu_sig_verify`, `openpqc_sig_verify` |
@@ -577,8 +577,9 @@ opqc_sha3_256(r.hash.data() + i * HASH, document.data(), document.size());  // c
 encode(a.info(i), token_info(tsa, r, i));
 openpqc_sig_sign(alg, a.sig(i), a.info(i), INFO, &kTokenOpts, tsa.sk.data());
 
-// GPU server, once per set. launch: the largest batch, capped at 2 GiB of workspace (kSets holds the
-// workspace per operation); d_*: openpqc_gpu_malloc, h_*: openpqc_gpu_malloc_host (page-locked)
+// GPU server, once per set that the GPU library has (openpqc_gpu_supports). launch: the largest batch,
+// capped at 2 GiB of workspace (openpqc_gpu_workspace_bytes(alg, launch, &bytes) reports it before the
+// context exists); d_*: openpqc_gpu_malloc, h_*: openpqc_gpu_malloc_host (page-locked)
 const openpqc_gpu_config cfg{device, launch};
 openpqc_gpu_create(&ctx, alg, &cfg);
 std::memcpy(staging, tsa.sk.data(), SK);       // staging is page-locked too
@@ -591,9 +592,8 @@ openpqc_gpu_sig_sign(ctx, d_sig, infos, &kGpuTokenOpts, d_sk, d_status, n);
 openpqc_gpu_memcpy_async(ctx, h_sig, d_sig, n * SIG);
 openpqc_gpu_memcpy_async(ctx, h_status, d_status, n * sizeof(std::int32_t));
 openpqc_gpu_sync(ctx);   // then signature j is complete if h_status[j] == OPENPQC_OK
-// After the last batch: overwrite the device key with zeros (a copy that reports whether it was made),
-// then free (openpqc_gpu_free waits for the context's work and overwrites the memory too) and destroy
-openpqc_gpu_memcpy(ctx, d_sk, zeros.data(), SK);
+// After the last batch: free the device key (openpqc_gpu_free waits for the context's work, overwrites
+// the memory with zeros and reports whether it could: OPENPQC_ERR_DEVICE if the context had failed), then destroy
 openpqc_gpu_free(ctx, d_sk);
 openpqc_gpu_destroy(ctx);
 // ... forgeries: one TSTInfo signed with the second TSA's key (openpqc_sig_sign)

@@ -213,8 +213,10 @@ OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa **ctx, 
 OPENPQC_API void opqc_sycl_slhdsa_destroy(opqc_sycl_slhdsa *ctx);
 OPENPQC_API const char *opqc_sycl_slhdsa_device_name(const opqc_sycl_slhdsa *ctx);
 
-/* The device memory that a context for param_set and max_batch allocates, in bytes; 0 if
- * this build does not contain the parameter set */
+/* The device memory of the workspace that a context for param_set and max_batch
+ * allocates, in bytes (the GPU API's openpqc_gpu_workspace_bytes); 0 if this build does
+ * not contain the parameter set, for a max_batch that create refuses (0, or a launch of
+ * 2^31 work-items or more), and for a size that size_t cannot hold */
 OPENPQC_API size_t opqc_sycl_slhdsa_workspace_bytes(int param_set, size_t max_batch);
 
 OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_keypair_derand(opqc_sycl_slhdsa *ctx, uint8_t *pk, uint8_t *sk,

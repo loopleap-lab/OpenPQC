@@ -88,7 +88,7 @@ struct Gpu {
     }
     Gpu(const Gpu&) = delete;
     ~Gpu() {
-        for (void* p : blocks) openpqc_gpu_free(g, p);
+        for (void* p : blocks) (void)openpqc_gpu_free(g, p);
         openpqc_gpu_destroy(g);
     }
     std::uint8_t* get(std::size_t bytes) {

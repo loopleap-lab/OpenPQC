@@ -70,7 +70,7 @@ struct Buffer {
         : gpu(g), p(static_cast<std::uint8_t*>(host ? openpqc_gpu_malloc_host(g, bytes) : openpqc_gpu_malloc(g, bytes))) {
         if (!p) check(-1, "allocation");
     }
-    ~Buffer() { openpqc_gpu_free(gpu, p); }
+    ~Buffer() { (void)openpqc_gpu_free(gpu, p); }
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
     std::int32_t* status() const { return reinterpret_cast<std::int32_t*>(p); }

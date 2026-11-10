@@ -110,9 +110,8 @@
  * table of every server of both sets. Exits with 0 if every check passed (the expected rejections
  * included) and 1 if a check failed or a library call returned an error. Without --cpu-only it
  * exits with 77 (a skipped test for CTest) if there is no SYCL device, or if the GPU library of
- * this build contains none of the selected parameter sets (the development option
- * OPENPQC_SLHDSA_SYCL_SETS; openpqc_gpu_create then returns OPENPQC_ERR_UNSUPPORTED). A set that
- * the GPU library lacks is skipped.
+ * this build contains none of the selected parameter sets (openpqc_gpu_supports; the development
+ * option OPENPQC_SLHDSA_SYCL_SETS leaves sets out). A set that the GPU library lacks is skipped.
  */
 
 #include <algorithm>
@@ -180,7 +179,7 @@ constexpr std::size_t kMaxTokens = std::size_t{1} << 18;
 constexpr std::size_t kMaxBatch = 16384;
 constexpr std::size_t kMaxThreads = 1024;
 static_assert((1 + kTimedBatches) * kMaxBatch + 32 * kMaxThreads <= kMaxTokens, "a batch size that never fits");
-// The device memory a context may take (ParameterSet::workspace_per_operation); the library
+// The device memory a context may take (its workspace: openpqc_gpu_workspace_bytes); the library
 // splits calls that are larger than a launch.
 constexpr std::size_t kWorkspaceLimit = std::size_t{2} << 30;
 // The first tokens of the archive that the GPU auditor verifies once, untimed, before the timed
@@ -199,10 +198,6 @@ struct ParameterSet {
     const char* option; // "128f", the value of --set
     std::size_t pk_bytes, sk_bytes, sig_bytes;
     std::size_t cpu_tokens_per_thread, quick_cpu_tokens_per_thread;
-    // The device memory that a GPU context of the set allocates per operation of a launch (its
-    // workspace, the sections of SLH/DSA/sycl/slhdsa_sycl.cpp), counted for this version of the
-    // library: the GPU API has no function that reports it. It bounds the launch size (kWorkspaceLimit).
-    std::size_t workspace_per_operation;
 
     std::size_t token_bytes() const { return INFO + sig_bytes; }
 };
@@ -210,10 +205,10 @@ struct ParameterSet {
 const ParameterSet kSets[] = {
         {OPENPQC_SLH_DSA_SHA2_128F, OPENPQC_SLHDSA_SHA2_128F, "SLH-DSA-SHA2-128f", "128f",
          OPENPQC_SLHDSA_SHA2_128F_PUBLICKEYBYTES, OPENPQC_SLHDSA_SHA2_128F_SECRETKEYBYTES,
-         OPENPQC_SLHDSA_SHA2_128F_BYTES, 32, 4, 106416},
+         OPENPQC_SLHDSA_SHA2_128F_BYTES, 32, 4},
         {OPENPQC_SLH_DSA_SHA2_128S, OPENPQC_SLHDSA_SHA2_128S, "SLH-DSA-SHA2-128s", "128s",
          OPENPQC_SLHDSA_SHA2_128S_PUBLICKEYBYTES, OPENPQC_SLHDSA_SHA2_128S_SECRETKEYBYTES,
-         OPENPQC_SLHDSA_SHA2_128S_BYTES, 2, 1, 2066736},
+         OPENPQC_SLHDSA_SHA2_128S_BYTES, 2, 1},
 };
 
 using Clock = std::chrono::steady_clock;
@@ -233,7 +228,7 @@ void check(openpqc_status s, const std::string& what) {
 }
 
 // Set when a destructor could not confirm that a device buffer holding the secret key was
-// overwritten: the overwrite returned OPENPQC_ERR_DEVICE, so the context had failed (the copy is
+// overwritten: openpqc_gpu_free returned OPENPQC_ERR_DEVICE, so the context had failed (the wipe is
 // still made as far as the device allows, but nothing confirms it). Destructors cannot throw, and
 // they run during unwinding, before main() prints the error that failed the context, so main()
 // reports this after that error.
@@ -561,10 +556,28 @@ ServerRow run_cpu_server(const Tsa& tsa, const Requests& r, Archive& a, std::siz
 
 // --- The GPU: context and buffers ----------------------------------------------------------------
 
+// The bytes of the workspace of a GPU context for the set with max_batch operations per launch, as
+// openpqc_gpu_create allocates it (openpqc_gpu_workspace_bytes); 0 if the GPU library cannot make it
+std::size_t workspace_bytes(const ParameterSet& s, std::size_t max_batch) {
+    std::size_t bytes = 0;
+    return openpqc_gpu_workspace_bytes(s.alg, max_batch, &bytes) == OPENPQC_OK ? bytes : 0;
+}
+
 // Operations per launch for a context that will see calls of up to n operations: n, unless the
-// workspace would then exceed kWorkspaceLimit
+// workspace would then exceed kWorkspaceLimit: then the most that fit (at least 1)
 std::size_t launch_size(const ParameterSet& s, std::size_t n) {
-    return std::max<std::size_t>(1, std::min(n, kWorkspaceLimit / s.workspace_per_operation));
+    const auto fits = [&](std::size_t m) {
+        const std::size_t bytes = workspace_bytes(s, m);
+        return bytes != 0 && bytes <= kWorkspaceLimit;
+    };
+    n = std::max<std::size_t>(n, 1);
+    if (fits(n)) return n;
+    std::size_t lo = 1, hi = n;   // the answer is in [lo, hi): hi does not fit
+    while (hi - lo > 1) {
+        const std::size_t mid = lo + (hi - lo) / 2;
+        (fits(mid) ? lo : hi) = mid;
+    }
+    return lo;
 }
 
 // A context of the GPU API (openpqc/sycl.h) for the parameter set, with up to max_batch operations
@@ -589,32 +602,23 @@ private:
     openpqc_gpu* gpu_ = nullptr;
 };
 
-// Whether the GPU library of this build contains the parameter set: openpqc_gpu_create returns
-// OPENPQC_ERR_UNSUPPORTED for a set left out by the development option OPENPQC_SLHDSA_SYCL_SETS,
-// so a context of one operation per launch, destroyed at once, tells
-bool on_gpu(const ParameterSet& s, int device) {
-    openpqc_gpu* gpu = nullptr;
-    const openpqc_gpu_config cfg{device, 1};
-    const openpqc_status rc = openpqc_gpu_create(&gpu, s.alg, &cfg);
-    openpqc_gpu_destroy(gpu);
-    if (rc == OPENPQC_ERR_UNSUPPORTED) return false;
-    check(rc, std::string("openpqc_gpu_create for ") + s.name);
-    return true;
-}
+// Whether the GPU library of this build contains the parameter set (openpqc_gpu_supports): the
+// development option OPENPQC_SLHDSA_SYCL_SETS leaves sets out, for which openpqc_gpu_create returns
+// OPENPQC_ERR_UNSUPPORTED
+bool on_gpu(const ParameterSet& s) { return openpqc_gpu_supports(s.alg) == 1; }
 
 enum class Memory { device, host };
 enum class Holds { data, secrets };
 
 // Device memory (openpqc_gpu_malloc, 256-byte aligned, more than the 8 bytes the API requires of
 // key and SLH-DSA signature buffers) or page-locked host memory (openpqc_gpu_malloc_host) of one
-// context. openpqc_gpu_free waits for the context's work and overwrites either with zeros as far as
-// the device still accepts work, but reports nothing, so a buffer that held secrets is overwritten
-// here first: host memory with opqc_zeroize, device memory with a blocking copy of zeros, whose
-// status says whether it was made.
+// context. openpqc_gpu_free waits for the context's work, overwrites either with zeros, and says
+// whether it could: OPENPQC_ERR_DEVICE if the context had failed, and the memory may not have been
+// overwritten. For a buffer that held secrets, that is reported.
 class Buffer {
 public:
     Buffer(openpqc_gpu* gpu, std::size_t bytes, Memory where, Holds holds)
-        : gpu_(gpu), bytes_(bytes), where_(where), secret_(holds == Holds::secrets),
+        : gpu_(gpu), secret_(holds == Holds::secrets),
           p_(static_cast<std::uint8_t*>(where == Memory::host ? openpqc_gpu_malloc_host(gpu, bytes)
                                                               : openpqc_gpu_malloc(gpu, bytes))) {
         if (!p_) {
@@ -623,13 +627,7 @@ public:
         }
     }
     ~Buffer() {
-        if (secret_ && where_ == Memory::host) {
-            opqc_zeroize(p_, bytes_);
-        } else if (secret_) {
-            const std::vector<std::uint8_t> zeros(bytes_);
-            if (openpqc_gpu_memcpy(gpu_, p_, zeros.data(), bytes_) != OPENPQC_OK) cleanup_failed = true;
-        }
-        openpqc_gpu_free(gpu_, p_);
+        if (openpqc_gpu_free(gpu_, p_) != OPENPQC_OK && secret_) cleanup_failed = true;
     }
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
@@ -642,8 +640,6 @@ public:
 
 private:
     openpqc_gpu* gpu_;
-    std::size_t bytes_;
-    Memory where_;
     bool secret_;
     std::uint8_t* p_;
 };
@@ -972,7 +968,7 @@ std::vector<ServerRow> run_gpu_server(const Tsa& tsa, const Requests& r, Archive
     std::printf("GPU server on %s (%s): context (about %s of workspace, up to %s per launch)\n"
                 "  and buffers made in %s\n",
                 server.device_name(), openpqc_gpu_implementation(),
-                format_mb(server.launch() * tsa.set.workspace_per_operation).c_str(),
+                format_mb(workspace_bytes(tsa.set, server.launch())).c_str(),
                 count_text(server.launch(), "token").c_str(), format_ms(seconds_since(t)).c_str());
     std::printf("  %7s %6s %10s %15s %10s %6s\n", "batch", "timed", "tokens/s", "latency median", "p90", "host");
     std::vector<ServerRow> rows;
@@ -1298,7 +1294,7 @@ int run(Options o) {
         // A build may hold only some sets in its GPU library (OPENPQC_SLHDSA_SYCL_SETS)
         std::vector<const ParameterSet*> gpu_sets;
         for (const ParameterSet* s : sets) {
-            if (on_gpu(*s, o.device)) {
+            if (on_gpu(*s)) {
                 gpu_sets.push_back(s);
             } else {
                 std::printf("%s: not in the GPU library of this build (OPENPQC_SLHDSA_SYCL_SETS), skipped\n",

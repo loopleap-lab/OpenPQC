@@ -83,6 +83,7 @@ STATUS_TYPES = {"int", "openpqc_status"}
 NOT_A_STATUS = {
     "opqc_sycl_device_count": "the number of SYCL devices",
     "openpqc_gpu_device_count": "the number of SYCL devices",
+    "openpqc_gpu_supports": "1 or 0: whether the GPU library has a parameter set",
 }
 # functions that the application defines and the library calls (Core/opqc_platform.h)
 APPLICATION_DEFINED = {"opqc_external_randombytes"}

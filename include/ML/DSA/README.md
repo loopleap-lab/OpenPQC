@@ -276,7 +276,7 @@ if (rc == OPENPQC_OK) rc = openpqc_gpu_sig_verify(gpu, sig, msgs, &opts, pk, sta
 if (rc == OPENPQC_OK) rc = openpqc_gpu_sync(gpu);
 if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, host_status, status, n * sizeof(int32_t));
 /* ... kg_status, sign_status and the results back to the host likewise, then free every buffer */
-openpqc_gpu_free(gpu, pk);                                   /* wipes, then frees */
+if (openpqc_gpu_free(gpu, pk) != OPENPQC_OK) rc = OPENPQC_ERR_DEVICE;   /* wipes, then frees; DEVICE: not wiped */
 openpqc_gpu_destroy(gpu);
 if (rc != OPENPQC_OK)
     return -1;                                               /* no result of these calls may be used */
@@ -369,8 +369,8 @@ The kernels are a staged pipeline, like ML-KEM's:
   `sync` at 8192 operations took 4 % to 5 % longer in the project's run, and in the review's 7.8 % to 12.6 %
   (ML-DSA-44), 4.5 % to 9.3 % (-65) and 4.5 % to 6.6 % (-87) longer: without control of the clocks, the end-to-end
   figure depends on the run. The GPU API's signing and verification calls end in the same functions of the backend, so
-  these zeroizations hold for them too. `openpqc_gpu_free` overwrites what it frees; the backend's own
-  `opqc_sycl_mldsa_free` frees without wiping. `create` zeroizes the whole workspace after its self-test.
+  these zeroizations hold for them too. `openpqc_gpu_free` overwrites what it frees and reports whether it could
+  (`OPENPQC_ERR_DEVICE` if the context had failed); the backend's own `opqc_sycl_mldsa_free` frees without wiping. `create` zeroizes the whole workspace after its self-test.
 - **The signing limit** (Appendix C, 821 attempts) gives an all-zero signature and `OPENPQC_ERR_SIGNING_LIMIT`,
   in `status` (the GPU API always passes one) or, for a call of the backend without a status buffer, as the result of
   the call. A private key whose s1 or s2 has a coefficient outside [−η, η] gives an all-zero signature and

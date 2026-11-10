@@ -294,7 +294,7 @@ if (rc == OPENPQC_OK) rc = openpqc_gpu_sync(gpu);           /* OPENPQC_ERR_DEVIC
 if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, host_enc_status, enc_status, n * sizeof(int32_t));
 if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, host_dec_status, dec_status, n * sizeof(int32_t));
 /* ... kg_status and the results back to the host likewise, then free every buffer */
-openpqc_gpu_free(gpu, pk);                                   /* wipes, then frees */
+if (openpqc_gpu_free(gpu, pk) != OPENPQC_OK) rc = OPENPQC_ERR_DEVICE;   /* wipes, then frees; DEVICE: not wiped */
 openpqc_gpu_destroy(gpu);
 if (rc != OPENPQC_OK)
     return -1;                                               /* no result of these calls may be used */
@@ -359,7 +359,8 @@ the whole contract; in short:
   through page-locked host memory that is wiped right after the copy; NVIDIA's driver has nevertheless been seen to
   keep copies of such small transfers in memory of its own, out of the library's reach. `openpqc_gpu_free` (as the
   backend's `opqc_sycl_mlkem_free`) overwrites the buffers it frees (a freed buffer used to come back from the next
-  allocation with the keys in it).
+  allocation with the keys in it), and returns `OPENPQC_ERR_DEVICE` if the context had failed and the overwrite may
+  not have happened.
 - **Constant time.** The implicit-rejection key is chosen with a mask, and the mask is XORed with a word of device
   memory that holds 0: from a mask that is visibly all ones or all zeros, both CUDA toolchains had made a choice
   between the addresses of K′ and K̄ and a single load. No constant-time property of the device code is claimed or

@@ -419,7 +419,9 @@ openpqc::sycl::Results r = gpu.sign(std::span(sig), std::span<const std::span<co
   application's SYCL context (`openpqc_gpu_create_on`). A buffer holds the n operations back to back, operation i at
   i times the size that `openpqc_alg_info_get(alg)` gives; keys, ciphertexts and shared secrets are packed FIPS 203
   byte strings, so results compare byte for byte with the CPU library and with test vectors. `openpqc_gpu_free` waits
-  for the context's work and overwrites the buffer with zeros before it frees it.
+  for the context's work, overwrites the buffer with zeros before it frees it, and reports whether it could
+  (`OPENPQC_ERR_DEVICE`: the context had failed, and the buffer may not have been overwritten); it refuses memory
+  that is not a live allocation of the context (`OPENPQC_ERR_INVALID_ARGUMENT`), such as a buffer freed already.
 - **Status** is required on every call: n `int32_t` in USM memory, `OPENPQC_OK` where operation i has a result and
   otherwise the reason: `OPENPQC_ERR_INVALID_PUBLIC_KEY` (FIPS 203 §7.2 check failed) or
   `OPENPQC_ERR_INVALID_SECRET_KEY` (§7.3), with zeros in place of the operation's ciphertext and shared secret, or
@@ -462,10 +464,18 @@ openpqc::sycl::Results r = gpu.sign(std::span(sig), std::span<const std::span<co
   key for all n operations); the scheme READMEs give the details.
 - **Devices**: `openpqc_gpu_device_count`, `openpqc_gpu_device_name(i)`, `openpqc_gpu_device_platform(i)` and
   `openpqc_gpu_implementation()` ("DPC++" or "AdaptiveCpp"); `openpqc_gpu_name(gpu)` is the device of a context.
+- **Before a context exists**: `openpqc_gpu_supports(alg)` says whether the GPU library of the build has a parameter
+  set (the CPU library's are `openpqc_alg_list`'s; the development option `OPENPQC_SLHDSA_SYCL_SETS` leaves SLH-DSA
+  sets out of the GPU library), and `openpqc_gpu_workspace_bytes(alg, max_batch, &bytes)` gives the device memory of
+  the workspace that `openpqc_gpu_create` would allocate, so that an application can choose `max_batch` for the
+  memory it has (per operation, about 5 to 11 KiB for ML-KEM, 49 to 116 KiB for ML-DSA, 0.1 to 11 MiB for
+  SLH-DSA). The test `gpu_workspace` compares it with what every context of the build allocates.
 - **C++** (`openpqc/sycl.hpp`): `openpqc::sycl::Context<Scheme>` takes the types of `openpqc/openpqc.hpp`. Its host
-  calls (`keygen`, `encaps`, `decaps`, `sign`, `verify` on host memory) stage the data through page-locked memory,
-  wait, and return `Results`; its `*_async` calls take `Buffer<T>` (device memory, overwritten with zeros when it is
-  freed) and give an optional `::sycl::event` that completes with the call's work (`openpqc_gpu_event`).
+  calls (`keygen`, `keygen_from_seed`, `encaps`, `decaps`, `sign`, `verify`, and ML-DSA's external-mu `sign_mu` and
+  `verify_mu`, on host memory) stage the data through page-locked memory, wait, and return `Results`; its `*_async`
+  calls take `Buffer<T>` (device memory, overwritten with zeros when it is freed; `release()` frees it and reports
+  `openpqc_gpu_free`'s result) and give an optional `::sycl::event` that completes with the call's work
+  (`openpqc_gpu_event`).
 - Every function that returns a status is declared `OPENPQC_MUST_CHECK`. The header states the whole contract, and
   the test `gpu_api` (`tests/gpu/test_gpu_api.cpp`) checks it against the CPU library, linked as an application links
   the two libraries.
@@ -1440,7 +1450,7 @@ states the contract):
   the device (an operation whose message lies outside gets `OPENPQC_ERR_INVALID_ARGUMENT` and, when it signs, a zero
   signature; review finding F073), while the backend's own functions read decreasing offsets as the empty message
   and cannot see an end past the buffer, whose length they do not take; and `openpqc_gpu_free` overwrites what it
-  frees.
+  frees and reports whether it could.
 - **Private keys.** The signer refuses a key whose s1 or s2 has a coefficient outside [−η, η], as the CPU library
   does: the operation gets an all-zero signature and `OPENPQC_ERR_INVALID_SECRET_KEY` (in `status`, or as the result
   of a backend call without one, before the signing limit), checked without a branch on a coefficient in the stage

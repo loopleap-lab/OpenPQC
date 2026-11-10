@@ -179,7 +179,7 @@ layer over it. The [complete examples](examples/README.md#the-apis-in-one-table)
 | Interface | C header | C++ header | CMake target |
 | --- | --- | --- | --- |
 | The whole API | `openpqc/openpqc.h` | `openpqc/openpqc.hpp` | `OpenPQC::openpqc` |
-| Status codes, parameter-set ids and sizes (`openpqc_status`, `openpqc_alg`, `openpqc_alg_info_get`) | `openpqc/common.h` | `openpqc/common.hpp` (`openpqc::status`, `openpqc::secret<N>`) | `OpenPQC::openpqc` |
+| Status codes, parameter-set ids and sizes, the sets of the build (`openpqc_status`, `openpqc_alg`, `openpqc_alg_info_get`, `openpqc_alg_list`) | `openpqc/common.h` | `openpqc/common.hpp` (`openpqc::status`, `openpqc::secret<N>`) | `OpenPQC::openpqc` |
 | Parameter set chosen at run time | `openpqc/kem.h`, `openpqc/sig.h` | `openpqc/openpqc.hpp` (`visit_kem`, `visit_sig`) | `OpenPQC::openpqc` |
 | ML-KEM | `ML/KEM/openpqc_mlkem.h` | `ML/KEM/mlkem.hpp` | `OpenPQC::openpqc` |
 | ML-DSA | `ML/DSA/openpqc_mldsa.h` | `ML/DSA/mldsa.hpp` | `OpenPQC::openpqc` |
@@ -287,9 +287,12 @@ context type, `openpqc_gpu`, for all 18 parameter sets, created from an `openpqc
 (`openpqc_gpu_create(&gpu, OPENPQC_ML_KEM_768, &cfg)`), and every call of it runs n operations of that set on buffers
 of USM memory of the context (`openpqc_gpu_malloc`), with a status entry per operation, required on every call, and
 results byte-identical to the CPU library's (`openpqc_gpu_kem_keygen`, `_encaps`, `_decaps`, `openpqc_gpu_sig_keygen`,
-`_sign`, `_verify`, ...). `openpqc/sycl.hpp` is a C++ layer over it (`openpqc::sycl::Context<openpqc::ML_KEM_768>`:
-host data staged through page-locked memory, the results of every operation, buffers overwritten with zeros when they
-are freed), `openpqc/sycl/interop.hpp` creates a context in an application's SYCL context, and
+`_sign`, `_verify`, ...). Before a context exists, `openpqc_gpu_supports(alg)` says whether the GPU library has a
+set and `openpqc_gpu_workspace_bytes` how much device memory its context would take for a given `max_batch`;
+`openpqc_gpu_free` overwrites a buffer with zeros, frees it and reports whether it could. `openpqc/sycl.hpp` is a C++
+layer over it (`openpqc::sycl::Context<openpqc::ML_KEM_768>`: host data staged through page-locked memory, the results
+of every operation, buffers overwritten with zeros when they are freed), `openpqc/sycl/interop.hpp` creates a context
+in an application's SYCL context, and
 `openpqc/sycl/device.hpp` has hash functions for an application's own kernels. Randomness that the caller chooses is
 for testing only, in `openpqc/sycl_testing.h` (`OpenPQC::sycl_testing`, never installed).
 
@@ -557,7 +560,7 @@ builds, with the -O0 figures given apart.
 | `OPENPQC_CUPQC_DIR` | Empty | Optional NVIDIA cuPQC SDK path: builds the cuPQC baseline benchmarks (needs CUDA); their results are covered by NVIDIA's licence, and this repository does not publish them |
 
 Restricting SLH-DSA GPU parameter sets reduces DPC++ link time but leaves the omitted sets unavailable
-in that build (`openpqc_gpu_create` returns `OPENPQC_ERR_UNSUPPORTED` for them). The
+in that build (`openpqc_gpu_supports` returns 0 and `openpqc_gpu_create` `OPENPQC_ERR_UNSUPPORTED` for them). The
 [SLH-DSA backend documentation](include/SLH/DSA/README.md#gpu-backend-sycl) describes this option and
 SHA-2 loop-unrolling tradeoffs.
 
@@ -696,7 +699,8 @@ buffers. On the GPU: the random coins pass through page-locked memory that is wi
 driver has been seen to keep copies of such small transfers in memory of its own, also after `destroy`; after a
 sticky device fault (on CUDA an invalid address) no wipe can run any more; ML-DSA's signing leaves the challenges c of
 its attempts in the context's workspace until later calls overwrite them or `destroy` zeroizes it.
-`openpqc_gpu_free` overwrites what it frees with zeros for every scheme (the backends' own `opqc_sycl_mldsa_free` and
+`openpqc_gpu_free` overwrites what it frees with zeros for every scheme, and returns `OPENPQC_ERR_DEVICE` when the
+context has failed and the overwrite may not have happened (the backends' own `opqc_sycl_mldsa_free` and
 `opqc_sycl_slhdsa_free`, which the shared GPU library does not export, free without wiping). The scheme READMEs give
 the details and the tests that check what is destroyed.
 

@@ -277,34 +277,64 @@ std::size_t default_max_batch(unsigned scheme, unsigned id) {
     }
 }
 
+// The backend's argument for a parameter set of the CPU library (openpqc_alg_info_get): ML-KEM's level (512,
+// 768, 1024), ML-DSA's (44, 65, 87), SLH-DSA's set id (1 to 12)
+int backend_param(unsigned scheme, unsigned id) {
+    switch (scheme) {
+        case KEM: return static_cast<int>(256 * (id + 1));
+        case MLDSA: return id == 1 ? 44 : id == 2 ? 65 : 87;
+        default: return static_cast<int>(id);
+    }
+}
+
+// The bytes of the workspace that the backend allocates for alg and max_batch (0: refused, or not in the GPU
+// library of this build), as its create computes them
+std::size_t backend_workspace(openpqc_alg alg, std::size_t max_batch) {
+    if (!openpqc_alg_info_get(alg)) return 0;
+    const unsigned scheme = static_cast<unsigned>(alg) >> 8, id = static_cast<unsigned>(alg) & 0xffu;
+    const int param = backend_param(scheme, id);
+    switch (scheme) {
+#if OPENPQC_HAVE_MLKEM
+        case KEM: return openpqc::gpu::mlkem_workspace_bytes(param, max_batch);
+#endif
+#if OPENPQC_HAVE_MLDSA
+        case MLDSA: return openpqc::gpu::mldsa_workspace_bytes(param, max_batch);
+#endif
+#if OPENPQC_HAVE_SLHDSA
+        case SLHDSA: return openpqc::gpu::slhdsa_workspace_bytes(param, max_batch);
+#endif
+        default: return 0;
+    }
+}
+
 openpqc_status create(openpqc_gpu** out, openpqc_alg alg, std::size_t max_batch, const sycl::device& dev,
                       const sycl::context* app) {
     const openpqc_alg_info* info = openpqc_alg_info_get(alg);
-    if (!info) return OPENPQC_ERR_UNSUPPORTED;
+    if (!info || backend_workspace(alg, 1) == 0) return OPENPQC_ERR_UNSUPPORTED;
     auto g = std::make_unique<openpqc_gpu>();
     g->alg = alg;
     g->info = info;
     g->scheme = static_cast<unsigned>(alg) >> 8;
     const unsigned id = static_cast<unsigned>(alg) & 0xffu;
+    const int param = backend_param(g->scheme, id);
     if (max_batch == 0) max_batch = default_max_batch(g->scheme, id);
     int rc = -1;
     switch (g->scheme) {
 #if OPENPQC_HAVE_MLKEM
         case KEM:
-            rc = openpqc::gpu::mlkem_create(&g->mlkem, static_cast<int>(256 * (id + 1)), max_batch, dev, app);
+            rc = openpqc::gpu::mlkem_create(&g->mlkem, param, max_batch, dev, app);
             if (rc == 0) g->h = openpqc::gpu::handle(g->mlkem);
             break;
 #endif
 #if OPENPQC_HAVE_MLDSA
         case MLDSA:
-            rc = openpqc::gpu::mldsa_create(&g->mldsa, id == 1 ? 44 : id == 2 ? 65 : 87, max_batch, dev, app);
+            rc = openpqc::gpu::mldsa_create(&g->mldsa, param, max_batch, dev, app);
             if (rc == 0) g->h = openpqc::gpu::handle(g->mldsa);
             break;
 #endif
 #if OPENPQC_HAVE_SLHDSA
         case SLHDSA:
-            if (opqc_sycl_slhdsa_workspace_bytes(static_cast<int>(id), 1) == 0) return OPENPQC_ERR_UNSUPPORTED;
-            rc = openpqc::gpu::slhdsa_create(&g->slhdsa, static_cast<int>(id), max_batch, dev, app);
+            rc = openpqc::gpu::slhdsa_create(&g->slhdsa, param, max_batch, dev, app);
             if (rc == 0) g->h = openpqc::gpu::handle(g->slhdsa);
             break;
 #endif
@@ -453,14 +483,18 @@ openpqc_status sig_verify(openpqc_gpu* g, const std::uint8_t* sig, const openpqc
 }
 
 // Overwrites a buffer of the context's with zeros and frees it, behind the context's work
-void wipe_and_free(openpqc_gpu* g, void* p, std::size_t bytes) {
+// Overwrites the allocation with zeros, waits, and frees it: 0, or -2 if the context has failed (before or during
+// the wipe, which then may not have happened); the memory is freed either way
+int wipe_and_free(openpqc_gpu* g, void* p, std::size_t bytes) {
     ContextQueue& q = *g->h.queue;
-    q.guard([&] {
+    int rc = q.guard([&] {
         if (bytes > 0) q.memset(p, 0, bytes);
         q.wait();
         return 0;
     });
+    if (rc == 0 && q.failed()) rc = -2;
     openpqc::gpu::device_free(q, p);
+    return rc;
 }
 
 void* allocate(openpqc_gpu* g, std::size_t bytes, bool host) {
@@ -483,6 +517,18 @@ void* allocate(openpqc_gpu* g, std::size_t bytes, bool host) {
 // ------------------------------------------------------------------ devices
 
 extern "C" int openpqc_gpu_device_count(void) { return opqc_sycl_device_count(); }
+
+extern "C" int openpqc_gpu_supports(openpqc_alg alg) { return backend_workspace(alg, 1) != 0 ? 1 : 0; }
+
+extern "C" openpqc_status openpqc_gpu_workspace_bytes(openpqc_alg alg, size_t max_batch, size_t* bytes) {
+    if (!bytes) return OPENPQC_ERR_INVALID_ARGUMENT;
+    if (backend_workspace(alg, 1) == 0) return OPENPQC_ERR_UNSUPPORTED;
+    if (max_batch == 0) max_batch = default_max_batch(static_cast<unsigned>(alg) >> 8, static_cast<unsigned>(alg) & 0xffu);
+    const std::size_t b = backend_workspace(alg, max_batch);
+    if (b == 0) return OPENPQC_ERR_INVALID_ARGUMENT;
+    *bytes = b;
+    return OPENPQC_OK;
+}
 extern "C" const char* openpqc_gpu_device_name(int i) { return opqc_sycl_device_name(i); }
 extern "C" const char* openpqc_gpu_device_platform(int i) { return opqc_sycl_device_platform(i); }
 extern "C" const char* openpqc_gpu_implementation(void) { return opqc_sycl_implementation(); }
@@ -526,7 +572,7 @@ extern "C" void openpqc_gpu_destroy(openpqc_gpu* gpu) {
     if (!gpu) return;
     {
         const std::lock_guard<std::mutex> lock(gpu->allocations_mutex);
-        for (const auto& [p, bytes] : gpu->allocations) wipe_and_free(gpu, p, bytes);
+        for (const auto& [p, bytes] : gpu->allocations) (void)wipe_and_free(gpu, p, bytes);
         gpu->allocations.clear();
     }
     switch (gpu->scheme) {
@@ -568,18 +614,18 @@ extern "C" openpqc_status openpqc_gpu_event(openpqc_gpu* gpu, ::sycl::event* eve
 extern "C" void* openpqc_gpu_malloc(openpqc_gpu* gpu, size_t bytes) { return allocate(gpu, bytes, false); }
 extern "C" void* openpqc_gpu_malloc_host(openpqc_gpu* gpu, size_t bytes) { return allocate(gpu, bytes, true); }
 
-extern "C" void openpqc_gpu_free(openpqc_gpu* gpu, void* p) {
-    if (!gpu || !p) return;
+extern "C" openpqc_status openpqc_gpu_free(openpqc_gpu* gpu, void* p) {
+    if (!gpu) return OPENPQC_ERR_INVALID_ARGUMENT;
+    if (!p) return OPENPQC_OK;
     std::size_t bytes = 0;
     {
         const std::lock_guard<std::mutex> lock(gpu->allocations_mutex);
         const auto it = gpu->allocations.find(p);
-        if (it != gpu->allocations.end()) {
-            bytes = it->second;
-            gpu->allocations.erase(it);
-        }
+        if (it == gpu->allocations.end()) return OPENPQC_ERR_INVALID_ARGUMENT;   // not the context's to free
+        bytes = it->second;
+        gpu->allocations.erase(it);
     }
-    wipe_and_free(gpu, p, bytes);
+    return wipe_and_free(gpu, p, bytes) == 0 ? OPENPQC_OK : OPENPQC_ERR_DEVICE;
 }
 
 extern "C" openpqc_status openpqc_gpu_memcpy(openpqc_gpu* gpu, void* dst, const void* src, size_t bytes) {
@@ -723,6 +769,12 @@ extern "C" openpqc_status openpqc_testing_gpu_sig_sign_mu_derand(openpqc_gpu* gp
                                                                 const openpqc_sign_opts* opts, const uint8_t* rnd,
                                                                 const uint8_t* sk, int32_t* status, size_t n) {
     return sig_sign(gpu, sig, nullptr, mu, opts, rnd, true, sk, status, n);
+}
+
+extern "C" openpqc_status openpqc_testing_gpu_workspace_allocated(const openpqc_gpu* gpu, size_t* bytes) {
+    if (!gpu || !bytes) return OPENPQC_ERR_INVALID_ARGUMENT;
+    *bytes = gpu->h.workspace_bytes;
+    return OPENPQC_OK;
 }
 
 #endif

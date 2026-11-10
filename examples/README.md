@@ -994,7 +994,7 @@ openpqc_gpu_memcpy(gpu, d_mu, mu.data(), n * MU);
 openpqc_gpu_sig_sign_mu(gpu, d_sig, d_mu, nullptr, d_sk, d_status, n);    // opts NULL: hedged; mu holds ctx
 openpqc_gpu_sig_verify_mu(gpu, d_sig, d_mu, nullptr, d_pk, d_status, n);  // then the CPU verifies the full messages
 
-// Cleanup: openpqc_gpu_free overwrites each buffer with zeros before it frees it
+// Cleanup: openpqc_gpu_free overwrites each buffer with zeros before it frees it, and says if it could not
 openpqc_gpu_free(gpu, d_sk);  /* ... */  openpqc_gpu_destroy(gpu);
 ```
 
@@ -1103,6 +1103,7 @@ openpqc_sig_verify(alg, &sig[i * SIG], SIG, message(i), length(i), &ph_opts, &pk
 openpqc_gpu_sig_verify(gpu, d_sig, messages, &opts, d_pk, d_status, n);   // must reject all n
 
 // Cleanup, in the destructors of small RAII classes: openpqc_gpu_free overwrites each buffer with zeros
+// (a warning if it could not: the context had failed)
 openpqc_gpu_free(gpu, d_sk);  /* ... */  openpqc_gpu_destroy(gpu);
 ```
 

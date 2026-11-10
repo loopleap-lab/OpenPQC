@@ -9,7 +9,9 @@
  *
  * Against a table of its own of the per-set functions and sizes (below), for every openpqc_alg:
  *   - openpqc_alg_info_get and openpqc_alg_from_name agree with each other and with the per-set headers (sizes,
- *     kind, category, the names of the standards in any case of letters); unknown names and values are refused
+ *     kind, category, the names of the standards in any case of letters); unknown names and values are refused;
+ *     openpqc_alg_list gives every set (the tests build them all) in the order of the ids, and its count, and
+ *     writes no more than it is given room for
  *   - every runtime function gives the bytes of the per-set function it stands for, on the same inputs: KeyGen
  *     from a seed, Encaps with m given, Decaps, the deterministic signatures (pure and pre-hash, through
  *     OPENPQC_SIGN_DETERMINISTIC), the signatures with the randomness given, the internal functions, the key
@@ -123,6 +125,19 @@ static void test_table(void) {
     check(openpqc_alg_info_get((openpqc_alg)0x0104) == NULL && openpqc_alg_info_get((openpqc_alg)0) == NULL &&
                   openpqc_alg_info_get((openpqc_alg)0x0401) == NULL,
           "-", "unknown values have no info");
+    /* openpqc_alg_list */
+    const openpqc_alg unset = (openpqc_alg)0x7777;
+    openpqc_alg list[OPENPQC_ALG_MAX + 1];
+    const size_t count = openpqc_alg_list(NULL, 0);
+    check(count == ROWS && ROWS == OPENPQC_ALG_MAX, "-", "openpqc_alg_list: the number of sets");
+    for (size_t i = 0; i <= OPENPQC_ALG_MAX; i++) list[i] = unset;
+    int listed = openpqc_alg_list(list, OPENPQC_ALG_MAX + 1) == count && list[OPENPQC_ALG_MAX] == unset;
+    for (size_t i = 0; i < ROWS; i++) listed &= list[i] == table[i].alg;
+    check(listed, "-", "openpqc_alg_list: every set, in the order of the ids, nothing past the count");
+    for (size_t i = 0; i <= OPENPQC_ALG_MAX; i++) list[i] = unset;
+    check(openpqc_alg_list(list, 2) == count && list[0] == table[0].alg && list[1] == table[1].alg &&
+                  list[2] == unset,
+          "-", "openpqc_alg_list: no more written than cap");
     /* every status has a name of its own */
     const openpqc_status all_status[] = {OPENPQC_OK,
                                          OPENPQC_ERR_INVALID_SIGNATURE,

@@ -50,6 +50,12 @@ OPENPQC_MUST_CHECK OPENPQC_API openpqc_status openpqc_testing_gpu_sig_sign_mu_de
         openpqc_gpu *gpu, uint8_t *sig, const uint8_t *mu, const openpqc_sign_opts *opts, const uint8_t *rnd,
         const uint8_t *sk, int32_t *status, size_t n);
 
+/* The bytes of device memory of the context's workspace as create allocated it: OPENPQC_OK and *bytes, or
+ * OPENPQC_ERR_INVALID_ARGUMENT for a NULL argument. For the test that openpqc_gpu_workspace_bytes (openpqc/sycl.h)
+ * reports what create allocates. */
+OPENPQC_MUST_CHECK OPENPQC_API openpqc_status openpqc_testing_gpu_workspace_allocated(const openpqc_gpu *gpu,
+                                                                                    size_t *bytes);
+
 #ifdef __cplusplus
 }
 #endif

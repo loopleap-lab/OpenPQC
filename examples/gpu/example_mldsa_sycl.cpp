@@ -111,7 +111,9 @@ public:
         : gpu_(gpu), bytes_(bytes), p_(static_cast<std::uint8_t*>(openpqc_gpu_malloc(gpu, bytes))) {
         if (!p_) fail("openpqc_gpu_malloc of " + std::to_string(bytes) + " bytes failed");
     }
-    ~DeviceBuffer() { openpqc_gpu_free(gpu_, p_); }
+    ~DeviceBuffer() {
+        if (openpqc_gpu_free(gpu_, p_) != OPENPQC_OK) std::fprintf(stderr, "warning: a device buffer was not wiped\n");
+    }
     DeviceBuffer(const DeviceBuffer&) = delete;
     DeviceBuffer& operator=(const DeviceBuffer&) = delete;
 

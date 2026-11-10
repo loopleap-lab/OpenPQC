@@ -24,16 +24,15 @@
 // openpqc::SLH_DSA_SHAKE_128f, ...): their alg, key, ciphertext, shared-secret and signature types. Everything
 // openpqc/sycl.h says of the calls holds here (status, results, order of checks, threads, device failures).
 //
-//   Host calls (keygen, encaps, decaps, sign, verify on spans of host memory): n is the size of the spans, which
-//   must agree. They copy the inputs into page-locked memory of the context and on to device memory, run the
-//   call, wait for it (sync), and copy the outputs back the same way; every staging buffer is overwritten with
-//   zeros when it is freed, and the page-locked one keeps secrets out of the driver's staging buffers for pageable
-//   memory. The result is a Results: the call's status (status()), the status of every operation (operator[]),
-//   and ok() for "the call and every operation succeeded". An output of an operation whose status is not
-//   status::ok is not a result (zeros, as openpqc/sycl.h says). The messages of sign and verify are spans of
-//   bytes, one per operation, packed into one buffer: at a stride when they all have the same length (so the
-//   pre-hashes PH(M) of SLH-DSA's pre-hash variants, opts->prehash, pass as openpqc/sycl.h asks), else with
-//   offsets.
+//   Host calls (keygen, keygen_from_seed, encaps, decaps, sign, verify, sign_mu, verify_mu on spans of host memory): n
+//   is the size of the spans, which must agree. They copy the inputs into page-locked memory of the context and on to
+//   device memory, run the call, wait for it (sync), and copy the outputs back the same way; every staging buffer is
+//   overwritten with zeros when it is freed, and the page-locked one keeps secrets out of the driver's staging buffers
+//   for pageable memory. The result is a Results: the call's status (status()), the status of every operation
+//   (operator[]), and ok() for "the call and every operation succeeded". An output of an operation whose status is not
+//   status::ok is not a result (zeros, as openpqc/sycl.h says). The messages of sign and verify are spans of bytes, one
+//   per operation, packed into one buffer: at a stride when they all have the same length (so the pre-hashes PH(M) of
+//   SLH-DSA's pre-hash variants, opts->prehash, pass as openpqc/sycl.h asks), else with offsets.
 //
 //   Device calls (*_async, on Buffer<T>): queued on the context, as the C API's are; with `done`, an event that
 //   completes when the call's work is done (openpqc_gpu_event: waiting for it does not report a device failure,
@@ -41,7 +40,8 @@
 //
 // The context is move-only: its destructor runs once, and destroy must not overlap another call
 // (openpqc/sycl.h, Threads). Buffers must be freed (destroyed) before their context; a Buffer keeps a pointer to
-// the context's handle, not to the Context object, so moving the Context does not invalidate it. Constructors
+// the context's handle, not to the Context object, so moving the Context does not invalidate it; release() frees a
+// Buffer and reports whether its memory was overwritten (openpqc_gpu_free), which the destructor cannot. Constructors
 // throw openpqc::error when the C API fails, if exceptions are enabled (otherwise check valid()). In this
 // namespace the SYCL implementation's own names are written ::sycl:: (openpqc::sycl is this namespace).
 #pragma once
@@ -69,6 +69,12 @@ template <class S>
 concept kem = requires { typename S::ciphertext; typename S::shared_secret; };
 template <class S>
 concept signature_scheme = requires { typename S::signature; };
+// ML-KEM and ML-DSA: the key pair of a stored seed (keygen_from_seed)
+template <class S>
+concept from_seed = requires { &S::keygen_from_seed; };
+// ML-DSA: signing and verification of message representatives mu (external mu, FIPS 204, Algorithm 7, line 6)
+template <class S>
+concept external_mu = requires { typename S::message_representative; };
 } // namespace detail
 
 // n values of type T (a key, ciphertext, shared secret or signature type of a scheme, or std::int32_t for status
@@ -106,12 +112,16 @@ public:
     }
     ~Buffer() { reset(); }
 
-    // Frees the memory (overwritten with zeros first: openpqc_gpu_free waits for the context's work)
-    void reset() noexcept {
-        if (bytes_) openpqc_gpu_free(gpu_, bytes_);
+    // Frees the memory (overwritten with zeros first: openpqc_gpu_free waits for the context's work). release
+    // reports openpqc_gpu_free's result (status::device: the context has failed, and the memory may not have been
+    // overwritten); reset and the destructor drop it.
+    [[nodiscard]] status release() noexcept {
+        const openpqc_status s = bytes_ ? openpqc_gpu_free(gpu_, bytes_) : OPENPQC_OK;
         bytes_ = nullptr;
         n_ = 0;
+        return to_status(s);
     }
+    void reset() noexcept { (void)release(); }
 
     [[nodiscard]] std::uint8_t* bytes() const noexcept { return static_cast<std::uint8_t*>(bytes_); }
     // Typed access for the types whose bytes are their value (status entries, messages, offsets)
@@ -219,6 +229,20 @@ public:
         else s = openpqc_gpu_sig_keygen(gpu_, pk.bytes(), sk.bytes(), st.data(), pk.size());
         return queued(s, done);
     }
+    // seed: the stored seeds (Scheme::seed: ML-KEM d || z, ML-DSA xi), one per key pair
+    template <class PK, class SK, class SEED>
+        requires detail::from_seed<Scheme>
+    [[nodiscard]] status keygen_from_seed_async(Buffer<PK>& pk, Buffer<SK>& sk, const Buffer<SEED>& seed,
+                                                Buffer<std::int32_t>& st, ::sycl::event* done = nullptr) {
+        static_assert(sizeof(SEED) == Scheme::seed_bytes, "seed: Scheme::seed");
+        if (pk.size() != sk.size() || seed.size() != pk.size() || st.size() != pk.size())
+            return status::invalid_argument;
+        openpqc_status s;
+        if constexpr (detail::kem<Scheme>)
+            s = openpqc_gpu_kem_keygen_from_seed(gpu_, pk.bytes(), sk.bytes(), seed.bytes(), st.data(), pk.size());
+        else s = openpqc_gpu_sig_keygen_from_seed(gpu_, pk.bytes(), sk.bytes(), seed.bytes(), st.data(), pk.size());
+        return queued(s, done);
+    }
     template <class CT, class SS, class PK>
         requires detail::kem<Scheme>
     [[nodiscard]] status encaps_async(Buffer<CT>& ct, Buffer<SS>& ss, const Buffer<PK>& pk, Buffer<std::int32_t>& st,
@@ -249,6 +273,27 @@ public:
         if (st.size() != sig.size()) return status::invalid_argument;
         return queued(openpqc_gpu_sig_verify(gpu_, sig.bytes(), msgs, opts, pk.bytes(), st.data(), sig.size()), done);
     }
+    // External mu: mu[i] is the message representative of signature i (Scheme::message_representative); opts:
+    // flags only (OPENPQC_SIGN_DETERMINISTIC, OPENPQC_GPU_ONE_KEY), as mu holds the context string
+    template <class SIG, class MU, class SK>
+        requires detail::external_mu<Scheme>
+    [[nodiscard]] status sign_mu_async(Buffer<SIG>& sig, const Buffer<MU>& mu, const openpqc_sign_opts* opts,
+                                       const Buffer<SK>& sk, Buffer<std::int32_t>& st, ::sycl::event* done = nullptr) {
+        static_assert(sizeof(MU) == Scheme::mu_bytes, "mu: Scheme::message_representative");
+        if (mu.size() != sig.size() || st.size() != sig.size()) return status::invalid_argument;
+        return queued(openpqc_gpu_sig_sign_mu(gpu_, sig.bytes(), mu.bytes(), opts, sk.bytes(), st.data(), sig.size()),
+                      done);
+    }
+    template <class SIG, class MU, class PK>
+        requires detail::external_mu<Scheme>
+    [[nodiscard]] status verify_mu_async(const Buffer<SIG>& sig, const Buffer<MU>& mu, const openpqc_sign_opts* opts,
+                                         const Buffer<PK>& pk, Buffer<std::int32_t>& st,
+                                         ::sycl::event* done = nullptr) {
+        static_assert(sizeof(MU) == Scheme::mu_bytes, "mu: Scheme::message_representative");
+        if (mu.size() != sig.size() || st.size() != sig.size()) return status::invalid_argument;
+        return queued(openpqc_gpu_sig_verify_mu(gpu_, sig.bytes(), mu.bytes(), opts, pk.bytes(), st.data(), sig.size()),
+                      done);
+    }
 
     // ------------------------------------------------------------ host calls (staged, waited for)
 
@@ -262,6 +307,28 @@ public:
         if (s == OPENPQC_OK) {
             if constexpr (detail::kem<Scheme>) s = openpqc_gpu_kem_keygen(gpu_, d_pk.dev(), d_sk.dev(), st.data(), n);
             else s = openpqc_gpu_sig_keygen(gpu_, d_pk.dev(), d_sk.dev(), st.data(), n);
+        }
+        s = finish(s);
+        d_pk.download(pk.data(), s);
+        d_sk.download(sk.data(), s);
+        return results(s, st, n);
+    }
+    // The key pairs of stored seeds (Scheme::seed: ML-KEM d || z, ML-DSA xi), one per key pair
+    template <class PK, class SK, class SEED>
+        requires detail::from_seed<Scheme>
+    [[nodiscard]] Results keygen_from_seed(std::span<PK> pk, std::span<SK> sk, std::span<const SEED> seed) {
+        static_assert(sizeof(SEED) == Scheme::seed_bytes, "seed: Scheme::seed");
+        const std::size_t n = pk.size();
+        if (sk.size() != n || seed.size() != n)
+            return {status::invalid_argument, std::vector<std::int32_t>(n, OPENPQC_ERR_NOT_COMPUTED)};
+        Staged d_pk(*this, n * sizeof(PK)), d_sk(*this, n * sizeof(SK)), d_seed(*this, n * sizeof(SEED));
+        Buffer<std::int32_t> st(gpu_, n);
+        openpqc_status s = staging_ok({&d_pk, &d_sk, &d_seed}, st, n);
+        if (s == OPENPQC_OK) s = d_seed.upload(seed.data());
+        if (s == OPENPQC_OK) {
+            if constexpr (detail::kem<Scheme>)
+                s = openpqc_gpu_kem_keygen_from_seed(gpu_, d_pk.dev(), d_sk.dev(), d_seed.dev(), st.data(), n);
+            else s = openpqc_gpu_sig_keygen_from_seed(gpu_, d_pk.dev(), d_sk.dev(), d_seed.dev(), st.data(), n);
         }
         s = finish(s);
         d_pk.download(pk.data(), s);
@@ -340,11 +407,57 @@ public:
         s = finish(s);
         return results(s, st, n);
     }
+    // External mu (ML-DSA): mu[i] is the message representative of signature i; opts: flags only
+    // (OPENPQC_SIGN_DETERMINISTIC, OPENPQC_GPU_ONE_KEY: then sk, or pk, is a single key)
+    template <class SIG, class MU, class SK>
+        requires detail::external_mu<Scheme>
+    [[nodiscard]] Results sign_mu(std::span<SIG> sig, std::span<const MU> mu, const openpqc_sign_opts* opts,
+                                  std::span<const SK> sk) {
+        static_assert(sizeof(MU) == Scheme::mu_bytes, "mu: Scheme::message_representative");
+        const std::size_t n = sig.size();
+        const bool one_key = opts && (opts->flags & OPENPQC_GPU_ONE_KEY);
+        if (mu.size() != n || sk.size() != (one_key ? 1 : n))
+            return {status::invalid_argument, std::vector<std::int32_t>(n, OPENPQC_ERR_NOT_COMPUTED)};
+        Staged d_sig(*this, n * sizeof(SIG)), d_mu(*this, n * sizeof(MU)), d_sk(*this, sk.size() * sizeof(SK));
+        Buffer<std::int32_t> st(gpu_, n);
+        openpqc_status s = staging_ok({&d_sig, &d_mu, &d_sk}, st, n);
+        if (s == OPENPQC_OK) s = d_mu.upload(mu.data());
+        if (s == OPENPQC_OK) s = d_sk.upload(sk.data());
+        if (s == OPENPQC_OK) s = openpqc_gpu_sig_sign_mu(gpu_, d_sig.dev(), d_mu.dev(), opts, d_sk.dev(), st.data(), n);
+        s = finish(s);
+        d_sig.download(sig.data(), s);
+        return results(s, st, n);
+    }
+    template <class SIG, class MU, class PK>
+        requires detail::external_mu<Scheme>
+    [[nodiscard]] Results verify_mu(std::span<const SIG> sig, std::span<const MU> mu, const openpqc_sign_opts* opts,
+                                    std::span<const PK> pk) {
+        static_assert(sizeof(MU) == Scheme::mu_bytes, "mu: Scheme::message_representative");
+        const std::size_t n = sig.size();
+        const bool one_key = opts && (opts->flags & OPENPQC_GPU_ONE_KEY);
+        if (mu.size() != n || pk.size() != (one_key ? 1 : n))
+            return {status::invalid_argument, std::vector<std::int32_t>(n, OPENPQC_ERR_NOT_COMPUTED)};
+        Staged d_sig(*this, n * sizeof(SIG)), d_mu(*this, n * sizeof(MU)), d_pk(*this, pk.size() * sizeof(PK));
+        Buffer<std::int32_t> st(gpu_, n);
+        openpqc_status s = staging_ok({&d_sig, &d_mu, &d_pk}, st, n);
+        if (s == OPENPQC_OK) s = d_sig.upload(sig.data());
+        if (s == OPENPQC_OK) s = d_mu.upload(mu.data());
+        if (s == OPENPQC_OK) s = d_pk.upload(pk.data());
+        if (s == OPENPQC_OK)
+            s = openpqc_gpu_sig_verify_mu(gpu_, d_sig.dev(), d_mu.dev(), opts, d_pk.dev(), st.data(), n);
+        s = finish(s);
+        return results(s, st, n);
+    }
 
     // The same for containers (std::vector<KEM::public_key> and the like)
     template <class PKs, class SKs>
     [[nodiscard]] Results keygen(PKs& pk, SKs& sk) {
         return keygen(std::span(pk), std::span(sk));
+    }
+    template <class PKs, class SKs, class SEEDs>
+        requires detail::from_seed<Scheme>
+    [[nodiscard]] Results keygen_from_seed(PKs& pk, SKs& sk, const SEEDs& seed) {
+        return keygen_from_seed(std::span(pk), std::span(sk), std::span(seed));
     }
     template <class CTs, class SSs, class PKs>
         requires detail::kem<Scheme>
@@ -368,9 +481,10 @@ private:
         }
         Staged(const Staged&) = delete;
         Staged& operator=(const Staged&) = delete;
+        // a wipe that fails means the context has failed, which the call's result reports (finish: sync)
         ~Staged() {
-            if (host_) openpqc_gpu_free(gpu_, host_);
-            if (dev_) openpqc_gpu_free(gpu_, dev_);
+            if (host_) (void)openpqc_gpu_free(gpu_, host_);
+            if (dev_) (void)openpqc_gpu_free(gpu_, dev_);
         }
         [[nodiscard]] bool ok() const noexcept { return bytes_ == 0 || (dev_ && host_); }
         [[nodiscard]] std::uint8_t* dev() const noexcept { return dev_; }

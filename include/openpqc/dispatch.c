@@ -62,6 +62,7 @@ static const openpqc_alg_info alg_infos[] = {
         SLHDSA_INFO(SHAKE_256F, "SLH-DSA-SHAKE-256f", 5),
 };
 #define ALG_COUNT (sizeof alg_infos / sizeof alg_infos[0])
+_Static_assert(ALG_COUNT == OPENPQC_ALG_MAX, "OPENPQC_ALG_MAX (openpqc/common.h) is the number of parameter sets");
 
 /* Whether this build contains the scheme of alg (the high byte of its value) */
 static int alg_built(openpqc_alg alg) {
@@ -81,6 +82,16 @@ static const openpqc_alg_info *find_info(openpqc_alg alg) {
 
 const openpqc_alg_info *openpqc_alg_info_get(openpqc_alg alg) {
     return alg_built(alg) ? find_info(alg) : NULL;
+}
+
+size_t openpqc_alg_list(openpqc_alg *algs, size_t cap) {
+    size_t count = 0;
+    for (size_t i = 0; i < ALG_COUNT; i++) {
+        if (!alg_built(alg_infos[i].alg)) continue;
+        if (algs != NULL && count < cap) algs[count] = alg_infos[i].alg;
+        count++;
+    }
+    return count;
 }
 
 static int ascii_lower(int c) {

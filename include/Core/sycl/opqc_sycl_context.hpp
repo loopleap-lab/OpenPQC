@@ -165,6 +165,28 @@ using Lock = std::lock_guard<std::recursive_mutex>;
 // The bytes at the end of every workspace that sync writes (Context::sync_word)
 inline constexpr std::size_t SYNC_WORD_BYTES = 4;
 
+// The workspace's layout (Context::allocate): one section per entry of per_op, per_op[i] bytes per operation for
+// max_batch operations, each section WORKSPACE_ALIGN-aligned, then `extra` bytes and the SYNC_WORD_BYTES of sync.
+// section_span is the bytes of one section; workspace_bytes the whole workspace, or 0 if it does not fit in
+// size_t. The GPU API reports workspace_bytes before a context exists (openpqc_gpu_workspace_bytes), so both
+// come from here.
+inline bool section_span(std::size_t per_op, std::size_t max_batch, std::size_t& span) noexcept {
+    if (max_batch != 0 && per_op > (SIZE_MAX - (WORKSPACE_ALIGN - 1)) / max_batch) return false;
+    span = (per_op * max_batch + WORKSPACE_ALIGN - 1) / WORKSPACE_ALIGN * WORKSPACE_ALIGN;
+    return true;
+}
+template <std::size_t Sections>
+std::size_t workspace_bytes(const std::array<std::size_t, Sections>& per_op, std::size_t max_batch,
+                            std::size_t extra) noexcept {
+    std::size_t total = 0, span = 0;
+    for (const std::size_t b : per_op) {
+        if (!section_span(b, max_batch, span) || span > SIZE_MAX - total) return 0;
+        total += span;
+    }
+    if (extra > SIZE_MAX - SYNC_WORD_BYTES - total) return 0;
+    return total + extra + SYNC_WORD_BYTES;
+}
+
 // The USM allocations that the helpers of this file hold, in the whole process: the workspaces
 // (Context::allocate, until release), the coin buffers (coin_buffer, until free_coin_buffer) and what
 // device_malloc and host_malloc handed out and device_free has not freed yet. Counted only where this
@@ -370,19 +392,22 @@ struct Context {
 
     // Lays out the sections, per_op[i] bytes per operation for max_batch operations each, every one
     // WORKSPACE_ALIGN-aligned, followed by `extra` bytes (per-call data, such as the context string)
-    // and by the SYNC_WORD_BYTES that only sync writes (sync_word); allocates the workspace and fills
-    // it with zeros. Returns the start of the extra bytes, or nullptr if the device memory could not be
-    // allocated or zeroed. May throw (SYCL runtime). Takes the lock.
+    // and by the SYNC_WORD_BYTES that only sync writes (sync_word): workspace_bytes, above. Allocates
+    // the workspace and fills it with zeros. Returns the start of the extra bytes, or nullptr if the
+    // workspace does not fit in size_t or the device memory could not be allocated or zeroed. May throw
+    // (SYCL runtime). Takes the lock.
     std::uint8_t* allocate(const std::array<std::size_t, Sections>& per_op, std::size_t extra) {
         const Lock lock(mutex);
-        std::size_t total = 0;
+        const std::size_t total = workspace_bytes(per_op, max_batch, extra);
+        if (total == 0) return nullptr;
+        std::size_t offset_now = 0, span = 0;
         for (unsigned i = 0; i < Sections; i++) {
-            offset[i] = total;
+            offset[i] = offset_now;
             bytes[i] = per_op[i];
-            total += (per_op[i] * max_batch + WORKSPACE_ALIGN - 1) / WORKSPACE_ALIGN * WORKSPACE_ALIGN;
+            (void)section_span(per_op[i], max_batch, span);   // fits: workspace_bytes checked the sum
+            offset_now += span;
         }
-        const std::size_t extra_offset = total;
-        total += extra + SYNC_WORD_BYTES;
+        const std::size_t extra_offset = offset_now;
         mem = sycl::aligned_alloc_device<std::uint8_t>(WORKSPACE_ALIGN, total, queue);
         if (!mem) return nullptr;
         count_usm(mem, 1);

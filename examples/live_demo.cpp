@@ -242,7 +242,7 @@ struct Gpu {
     }
     void release() {
         if (!g) return;
-        for (void* p : blocks) openpqc_gpu_free(g, p);
+        for (void* p : blocks) (void)openpqc_gpu_free(g, p);
         blocks.clear();
         openpqc_gpu_destroy(g);
         g = nullptr;

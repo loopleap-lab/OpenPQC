@@ -255,7 +255,7 @@ if (rc == OPENPQC_OK) rc = openpqc_gpu_sig_verify(gpu, sig, msgs, &opts, pk, sta
 if (rc == OPENPQC_OK) rc = openpqc_gpu_sync(gpu);
 if (rc == OPENPQC_OK) rc = openpqc_gpu_memcpy(gpu, host_status, status, n * sizeof(int32_t));
 /* ... kg_status, sign_status and the results back to the host likewise, then free every buffer */
-openpqc_gpu_free(gpu, pk);                                   /* wipes, then frees */
+if (openpqc_gpu_free(gpu, pk) != OPENPQC_OK) rc = OPENPQC_ERR_DEVICE;   /* wipes, then frees; DEVICE: not wiped */
 openpqc_gpu_destroy(gpu);
 if (rc != OPENPQC_OK)
     return -1;                                               /* no result of these calls may be used */
@@ -350,8 +350,8 @@ the copy of each launch's coins in the randomized calls:
   randomized calls draw their coins on the host into page-locked memory that the context holds and wipes after each
   launch's copy: a copy from pageable memory would leave them in a staging buffer of the driver, which the library
   cannot wipe. NVIDIA's driver has nevertheless been seen to keep copies of such small transfers in memory of its own,
-  also after `destroy`. `openpqc_gpu_free` overwrites what it frees; the backend's own `opqc_sycl_slhdsa_free` frees
-  without wiping.
+  also after `destroy`. `openpqc_gpu_free` overwrites what it frees and reports whether it could (`OPENPQC_ERR_DEVICE`
+  if the context had failed); the backend's own `opqc_sycl_slhdsa_free` frees without wiping.
 - **Fail closed.** A verification call first sets every entry of `status` to `OPENPQC_ERR_INVALID_SIGNATURE`,
   before its first kernel, and the kernels overwrite each entry they decide, so that an entry no kernel decides (a call
   that fails part way, a device fault that only a later `sync` or `memcpy` reports, a dropped launch) reads as invalid,

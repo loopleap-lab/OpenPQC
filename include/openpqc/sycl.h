@@ -193,6 +193,22 @@ OPENPQC_API const char *openpqc_gpu_device_name(int i);
 OPENPQC_API const char *openpqc_gpu_device_platform(int i);
 OPENPQC_API const char *openpqc_gpu_implementation(void);
 
+/* Whether the GPU library of this build contains alg: 1 or 0 (0 also for a value that is no parameter set, a
+ * scheme left out of the build, and an SLH-DSA set left out by the development option OPENPQC_SLHDSA_SYCL_SETS,
+ * for which openpqc_gpu_create returns OPENPQC_ERR_UNSUPPORTED). Needs no device. The CPU library's sets are
+ * those of openpqc_alg_list (openpqc/common.h). */
+OPENPQC_API int openpqc_gpu_supports(openpqc_alg alg);
+/* The device memory, in bytes, of the workspace that openpqc_gpu_create allocates for alg with max_batch
+ * operations per launch (0: the default of openpqc_gpu_config), without a device or a context: OPENPQC_OK and
+ * *bytes; OPENPQC_ERR_UNSUPPORTED for an alg that openpqc_gpu_supports does not have; OPENPQC_ERR_INVALID_ARGUMENT
+ * for a NULL bytes, or a max_batch that create refuses whatever the device (too many work-items in a launch, or
+ * more than size_t holds). *bytes is written only with OPENPQC_OK. The workspace grows with max_batch, by about
+ * the same amount per operation; besides it, a context holds a few small host objects, create's self-test uses a
+ * little device memory while it runs (ML-KEM and ML-DSA: under 20 KiB), and openpqc_gpu_malloc and _malloc_host
+ * take what they are asked for. An application that bounds its device memory can choose max_batch with this. */
+OPENPQC_MUST_CHECK OPENPQC_API openpqc_status openpqc_gpu_workspace_bytes(openpqc_alg alg, size_t max_batch,
+                                                                         size_t *bytes);
+
 /* Creates a context for alg on the device of cfg (NULL: the default device and max_batch), runs the self-test,
  * and returns OPENPQC_OK and the context in *gpu, or an error and *gpu = NULL: OPENPQC_ERR_UNSUPPORTED for an
  * alg that this build does not contain (SLH-DSA: also a set left out by the development option
@@ -216,10 +232,14 @@ OPENPQC_MUST_CHECK OPENPQC_API openpqc_status openpqc_gpu_sync(openpqc_gpu *gpu)
 
 /* Memory: device memory on the context's device, and page-locked host memory (faster transfers), 256-byte
  * aligned, or NULL. openpqc_gpu_free waits for the context's work (which may still use p), overwrites the memory
- * with zeros and frees it (memory that did not come from the context's malloc functions is freed unwiped). */
+ * with zeros and frees it: OPENPQC_OK (also for a NULL p); OPENPQC_ERR_DEVICE if the context has failed, before
+ * or during the wipe, which then may not have reached the memory (it is freed all the same: secrets that were in
+ * it may be left in device memory); OPENPQC_ERR_INVALID_ARGUMENT for a NULL context, or a p that is not a live
+ * allocation of the context's malloc functions (memory of the application, or memory already freed), which is
+ * left alone. */
 OPENPQC_API void *openpqc_gpu_malloc(openpqc_gpu *gpu, size_t bytes);
 OPENPQC_API void *openpqc_gpu_malloc_host(openpqc_gpu *gpu, size_t bytes);
-OPENPQC_API void openpqc_gpu_free(openpqc_gpu *gpu, void *p);
+OPENPQC_MUST_CHECK OPENPQC_API openpqc_status openpqc_gpu_free(openpqc_gpu *gpu, void *p);
 /* Copies between host memory (any) and USM memory, in any direction, behind the context's earlier work:
  * memcpy waits for the copy (and so for that work), memcpy_async does not. OPENPQC_ERR_INVALID_ARGUMENT for a
  * NULL context, or a NULL dst or src with bytes > 0 (nothing is queued); OPENPQC_ERR_DEVICE once the context has

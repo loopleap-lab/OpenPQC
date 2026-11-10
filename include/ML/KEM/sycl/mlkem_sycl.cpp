@@ -1055,12 +1055,27 @@ bool resolve_device(int device, sycl::device& out) {
 
 // create, on the device with index `device` (opqc_sycl_mlkem_create) or on the device `given`, in the SYCL
 // context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp)
+// The workspace's extra bytes, after the 256-byte aligned sections: the zero word of the Decaps mask
+constexpr std::size_t EXTRA_BYTES = openpqc::gpu::WORKSPACE_ALIGN;
+
+// The arguments that create takes: a level of FIPS 203 and 1 to OPQC_SYCL_MLKEM_MAX_BATCH operations per launch
+bool accepted(int level, std::size_t max_batch) {
+    return (level == 512 || level == 768 || level == 1024) && max_batch != 0 && max_batch <= OPQC_SYCL_MLKEM_MAX_BATCH;
+}
+
+// The bytes of the workspace that create allocates (allocate, below), 0 for arguments it refuses
+std::size_t workspace_size(int level, std::size_t max_batch) {
+    if (!accepted(level, max_batch)) return 0;
+    std::array<std::size_t, gpu::SECTIONS> per_op{};
+    with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
+    return openpqc::gpu::workspace_bytes(per_op, max_batch, EXTRA_BYTES);
+}
+
 int create_context(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int device, const sycl::device* given,
            const sycl::context* app) {
     if (!out) return -1;
     *out = nullptr;
-    if ((level != 512 && level != 768 && level != 1024) || max_batch == 0 || max_batch > OPQC_SYCL_MLKEM_MAX_BATCH)
-        return -1;
+    if (!accepted(level, max_batch)) return -1;
     return guarded([&] {
         sycl::device dev;
         if (given) dev = *given;
@@ -1071,7 +1086,7 @@ int create_context(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int 
         std::array<std::size_t, gpu::SECTIONS> per_op{};
         with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
         // 256-byte aligned sections, then the zero word of the Decaps mask
-        std::uint8_t* extra = ctx->allocate(per_op, openpqc::gpu::WORKSPACE_ALIGN);
+        std::uint8_t* extra = ctx->allocate(per_op, EXTRA_BYTES);
         if (!extra) return -1;
         const auto at = [&](Section s) { return ctx->section(s); };
         ctx->ws = Workspace{at(gpu::SEEDS),
@@ -1101,8 +1116,12 @@ int openpqc::gpu::mlkem_create(opqc_sycl_mlkem** out, int level, std::size_t max
     return create_context(out, level, max_batch, -1, &dev, app);
 }
 
+std::size_t openpqc::gpu::mlkem_workspace_bytes(int level, std::size_t max_batch) {
+    return workspace_size(level, max_batch);
+}
+
 openpqc::gpu::Handle openpqc::gpu::handle(opqc_sycl_mlkem* ctx) {
-    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch};
+    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch, ctx->mem_bytes};
 }
 
 // Waits, zeroizes the whole workspace and frees it, each step on its own, as far as the device

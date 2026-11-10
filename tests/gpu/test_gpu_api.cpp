@@ -79,7 +79,7 @@ struct Dev {
     }
     Dev(openpqc_gpu* gpu, const Bytes& from) : Dev(gpu, from.size()) { put(from); }
     Dev(const Dev&) = delete;
-    ~Dev() { openpqc_gpu_free(g, p); }
+    ~Dev() { CHECK(openpqc_gpu_free(g, p) == OPENPQC_OK); }
     void put(const Bytes& from) {
         if (openpqc_gpu_memcpy(g, p, from.data(), from.size()) != OPENPQC_OK) std::abort();
     }
@@ -513,6 +513,27 @@ void test_app_context(int index, const sycl::device& dev) {
     sycl::free(st, app);
 }
 
+// openpqc_gpu_free's results: a live allocation (device and page-locked host memory) is wiped and freed; NULL
+// is nothing to do; memory that is not a live allocation of the context (freed already, or the caller's) and a
+// NULL context are refused, and nothing is freed
+void test_free(int index) {
+    const openpqc_gpu_config cfg{index, 1};
+    openpqc_gpu* g = nullptr;
+    CHECK(openpqc_gpu_create(&g, OPENPQC_ML_KEM_512, &cfg) == OPENPQC_OK);
+    if (!g) return;
+    void* dev = openpqc_gpu_malloc(g, 64);
+    void* host = openpqc_gpu_malloc_host(g, 64);
+    CHECK(dev && host);
+    std::uint8_t mine[8] = {};
+    CHECK(openpqc_gpu_free(nullptr, dev) == OPENPQC_ERR_INVALID_ARGUMENT);
+    CHECK(openpqc_gpu_free(g, mine) == OPENPQC_ERR_INVALID_ARGUMENT);
+    CHECK(openpqc_gpu_free(g, nullptr) == OPENPQC_OK);
+    CHECK(openpqc_gpu_free(g, dev) == OPENPQC_OK);
+    CHECK(openpqc_gpu_free(g, dev) == OPENPQC_ERR_INVALID_ARGUMENT);   // freed already: refused, not freed again
+    CHECK(openpqc_gpu_free(g, host) == OPENPQC_OK);
+    openpqc_gpu_destroy(g);
+}
+
 // The C++ layer (openpqc/sycl.hpp): host calls and device calls
 void test_cxx(int index) {
     using KEM = openpqc::ML_KEM_768;
@@ -552,6 +573,32 @@ void test_cxx(int index) {
     CHECK(d_pk.copy_to(pk2) == openpqc::status::ok);
     CHECK(pk2 != pk);
 
+    // keygen_from_seed: the CPU library's key pairs of the same seeds, as host and as device calls
+    std::vector<KEM::seed> seeds(N);
+    for (KEM::seed& d : seeds) CHECK(opqc_randombytes(d.data(), d.size()) == 0);
+    std::vector<KEM::public_key> fpk(N), fpk2(N);
+    std::vector<KEM::secret_key> fsk(N), fsk2(N);
+    CHECK(gpu.keygen_from_seed(fpk, fsk, seeds).ok());
+    openpqc::sycl::Buffer<KEM::seed> d_seed{gpu, N};
+    std::vector<std::uint8_t> seed_bytes(N * KEM::seed_bytes);
+    for (std::size_t i = 0; i < N; i++) std::memcpy(&seed_bytes[i * KEM::seed_bytes], seeds[i].data(), KEM::seed_bytes);
+    CHECK(openpqc_gpu_memcpy(gpu.get(), d_seed.bytes(), seed_bytes.data(), seed_bytes.size()) == OPENPQC_OK);
+    CHECK(gpu.keygen_from_seed_async(d_pk, d_sk, d_seed, d_st) == openpqc::status::ok);
+    CHECK(gpu.sync() == openpqc::status::ok);
+    CHECK(d_st.copy_to(st) == openpqc::status::ok && all_are(st, OPENPQC_OK));
+    CHECK(d_pk.copy_to(fpk2) == openpqc::status::ok);
+    for (std::size_t i = 0; i < N; i++) {
+        KEM::public_key cpu_pk;
+        KEM::secret_key cpu_sk;
+        CHECK(KEM::keygen_from_seed(cpu_pk, cpu_sk, seeds[i]) == openpqc::status::ok);
+        CHECK(fpk[i] == cpu_pk && fsk[i] == cpu_sk && fpk2[i] == cpu_pk);
+    }
+    std::vector<KEM::seed> short_seeds(N - 1);
+    CHECK(gpu.keygen_from_seed(fpk, fsk, short_seeds).status() == openpqc::status::invalid_argument);
+    // release: freed, and the buffer is empty
+    CHECK(d_seed.release() == openpqc::status::ok && !d_seed.valid() && d_seed.size() == 0);
+    CHECK(d_seed.release() == openpqc::status::ok);   // nothing left to free
+
     using DSA = openpqc::ML_DSA_44;
     openpqc::sycl::Context<DSA> dsa{{index, 3}};
     std::vector<DSA::public_key> dpk(N);
@@ -573,6 +620,70 @@ void test_cxx(int index) {
     CHECK(v.status() == openpqc::status::ok && !v.ok());
     for (std::size_t i = 0; i < N; i++)
         CHECK(v[i] == (i == 4 ? openpqc::status::invalid_signature : openpqc::status::ok));
+
+    // ML-DSA keygen_from_seed: the CPU library's key pairs of the same xi
+    std::vector<DSA::seed> xi(N);
+    for (DSA::seed& x : xi) CHECK(opqc_randombytes(x.data(), x.size()) == 0);
+    std::vector<DSA::public_key> xpk(N);
+    std::vector<DSA::secret_key> xsk(N);
+    CHECK(dsa.keygen_from_seed(xpk, xsk, xi).ok());
+    for (std::size_t i = 0; i < N; i++) {
+        DSA::public_key cpu_pk;
+        DSA::secret_key cpu_sk;
+        CHECK(DSA::keygen_from_seed(cpu_pk, cpu_sk, xi[i]) == openpqc::status::ok);
+        CHECK(xpk[i] == cpu_pk && xsk[i] == cpu_sk);
+    }
+
+    // external mu: mu from the CPU library; deterministic signatures are the CPU's, hedged ones verify, and
+    // verify_mu finds a changed signature; then the same as device calls, with one key
+    std::vector<DSA::message_representative> mu(N);
+    for (std::size_t i = 0; i < N; i++)
+        CHECK(DSA::external_mu(mu[i], m[i], dpk[i], std::span<const std::uint8_t>(CTX, CTXLEN)) == openpqc::status::ok);
+    const openpqc_sign_opts det{nullptr, 0, 0, OPENPQC_SIGN_DETERMINISTIC};
+    std::vector<DSA::signature> msig(N), hsig(N);
+    CHECK(dsa.sign_mu(std::span(msig), std::span<const DSA::message_representative>(mu), &det,
+                      std::span<const DSA::secret_key>(dsk)).ok());
+    CHECK(dsa.sign_mu(std::span(hsig), std::span<const DSA::message_representative>(mu), nullptr,
+                      std::span<const DSA::secret_key>(dsk)).ok());
+    for (std::size_t i = 0; i < N; i++) {
+        DSA::signature cpu_sig;
+        CHECK(DSA::sign_mu_deterministic(cpu_sig, mu[i], dsk[i]) == openpqc::status::ok);
+        CHECK(msig[i] == cpu_sig);
+        CHECK(DSA::verify_mu(hsig[i], mu[i], dpk[i]) == openpqc::status::ok);
+    }
+    hsig[2][17] ^= 1;
+    const auto vm = dsa.verify_mu(std::span<const DSA::signature>(hsig),
+                                  std::span<const DSA::message_representative>(mu), nullptr,
+                                  std::span<const DSA::public_key>(dpk));
+    CHECK(vm.status() == openpqc::status::ok);
+    for (std::size_t i = 0; i < N; i++)
+        CHECK(vm[i] == (i == 2 ? openpqc::status::invalid_signature : openpqc::status::ok));
+    std::vector<DSA::message_representative> short_mu(N - 1);
+    CHECK(dsa.sign_mu(std::span(msig), std::span<const DSA::message_representative>(short_mu), &det,
+                      std::span<const DSA::secret_key>(dsk)).status() == openpqc::status::invalid_argument);
+    {
+        openpqc::sycl::Buffer<DSA::signature> d_sig{dsa, N};
+        openpqc::sycl::Buffer<DSA::message_representative> d_mu{dsa, N};
+        openpqc::sycl::Buffer<DSA::secret_key> d_one_sk{dsa, 1};
+        openpqc::sycl::Buffer<DSA::public_key> d_one_pk{dsa, 1};
+        openpqc::sycl::Buffer<std::int32_t> d_dst{dsa, N};
+        CHECK(d_mu.copy_from(mu) == openpqc::status::ok);
+        CHECK(openpqc_gpu_memcpy(dsa.get(), d_one_sk.bytes(), dsk[0].data(), DSA::secret_key_bytes) == OPENPQC_OK);
+        CHECK(d_one_pk.copy_from(std::span<const DSA::public_key>(dpk.data(), 1)) == openpqc::status::ok);
+        const openpqc_sign_opts one{nullptr, 0, 0, OPENPQC_SIGN_DETERMINISTIC | OPENPQC_GPU_ONE_KEY};
+        CHECK(dsa.sign_mu_async(d_sig, d_mu, &one, d_one_sk, d_dst) == openpqc::status::ok);
+        CHECK(dsa.verify_mu_async(d_sig, d_mu, &one, d_one_pk, d_dst) == openpqc::status::ok);
+        CHECK(dsa.sync() == openpqc::status::ok);
+        std::vector<std::int32_t> vst(N, 1);
+        CHECK(d_dst.copy_to(vst) == openpqc::status::ok && all_are(vst, OPENPQC_OK));
+        std::vector<DSA::signature> asig(N);
+        CHECK(d_sig.copy_to(asig) == openpqc::status::ok);
+        for (std::size_t i = 0; i < N; i++) {
+            DSA::signature cpu_sig;
+            CHECK(DSA::sign_mu_deterministic(cpu_sig, mu[i], dsk[0]) == openpqc::status::ok);
+            CHECK(asig[i] == cpu_sig);
+        }
+    }
 
     // host calls of HashSLH-DSA: the pre-hashes PH(M) are packed at a stride (openpqc/sycl.h, Messages), and the
     // CPU accepts the signatures of the messages M (a set in every development build: SHAKE-256f, id 12)
@@ -647,6 +758,7 @@ int main(int argc, char** argv) {
             const openpqc_gpu_config cfg{d, 3};
             g = nullptr;
             const openpqc_status s = openpqc_gpu_create(&g, alg, &cfg);
+            CHECK(openpqc_gpu_supports(alg) == (s == OPENPQC_ERR_UNSUPPORTED ? 0 : 1));
             if (s == OPENPQC_ERR_UNSUPPORTED) {   // an SLH-DSA set left out by OPENPQC_SLHDSA_SYCL_SETS
                 std::printf("  %-20s not in this build\n", info->name);
                 continue;
@@ -668,6 +780,9 @@ int main(int argc, char** argv) {
         CHECK(openpqc_gpu_create(&g, OPENPQC_ML_KEM_768, &def) == OPENPQC_OK && openpqc_gpu_max_batch(g) == 4096);
         openpqc_gpu_destroy(g);
         int before = failures;
+        test_free(d);
+        std::printf("  %-20s %s\n", "openpqc_gpu_free", failures == before ? "ok" : "FAILED");
+        before = failures;
         test_app_context(d, dev);
         std::printf("  %-20s %s\n", "application context", failures == before ? "ok" : "FAILED");
         before = failures;

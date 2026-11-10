@@ -1766,11 +1766,27 @@ int sign_random(opqc_sycl_mldsa* ctx, std::size_t n, F launch) {
 
 // create, on the device with index `device` (opqc_sycl_mldsa_create) or on the device `given`, in the SYCL
 // context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp)
+// The workspace's extra bytes, after the 256-byte aligned sections: the context string, then the counters
+constexpr std::size_t EXTRA_BYTES = 256 + 256;
+
+// The arguments that create takes: a level of FIPS 204 and 1 to UINT32_MAX operations per launch
+bool accepted(int level, std::size_t max_batch) {
+    return (level == 44 || level == 65 || level == 87) && max_batch != 0 && max_batch <= UINT32_MAX;
+}
+
+// The bytes of the workspace that create allocates (allocate, below), 0 for arguments it refuses
+std::size_t workspace_size(int level, std::size_t max_batch) {
+    if (!accepted(level, max_batch)) return 0;
+    std::array<std::size_t, gpu::SECTIONS> per_op{};
+    with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
+    return openpqc::gpu::workspace_bytes(per_op, max_batch, EXTRA_BYTES);
+}
+
 int create_context(opqc_sycl_mldsa** out, int level, std::size_t max_batch, int device, const sycl::device* given,
            const sycl::context* app) {
     if (!out) return -1;
     *out = nullptr;
-    if ((level != 44 && level != 65 && level != 87) || max_batch == 0 || max_batch > UINT32_MAX) return -1;
+    if (!accepted(level, max_batch)) return -1;
     return guarded([&] {
         sycl::device dev;
         if (given) dev = *given;
@@ -1781,7 +1797,7 @@ int create_context(opqc_sycl_mldsa** out, int level, std::size_t max_batch, int 
         std::array<std::size_t, gpu::SECTIONS> per_op{};
         with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
         // 256-byte aligned sections; then the context string and the counters
-        std::uint8_t* extra = ctx->allocate(per_op, 256 + 256);
+        std::uint8_t* extra = ctx->allocate(per_op, EXTRA_BYTES);
         if (!extra) return -1;
         const auto at = [&](Section s) { return ctx->section(s); };
         const auto words = [&](Section s) { return reinterpret_cast<std::uint32_t*>(at(s)); };
@@ -2073,8 +2089,12 @@ int openpqc::gpu::mldsa_create(opqc_sycl_mldsa** out, int level, std::size_t max
     return create_context(out, level, max_batch, -1, &dev, app);
 }
 
+std::size_t openpqc::gpu::mldsa_workspace_bytes(int level, std::size_t max_batch) {
+    return workspace_size(level, max_batch);
+}
+
 openpqc::gpu::Handle openpqc::gpu::handle(opqc_sycl_mldsa* ctx) {
-    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch};
+    return {&ctx->queue, &ctx->mutex, &ctx->device_name, ctx->max_batch, ctx->mem_bytes};
 }
 
 int openpqc::gpu::mldsa_sign(opqc_sycl_mldsa* ctx, std::uint8_t* sig, const Messages& msgs, const std::uint8_t* ctxstr,

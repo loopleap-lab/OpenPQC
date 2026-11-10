@@ -478,7 +478,7 @@ public:
                  std::to_string(bytes) + " bytes failed");
         }
     }
-    ~Memory() { openpqc_gpu_free(gpu_, p_); }
+    ~Memory() { (void)openpqc_gpu_free(gpu_, p_); }   // nothing secret: a failed wipe needs no report
     Memory(const Memory&) = delete;
     Memory& operator=(const Memory&) = delete;
 

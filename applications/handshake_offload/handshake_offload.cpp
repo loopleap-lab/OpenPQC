@@ -168,7 +168,7 @@ void check(openpqc_status s, const std::string& what) {
     if (s != OPENPQC_OK) fail(what + " failed (" + std::to_string(s) + ", " + openpqc_status_string(s) + ")");
 }
 
-// Set when a destructor could not wipe a device buffer (destructors cannot throw)
+// Set when a destructor could not wipe a buffer of secrets (destructors cannot throw)
 bool cleanup_failed = false;
 
 const std::uint8_t* context_string() { return reinterpret_cast<const std::uint8_t*>(kContext.data()); }
@@ -518,29 +518,23 @@ enum class Memory { device, host };
 enum class Holds { data, secrets };
 
 // Device memory (openpqc_gpu_malloc) or page-locked host memory (openpqc_gpu_malloc_host) of one
-// context. openpqc_gpu_free overwrites either with zeros as far as the device still accepts work,
-// but reports nothing, so a buffer that held secrets is overwritten here first: host memory with
-// opqc_zeroize, device memory with a blocking copy of zeros, whose status says whether it was made.
+// context. openpqc_gpu_free overwrites either with zeros, waiting for the context's work, and says
+// whether it could: OPENPQC_ERR_DEVICE if the context had failed, and the memory may not have been
+// overwritten. For a buffer that held secrets, that is reported.
 class Buffer {
 public:
     Buffer(openpqc_gpu* gpu, std::size_t bytes, Memory where, Holds holds)
-        : gpu_(gpu), bytes_(bytes), where_(where), secret_(holds == Holds::secrets),
+        : gpu_(gpu), secret_(holds == Holds::secrets),
           p_(static_cast<std::uint8_t*>(where == Memory::host ? openpqc_gpu_malloc_host(gpu, bytes)
                                                               : openpqc_gpu_malloc(gpu, bytes))) {
         if (!p_) fail("allocating " + std::to_string(bytes) + " bytes of " +
                       (where == Memory::host ? "page-locked host" : "device") + " memory");
     }
     ~Buffer() {
-        if (secret_ && where_ == Memory::host) {
-            opqc_zeroize(p_, bytes_);
-        } else if (secret_) {
-            const std::vector<std::uint8_t> zeros(bytes_);
-            if (openpqc_gpu_memcpy(gpu_, p_, zeros.data(), bytes_) != OPENPQC_OK) {
-                std::fprintf(stderr, "handshake_offload: wiping a device buffer failed\n");
-                cleanup_failed = true;
-            }
+        if (openpqc_gpu_free(gpu_, p_) != OPENPQC_OK && secret_) {
+            std::fprintf(stderr, "handshake_offload: wiping a buffer of secrets failed\n");
+            cleanup_failed = true;
         }
-        openpqc_gpu_free(gpu_, p_);
     }
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
@@ -553,8 +547,6 @@ public:
 
 private:
     openpqc_gpu* gpu_;
-    std::size_t bytes_;
-    Memory where_;
     bool secret_;
     std::uint8_t* p_;
 };

@@ -83,6 +83,9 @@ typedef enum openpqc_alg {
     OPENPQC_SLH_DSA_SHAKE_256F = 0x030c
 } openpqc_alg;
 
+/* The number of parameter sets above: an array of OPENPQC_ALG_MAX holds every list of openpqc_alg_list */
+#define OPENPQC_ALG_MAX 18
+
 typedef enum openpqc_alg_kind {
     OPENPQC_KIND_KEM = 1,      /* ML-KEM: openpqc/kem.h */
     OPENPQC_KIND_SIGNATURE = 2 /* ML-DSA, SLH-DSA: openpqc/sig.h */
@@ -110,6 +113,12 @@ extern "C" {
 
 /* The description of alg, or NULL if alg is unknown or not in this build */
 OPENPQC_API const openpqc_alg_info *openpqc_alg_info_get(openpqc_alg alg);
+
+/* The parameter sets that this build of the library contains (the CMake options OPENPQC_WITH_MLKEM, _MLDSA and
+ * _SLHDSA leave schemes out), in the order of their ids: writes the first min(cap, count) of them to algs (NULL
+ * with cap 0 asks for the count) and returns their count, at most OPENPQC_ALG_MAX. The GPU library may contain
+ * fewer: openpqc_gpu_supports (openpqc/sycl.h). */
+OPENPQC_API size_t openpqc_alg_list(openpqc_alg *algs, size_t cap);
 
 /* The id of a parameter set by its name as the standards and ACVP write it ("ML-KEM-768", "ML-DSA-65",
  * "SLH-DSA-SHAKE-256f"; ASCII letters in either case, nothing else different): OPENPQC_OK and *alg;
