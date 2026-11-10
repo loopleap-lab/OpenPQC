@@ -13,7 +13,10 @@
 // family (Hashes<P> below); a kernel keeps an address ADRS as integers (math/slhdsa_address.h,
 // slhdsa_adrs_words) and n-byte values as n/8 little-endian 64-bit lanes, their form in memory; the
 // SHA2 sets start every PRF, F, H and T_l from the state after PK.seed || toByte(0, 64 - n) (and
-// 128 - n for SHA-512), computed once per key and launch (DESIGN.md D1, DESIGN-GPU.md G5).
+// 128 - n for SHA-512), computed once per key and launch: that block depends only on PK.seed, which
+// is public, and every call hashes the bytes that Section 11.2 gives it, continuing from a copy of the
+// state. Nothing derived from a secret is kept that way: PRF_msg hashes HMAC's key blocks, from
+// SK.prf, in every call.
 //
 // Stages. Every operation is a short sequence of kernels on one in-order queue, with no host wait:
 //
@@ -38,7 +41,8 @@
 //     the hypertree (Algorithm 12), "layer-parallel": the trees of all d layers are built at once,
 //     since every layer's tree address and leaf index follow from the digest (lines 6-10), and the
 //     root that layer j signs is the root of the tree below, which xmss_node computes as well as
-//     xmss_pkFromSig does (DESIGN-GPU.md G3):
+//     xmss_pkFromSig does: the same values as the layer-by-layer order of Algorithm 12, so the
+//     signatures are byte-identical:
 //     wots_chains      all leaves of all d layers' trees, one work-item per chain
 //     wots_leaves      one work-item per leaf: T_len
 //     xmss_trees       one team per tree (d per signature): the authentication paths (Algorithm 10,
@@ -84,8 +88,9 @@
 // public values only (which work-item writes an authentication-path node, how far a chain runs in
 // wots_sign and Verify); secrets only enter hash functions.
 //
-// Variants for the experiments of docs/slhdsa-notes/DESIGN-GPU.md, Section 3 (compile-time macros
-// OPENPQC_SLHDSA_SYCL_<NAME>, each byte-identical). This baseline (E0) is built so that each is a change
+// Variants for the planned optimisation experiments E1 to E6 (docs/GPU_ACCELERATION.md, Section 10.6; in
+// parentheses, the hypotheses from the GPU literature that each tests), as compile-time macros
+// OPENPQC_SLHDSA_SYCL_<NAME>, each byte-identical. This baseline (E0) is built so that each is a change
 // of one stage or of the sequence in sign() / verify():
 //   E1 (H2, H2b, H3)  the stages take a range of layers (first, layers): the layer-sequential order of
 //                     Algorithm 12 is the loop over j of wots_digits, wots_chains, wots_leaves and
@@ -103,11 +108,15 @@
 //   E6 (H10)          sign() can end with Verify's message_digest (H_msg only), verify_fors and verify_ht on
 //                     the new signatures
 //
-// Toolchain rules (docs/slhdsa-notes/gpu-infra.md, Section 4; DESIGN-GPU.md G9): kernels, helpers and
-// inner lambdas OPQC_KERNEL_INLINE; register arrays indexed with compile-time indices only (the hash
-// inputs of T_l, H_msg and PRF_msg are read from memory, since those loops over blocks are not
-// unrolled); no register array kept across a barrier (the tree stages re-read what they need after
-// each); every output word written once; no shift by 64 (idx_tree has 64 bits for SLH-DSA-*-256f).
+// Toolchain rules, each against wrong or slow device code that the toolchains made of other forms:
+// kernels, helpers and inner lambdas OPQC_KERNEL_INLINE (DPC++ compiled a large kernel body as a function
+// of its own, with its arrays on the stack); register arrays indexed with compile-time indices only (a
+// run-time index puts the array on the stack; the hash inputs of T_l, H_msg and PRF_msg are read from
+// memory, since those loops over blocks are not unrolled); no register array kept across a barrier
+// (AdaptiveCpp's OpenMP backend computed wrong values from one; the tree stages re-read what they need
+// after each); every output word written once (AdaptiveCpp's CUDA path and Intel's GPU compiler lost bits
+// of bytes in device memory that neighbouring values were ORed into); no shift by 64 (undefined; idx_tree
+// has 64 bits for SLH-DSA-*-256f).
 
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
@@ -184,7 +193,7 @@ void for_each_item(sycl::queue& q, std::size_t n, F f) {
 
 // Device workspace: struct of arrays over the operations of one launch (sizes in section_bytes)
 struct Workspace {
-    std::uint8_t* coins;     // 3n B: SK.seed || SK.prf || PK.seed, or addrnd, from the OS RNG   secret
+    std::uint8_t* coins;     // 3n B: SK.seed || SK.prf || PK.seed, or addrnd (opqc_randombytes) secret
     std::uint8_t* seeds;     // 96 B per key: the SHA-256 and SHA-512 states after PK.seed (SHA2)  public
     std::uint8_t* digest;    // the digest (64 B), idx_tree, idx_leaf, the k FORS indices           public
     std::uint8_t* roots;     // (1 + d + k) n B: PK_FORS, the roots of layers 0 .. d - 1, the k FORS roots  public
@@ -515,7 +524,8 @@ OPQC_KERNEL_INLINE inline Position layer_position(Position p, unsigned j) {
 
 // The states after PK.seed || toByte(0, 64 - n) (SHA-256) and, for n = 24 and 32, after
 // PK.seed || toByte(0, 128 - n) (SHA-512) of `count` keys: the first block of every PRF, F, H and T_l
-// (Sections 11.2.1, 11.2.2), the same for all calls under one key, and public (DESIGN.md D1)
+// (Sections 11.2.1, 11.2.2), the same for all calls under one key, and public, as PK.seed is: computed once
+// per key and launch and kept in a public section of the workspace
 template <class P>
 void seed_states(sycl::queue& q, const Workspace& ws, Keys keys, std::size_t count) {
     if constexpr (P::family == HashFamily::sha2) {
@@ -1283,8 +1293,9 @@ constexpr std::size_t local_bytes() {
     return std::max(TreeShape<P::n, P::a>::local_bytes, TreeShape<P::n, P::h_prime>::local_bytes);
 }
 
-// The development filter OPENPQC_SLHDSA_SYCL_SETS (gpu-infra.md, Section 6.4): the ids of the parameter sets
-// this build contains (default: all twelve). The others are not compiled, and create refuses them.
+// The development filter OPENPQC_SLHDSA_SYCL_SETS (the CMake option of include/SLH/DSA/CMakeLists.txt, for
+// shorter device links): the ids of the parameter sets this build contains (default: all twelve). The others
+// are not compiled, and create refuses them.
 #if defined(OPENPQC_SLHDSA_SYCL_SETS)
 constexpr int built_sets[] = {OPENPQC_SLHDSA_SYCL_SETS};
 #else
@@ -1387,11 +1398,11 @@ bool aligned(const T*... p) {
 
 // Whether the device can use p, a buffer of a call: USM memory of the context's SYCL context (device, host or
 // shared memory: sycl::get_pointer_type). Anything else -- pageable host memory, memory of another SYCL context --
-// would make the device fault, or, as on Intel GPUs under Level Zero, be read as zeros, and the call would report
-// results computed from them. The runtime's answer is all there is to go on, and some pointers pass that should
-// not: AdaptiveCpp's OpenMP host device takes every pointer for memory of its own, another GPU's device memory
-// included (a kernel, or verify_any's fill of status after a failure, then ended the process with SIGSEGV);
-// DPC++'s Level Zero backend and the OpenMP host device still report freed memory as the context's
+// would make the device fault, or, as on an Intel GPU under DPC++'s Level Zero backend, be read as zeros, and the
+// call would report results computed from them. The runtime's answer is all there is to go on, and some pointers
+// pass that should not: AdaptiveCpp's OpenMP host device takes every pointer for memory of its own, another GPU's
+// device memory included (a kernel, or verify_any's fill of status after a failure, then ended the process with
+// SIGSEGV); DPC++'s Level Zero backend and the OpenMP host device still report freed memory as the context's
 // (AdaptiveCpp's Level Zero backend refused freed buffers); and DPC++ reports device memory that the other
 // platform of the same Intel GPU allocated (Level Zero for an OpenCL context, OpenCL for a Level Zero one) as
 // device memory of this context's device (sycl::get_pointer_device says so too), and AdaptiveCpp did the same
@@ -1775,8 +1786,10 @@ extern "C" int opqc_sycl_slhdsa_verify_internal_one_key(opqc_sycl_slhdsa* ctx, c
     return verify_any(ctx, sig, internal_messages(mprime, offsets), pk, true, status, n);
 }
 
-// Randomized calls: the seeds (3n bytes) or addrnd (n bytes) from the operating system, copied into the
-// workspace (and wiped there and on the host whatever happens, Core/sycl/opqc_sycl_context.hpp), then the
+// Randomized calls: the seeds (3n bytes) or addrnd (n bytes) from opqc_randombytes (Core/opqc_platform.h: the
+// source registered with opqc_set_randombytes if there is one, else the application's opqc_external_randombytes
+// in a build with OPENPQC_EXTERNAL_RANDOMBYTES, else the operating system's generator, the default), copied into
+// the workspace (and wiped there and on the host whatever happens, Core/sycl/opqc_sycl_context.hpp), then the
 // derandomized operation on them
 namespace {
 

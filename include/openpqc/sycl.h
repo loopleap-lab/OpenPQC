@@ -21,12 +21,14 @@
  *   openpqc_gpu_sig_sign_mu(gpu, sig, mu, opts, sk, status, n)       ML-DSA: signing of external mu
  *   openpqc_gpu_sig_verify_mu(gpu, sig, mu, opts, pk, status, n)     ML-DSA: its verification
  *
- * A call that the context's parameter set does not have (a KEM call on a signature context, keygen_from_seed
- * for SLH-DSA, the external-mu calls for anything but ML-DSA, HashML-DSA: see Messages) returns
- * OPENPQC_ERR_UNSUPPORTED and writes nothing. The randomness is drawn from the operating system's RNG on the
- * host; randomness that the caller chooses is for testing only, in openpqc/sycl_testing.h (OpenPQC::sycl_testing,
- * not installed). openpqc/sycl.hpp is a C++ layer over this API (host staging, RAII buffers, results), and
- * openpqc/sycl/device.hpp has hash functions for an application's own kernels.
+ * A call that the context's parameter set does not have (a KEM call on a signature context, keygen_from_seed for
+ * SLH-DSA, the external-mu calls for anything but ML-DSA, HashML-DSA: see Messages) returns OPENPQC_ERR_UNSUPPORTED
+ * and writes nothing. The randomness is drawn on the host through Core's opqc_randombytes (Core/opqc_platform.h):
+ * from the source that the application registered with opqc_set_randombytes, else, in a library built with
+ * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes, else from the operating system's
+ * RNG (the default). Randomness that the caller chooses is for testing only, in openpqc/sycl_testing.h
+ * (OpenPQC::sycl_testing, not installed). openpqc/sycl.hpp is a C++ layer over this API (host staging, RAII
+ * buffers, results), and openpqc/sycl/device.hpp has hash functions for an application's own kernels.
  *
  * Buffers. Every buffer of a call (keys, ciphertexts, shared secrets, signatures, messages and their offsets,
  * mu, seeds, status) is USM memory of the context's SYCL context: device memory of openpqc_gpu_malloc,
@@ -50,6 +52,8 @@
  * operation i has a result, and an openpqc_status that says why not otherwise:
  *   OPENPQC_ERR_INVALID_PUBLIC_KEY, _SECRET_KEY  ML-KEM: the key failed the check of FIPS 203, Section 7.2 or
  *                                     7.3 (the outputs are zeros: never a ciphertext or key computed from it)
+ *   OPENPQC_ERR_INVALID_SECRET_KEY    ML-DSA signing: the operation's private key has a coefficient of s1 or s2
+ *                                     outside [-eta, eta] (Private keys, below; zeros)
  *   OPENPQC_ERR_INVALID_SIGNATURE     verification: the signature is not valid
  *   OPENPQC_ERR_SIGNING_LIMIT         ML-DSA: no signature within 821 attempts (FIPS 204, Appendix C; zeros)
  *   OPENPQC_ERR_PCT                   ML-DSA KeyGen in a build with the pair-wise consistency test on the
@@ -107,9 +111,11 @@
  * of messages, and opts without a context string or pre-hash function (mu contains them); their flags are the
  * same.
  *
- * Private keys. ML-DSA's signer on the device does not check that s1 and s2 lie in [-eta, eta]: check a key
- * that was imported or read from storage with openpqc_sig_check_secret_key before signing with it here (FIPS
- * 204, Section 7.2).
+ * Private keys. As the CPU library does, ML-DSA's signer on the device checks that s1 and s2 lie in [-eta, eta]
+ * (FIPS 204, Algorithm 25, lines 3 and 6), with no branch on a coefficient: an operation whose key is malformed
+ * gets an all-zero signature and OPENPQC_ERR_INVALID_SECRET_KEY in status, and the other operations are signed.
+ * Other changes of a key are signed with, as on the CPU: check a key that was imported or read from storage with
+ * openpqc_sig_check_secret_key or openpqc_sig_check_keypair before signing with it here (FIPS 204, Section 7.2).
  *
  * Calls are asynchronous: they return once the work is queued, and openpqc_gpu_sync waits for it -- except
  * ML-DSA signing, which waits for each round of its rejection loop, and the randomized calls, which wait for the

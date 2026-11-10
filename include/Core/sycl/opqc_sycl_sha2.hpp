@@ -65,7 +65,7 @@ struct Sha256 {
     // H <- H(i) from H(i-1) and the block W[0 .. 16), which is overwritten (opqc_sha2.h). The call is
     // always inlined: without that, DPC++ compiled the compression as a function of its own, to which H
     // and W went through the stack (96 bytes of local memory per work-item for SHA-256, 192 for SHA-512,
-    // in every kernel that hashed; docs/slhdsa-notes/experiments/H1.md)
+    // in every kernel that hashed, as ptxas reported for the RTX 3050; DPC++ nightly 2026-10-11)
     OPQC_KERNEL_INLINE static void compress(Word H[8], Word W[16]) {
         [[clang::always_inline]] opqc_sha256_compress_words(H, W);
     }

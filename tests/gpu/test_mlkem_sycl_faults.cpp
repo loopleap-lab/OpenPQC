@@ -8,9 +8,13 @@
 // (include/ML/KEM/sycl/mlkem_sycl.cpp), with its kernel launches -- its for_each_item and for_each_team, through
 // which every stage kernel is queued -- renamed to versions that count them and can leave them out (kernels that
 // never run, as when the device faults part way through a call) or throw instead (a launch that the SYCL runtime
-// refuses), and its own device_malloc and device_free renamed to versions that count the device memory it holds;
-// it provides the randombytes() that the library's randomized calls use (it links
-// openpqc_core_testrng), which can fail on a chosen call. It reads the context's workspace back. ML-KEM-768, n = 257
+// refuses), its own device_malloc and device_free renamed to versions that count the device memory it holds, and
+// its lock (Lock) renamed to one that can throw std::system_error on a chosen construction, as
+// std::recursive_mutex::lock does when the system refuses the lock. Core is compiled with its test-only count of
+// the USM allocations its helpers hold (OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS: workspaces, coin buffers,
+// device_malloc and host_malloc), which must be 0 again after every case, on every device. The test provides the
+// opqc_external_randombytes() that the library's randomized calls use (it links openpqc_core_testrng), which can
+// fail on a chosen call. It reads the context's workspace back. ML-KEM-768, n = 257
 // operations in launches of 100 (three chunks), on every SYCL device (or the ones given), every case on a new
 // context; status and outputs live in page-locked host memory, so that the host can read them the moment a call
 // returns, without a sync:
@@ -29,17 +33,21 @@
 //              and every shared secret is zero (chunk 1's too), and the whole workspace is zero; the context has
 //              failed: keypair, enc and dec, randomized or not, return -2 without a launch or an RNG call, sync and
 //              memcpy return -2, memcpy with a NULL pointer -1, and destroy returns
-//   rng        randomized enc and keypair whose randombytes() fails for chunk 2: OPQC_SYCL_MLKEM_RNG_FAIL, status
+//   rng        randomized enc and keypair whose randomness fails for chunk 2: OPQC_SYCL_MLKEM_RNG_FAIL, status
 //              FAILED, c, K, ek and dk of all 257 operations zero (chunk 1's included, no partial keys left), the
 //              coins section zero; the context has not failed (the next call returns the CPU's keys)
 //   refused    randomized keypair with an ek that is not 8-byte aligned: -1, no RNG call, nothing written
-//   create     create that fails, 12 times each way, with a workspace of at most 32 MiB (25,903,616 bytes on
-//              the devices here): its self-test's launches all left out (wrong answers:
-//              OPQC_SYCL_MLKEM_SELF_TEST_FAIL), its first launch thrown (-2), and, on GPUs, a max_batch whose
-//              workspace no device can hold (-1); each returns its error and no context. What a failed create
-//              leaves is checked twice. The backend's own device memory (the self-test's buffer, through the
-//              counting device_malloc and device_free) must all be freed again when create returns, on every
-//              device. The device's free memory, where the runtime reports it (DPC++: ext_intel_free_memory,
+//   create     first, Core's count: a healthy context holds 1 allocation (its workspace), 3 with a device and a
+//              page-locked buffer of its own, 4 after a randomized call (its coin buffer), 2 after the two frees
+//              and none after destroy. Then create that fails, 12 times each way, with a workspace of at most
+//              32 MiB (25,903,616 bytes on the devices here): its self-test's launches all left out (wrong
+//              answers: OPQC_SYCL_MLKEM_SELF_TEST_FAIL), its first launch thrown (-2), its lock thrown after it
+//              has allocated its device memory (-2), and, on GPUs, a max_batch whose workspace no device can
+//              hold (-1); each returns its error and no context. What a failed create leaves is checked three
+//              times. The backend's own device memory (the self-test's buffer, through the counting
+//              device_malloc and device_free) must all be freed again when create returns, and Core's count
+//              must be what it was before, on every device: these see a leaked workspace or buffer of any
+//              size. The device's free memory, where the runtime reports it (DPC++: ext_intel_free_memory,
 //              AdaptiveCpp: AdaptiveCpp_free_memory), must not shrink by half of what the 24 workspaces of the
 //              first two ways would hold had they leaked: this sees a context left with its workspace, not
 //              smaller leaks (checked on GPUs; an integrated GPU's free memory is the system's, which other
@@ -48,6 +56,10 @@
 //
 // Usage: test_mlkem_sycl_faults [devices: all (default) or one index]
 // Exit code 0 if every check passed, 1 if one failed, 77 (CTest: skipped) if there is no SYCL device.
+
+// Core counts the USM allocations that its helpers hold (Core/sycl/opqc_sycl_context.hpp, usm_allocations)
+#define OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS 1
+
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
@@ -56,7 +68,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <stdexcept>
+#include <system_error>
 #include <vector>
 
 // Every header that defines or uses the launch helpers is included before they are renamed below
@@ -100,7 +114,7 @@ void counted_for_each_team(sycl::queue& q, std::size_t n, std::size_t local_word
 
 // The device memory that the backend allocates itself (device_malloc: create's self-test, opqc_sycl_mlkem_malloc):
 // how many allocations it made, and how many it holds now. The workspace is Core's (Context::allocate and
-// release) and is not counted.
+// release) and is not counted here; Core's own count (usm_allocations) has it.
 struct DeviceAllocations {
     static inline long made = 0;
     static inline long held = 0;
@@ -120,23 +134,48 @@ inline void counted_device_free(sycl::queue& q, void* p) noexcept {
     device_free(q, p);
 }
 
+// The backend's lock (its Lock): the constructions since reset(); construction number throw_at > 0 throws
+// std::system_error instead of taking the lock, as std::recursive_mutex::lock does when the system refuses it.
+// Core's helpers keep the real Lock (their code was compiled above).
+struct Locks {
+    static inline long count = 0;
+    static inline long throw_at = 0;
+    static void reset() { count = throw_at = 0; }
+};
+
+class CountedLock {
+public:
+    explicit CountedLock(std::recursive_mutex& m) : lock_(admit(m)) {}
+
+private:
+    static std::recursive_mutex& admit(std::recursive_mutex& m) {
+        if (++Locks::count == Locks::throw_at)
+            throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
+                                    "injected: the lock is refused");
+        return m;
+    }
+    std::lock_guard<std::recursive_mutex> lock_;
+};
+
 } // namespace openpqc::gpu
 
 #define for_each_item counted_for_each_item
 #define for_each_team counted_for_each_team
 #define device_malloc counted_device_malloc
 #define device_free counted_device_free
+#define Lock CountedLock
 #include "ML/KEM/sycl/mlkem_sycl.cpp"
 #undef for_each_item
 #undef for_each_team
 #undef device_malloc
 #undef device_free
+#undef Lock
 
 #include "ML/KEM/openpqc_mlkem.h"
 #include "openpqc/testing.h"
 
-// The randomness of the library (openpqc_core_testrng): a deterministic generator, which fails on call number
-// fail_at (counted from the last reset) when that is set
+// The randomness of the library (openpqc_core_testrng calls opqc_external_randombytes): a deterministic generator,
+// which fails on call number fail_at (counted from the last reset) when that is set
 namespace faults_test {
 struct Rng {
     static inline long calls = 0;
@@ -146,7 +185,7 @@ struct Rng {
 };
 } // namespace faults_test
 
-extern "C" int randombytes(std::uint8_t* out, std::size_t len) {
+extern "C" int opqc_external_randombytes(std::uint8_t* out, std::size_t len) {
     using faults_test::Rng;
     if (++Rng::calls == Rng::fail_at) return -1;
     for (std::size_t i = 0; i < len; i++) {   // splitmix64, a byte at a time
@@ -465,21 +504,43 @@ std::size_t free_device_memory(const sycl::device& dev) {
 }
 
 // A create that fails must leave nothing allocated (opqc_sycl_mlkem_create): the self-test's device memory, which
-// the counting device_malloc and device_free see on every device, and the context with its workspace, which the
-// device's free memory shows where the runtime reports it (a leak of workspace size; the self-test's buffer, about
-// 8 KB, is far below what that measurement can see)
+// the counting device_malloc and device_free see on every device, and the context with its workspace, which Core's
+// count of the USM allocations its helpers hold sees on every device, and the device's free memory where the
+// runtime reports it (a leak of workspace size; the self-test's buffer, about 8 KB, is far below what that
+// measurement can see)
 void failed_create(int device) {
     using openpqc::gpu::DeviceAllocations;
+    using openpqc::gpu::Locks;
+    using openpqc::gpu::usm_allocations;
     const auto devices = openpqc::gpu::all_devices();
     if (device < 0 || static_cast<std::size_t>(device) >= devices.size()) return;
     const sycl::device& dev = devices[static_cast<std::size_t>(device)];
-    // the workspace bytes of one operation (max_batch 1), then a max_batch for about 32 MiB, or 1/64 of the
-    // device's memory if that is less
+    // Core's count follows a healthy context: its workspace, its two buffers, its coin buffer, and nothing after
+    // destroy. The workspace bytes of one operation (max_batch 1), then a max_batch for about 32 MiB, or 1/64 of
+    // the device's memory if that is less.
+    const long usm_start = usm_allocations();
     opqc_sycl_mlkem* ctx = nullptr;
     CHECK(opqc_sycl_mlkem_create(&ctx, 768, 1, device) == 0);
     if (!ctx) return;
     const std::size_t per_op = ctx->mem_bytes;
+    const long usm_context = usm_allocations() - usm_start;
+    void* dev_buffer = opqc_sycl_mlkem_malloc(ctx, PK + SK);
+    void* host_buffer = opqc_sycl_mlkem_malloc_host(ctx, PK + SK);
+    const long usm_buffers = usm_allocations() - usm_start;
+    const int rc_random = opqc_sycl_mlkem_keypair(ctx, static_cast<std::uint8_t*>(host_buffer),
+                                                  static_cast<std::uint8_t*>(host_buffer) + PK, 1);
+    CHECK(opqc_sycl_mlkem_sync(ctx) == 0);
+    const long usm_coins = usm_allocations() - usm_start;
+    opqc_sycl_mlkem_free(ctx, dev_buffer);
+    opqc_sycl_mlkem_free(ctx, host_buffer);
+    const long usm_freed = usm_allocations() - usm_start;
     opqc_sycl_mlkem_destroy(ctx);
+    const long usm_destroyed = usm_allocations() - usm_start;
+    CHECK(dev_buffer && host_buffer && rc_random == 0);
+    CHECK(usm_context == 1 && usm_buffers == 3 && usm_coins == 4 && usm_freed == 2 && usm_destroyed == 0);
+    std::printf("  create: Core's count of USM allocations held: a context %ld, with two buffers %ld, after a "
+                "randomized call %ld, after the frees %ld, after destroy %ld\n",
+                usm_context, usm_buffers, usm_coins, usm_freed, usm_destroyed);
     const auto device_bytes = static_cast<std::size_t>(dev.get_info<sycl::info::device::global_mem_size>());
     const std::size_t target = std::min(std::size_t{32} << 20, device_bytes / 64);
     const std::size_t batch = std::max<std::size_t>(1, target / per_op);
@@ -494,28 +555,39 @@ void failed_create(int device) {
     constexpr int ROUNDS = 12;
     struct Way {
         long skip_from, throw_at;   // Launches
+        long lock_throw_at;         // Locks: the backend's first lock in create is the self-test's
         std::size_t max_batch;
         int expect;                 // create's result
         long failed, other;         // creates that returned it and no context; any other outcome
         long made, kept;            // the backend's own device allocations: made, and still held after create
+        long thrown;                // creates in which the injected lock exception was thrown
+        long left;                  // Core's count after create (and destroy of what it returned) minus before
     };
-    Way ways[] = {{1, 0, batch, OPQC_SYCL_MLKEM_SELF_TEST_FAIL, 0, 0, 0, 0},   // the self-test's answers are wrong
-                  {0, 1, batch, -2, 0, 0, 0, 0},                               // its first launch is refused
-                  {0, 0, OPQC_SYCL_MLKEM_MAX_BATCH, -1, 0, 0, 0, 0}};          // no device holds the workspace
+    // the self-test's answers are wrong; its first launch is refused; its lock throws std::system_error, after it
+    // has allocated its device memory; no device holds the workspace
+    Way ways[] = {{1, 0, 0, batch, OPQC_SYCL_MLKEM_SELF_TEST_FAIL, 0, 0, 0, 0, 0, 0},
+                  {0, 1, 0, batch, -2, 0, 0, 0, 0, 0, 0},
+                  {0, 0, 1, batch, -2, 0, 0, 0, 0, 0, 0},
+                  {0, 0, 0, OPQC_SYCL_MLKEM_MAX_BATCH, -1, 0, 0, 0, 0, 0, 0}};
     const bool on_gpu = dev.is_gpu();
     const auto run = [&](Way& w) {
         Launches::reset();
         Launches::skip_from = w.skip_from;
         Launches::throw_at = w.throw_at;
-        const long made = DeviceAllocations::made, held = DeviceAllocations::held;
+        Locks::reset();
+        Locks::throw_at = w.lock_throw_at;
+        const long made = DeviceAllocations::made, held = DeviceAllocations::held, usm = usm_allocations();
         opqc_sycl_mlkem* c = nullptr;
         const int rc = opqc_sycl_mlkem_create(&c, 768, w.max_batch, device);
         Launches::reset();
+        if (w.lock_throw_at > 0 && Locks::count >= w.lock_throw_at) w.thrown++;
+        Locks::reset();
         w.made += DeviceAllocations::made - made;
         w.kept += DeviceAllocations::held - held;
         if (rc == w.expect && c == nullptr) w.failed++;
         else w.other++;
         opqc_sycl_mlkem_destroy(c);
+        w.left += usm_allocations() - usm;
     };
     // ROUNDS creates each way; how much the device's free memory shrank meanwhile (0 if it grew or is not reported)
     long runs = 0;
@@ -539,22 +611,25 @@ void failed_create(int device) {
     const bool again = measured && on_gpu && shrunk >= would_leak / 2;
     if (again) shrunk = std::min(shrunk, rounds(ROUNDS));
     for (const Way& w : ways) CHECK(w.other == 0 && (w.failed == runs || (!on_gpu && w.max_batch != batch)));
-    // the self-test ran, and allocated, in the first two ways; none of it may be left
-    for (const Way& w : ways) CHECK(w.kept == 0);
-    CHECK(ways[0].made == runs && ways[1].made == runs);
-    std::printf("  create: the backend's own device memory: %ld + %ld + %ld allocations, %ld + %ld + %ld still held "
-                "after the failed creates\n",
-                ways[0].made, ways[1].made, ways[2].made, ways[0].kept, ways[1].kept, ways[2].kept);
+    // the self-test ran, and allocated, in the first three ways (in the third, before its lock threw); none of
+    // it may be left, and Core's count must be back where it was after every failed create
+    for (const Way& w : ways) CHECK(w.kept == 0 && w.left == 0);
+    CHECK(ways[0].made == runs && ways[1].made == runs && ways[2].made == runs && ways[2].thrown == runs);
+    std::printf("  create: the backend's own device memory: %ld + %ld + %ld + %ld allocations, %ld + %ld + %ld + %ld "
+                "still held after the failed creates (the lock thrown %ld times); Core's count of USM allocations "
+                "held: %ld + %ld + %ld + %ld more\n",
+                ways[0].made, ways[1].made, ways[2].made, ways[3].made, ways[0].kept, ways[1].kept, ways[2].kept,
+                ways[3].kept, ways[2].thrown, ways[0].left, ways[1].left, ways[2].left, ways[3].left);
     if (!measured) {
-        std::printf("  create: failed as expected %ld + %ld + %ld times (workspace %zu bytes); the runtime reports no "
-                    "free memory for this device: not measured\n",
-                    ways[0].failed, ways[1].failed, ways[2].failed, workspace);
+        std::printf("  create: failed as expected %ld + %ld + %ld + %ld times (workspace %zu bytes); the runtime "
+                    "reports no free memory for this device: not measured\n",
+                    ways[0].failed, ways[1].failed, ways[2].failed, ways[3].failed, workspace);
         return;
     }
     if (on_gpu) CHECK(shrunk < would_leak / 2);
-    std::printf("  create: failed as expected %ld + %ld + %ld times (workspace %zu bytes); free device memory over %d "
-                "rounds: %zu bytes less%s (a leak of the workspaces: %zu)%s\n",
-                ways[0].failed, ways[1].failed, ways[2].failed, workspace, ROUNDS, shrunk,
+    std::printf("  create: failed as expected %ld + %ld + %ld + %ld times (workspace %zu bytes); free device memory "
+                "over %d rounds: %zu bytes less%s (a leak of the workspaces: %zu)%s\n",
+                ways[0].failed, ways[1].failed, ways[2].failed, ways[3].failed, workspace, ROUNDS, shrunk,
                 again ? ", the lesser of two passes" : "", would_leak, on_gpu ? "" : "; a CPU device: not checked");
 }
 
@@ -570,16 +645,29 @@ int main(int argc, char** argv) {
     const int first = argc > 1 ? std::atoi(argv[1]) : 0;
     const int last = argc > 1 ? first : count - 1;
     const Oracle o;
+    // every case destroys what it creates and frees what it allocates: Core's count is 0 after each
+    const auto none_held = [](const char* name) {
+        const long held = openpqc::gpu::usm_allocations();
+        if (held != 0) std::printf("  %s: %ld USM allocations of Core's helpers still held\n", name, held);
+        CHECK(held == 0);
+    };
     for (int d = first; d <= last; d++) {
         std::printf("device %d: %s (%s)\n", d, opqc_sycl_device_name(d), opqc_sycl_device_platform(d));
         std::fflush(stdout);
         success(d, o);
+        none_held("success");
         never_run(d, o);
+        none_held("never run");
         asynchronous(d, o);
+        none_held("async");
         thrown(d, o);
+        none_held("throw");
         rng_failure(d, o);
+        none_held("rng");
         refused(d);
+        none_held("refused");
         failed_create(d);
+        none_held("create");
         std::fflush(stdout);
     }
     if (failures) {

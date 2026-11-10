@@ -32,7 +32,14 @@
 //                    context strings over 255 bytes are refused (-1) and leave status alone, except
 //                    that a refused verification sets every entry to "invalid"; verification
 //                    without a status buffer is refused; every status read was set to another
-//                    value before the call
+//                    value before the call; sign_stats reports 0 rounds and 0 attempts after a
+//                    signing call that is refused and after a randomized one of n = 0
+//   malformed keys:  private keys whose s1 or s2 has a coefficient out of range (FIPS 204,
+//                    Algorithm 25, lines 3 and 6), mixed with well-formed ones in launches of 3:
+//                    as by the CPU library, an all-zero signature and OPENPQC_ERR_INVALID_SECRET_KEY
+//                    in status, or as the result of a call without status, and for the others
+//                    the CPU's signatures (sign_derand, sign_mu_derand), or valid ones (sign); one
+//                    key for all (sign_one_key_derand, sign_one_key) under a malformed key
 // Each batch runs once in one launch and once in chunks with a ragged last chunk. Also:
 //   self-test:       the answers of the self-test of create (ML/DSA/sycl/mldsa_sycl_self_test.hpp)
 //                    are the CPU library's
@@ -137,6 +144,7 @@ struct CpuApi {
     int level;
     std::size_t pk, sk, sig, k, omega, ctilde, z_bytes, hint_offset;
     std::uint32_t gamma1;
+    std::size_t l, eta, eta_bits, sk_s1, sk_s2, eta_poly;   // where skEncode puts s1 and s2 (Algorithm 24)
     openpqc_status (*keypair_derand)(uint8_t*, uint8_t*, const uint8_t*);
     openpqc_status (*check_keypair)(const uint8_t*, const uint8_t*);
     openpqc_status (*sign_derand)(uint8_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, const uint8_t*);
@@ -152,7 +160,9 @@ struct CpuApi {
         N, OPENPQC_MLDSA##N##_PUBLICKEYBYTES, OPENPQC_MLDSA##N##_SECRETKEYBYTES, OPENPQC_MLDSA##N##_BYTES, dsa::params::ML_DSA_##N::k, \
                 dsa::params::ML_DSA_##N::omega, dsa::Sizes<dsa::params::ML_DSA_##N>::ctilde,                 \
                 dsa::Sizes<dsa::params::ML_DSA_##N>::z, dsa::Layout<dsa::params::ML_DSA_##N>::sig_h,          \
-                dsa::params::ML_DSA_##N::gamma1,                                                             \
+                dsa::params::ML_DSA_##N::gamma1, dsa::params::ML_DSA_##N::l, dsa::params::ML_DSA_##N::eta,   \
+                dsa::Sizes<dsa::params::ML_DSA_##N>::eta_bits, dsa::Layout<dsa::params::ML_DSA_##N>::sk_s1,    \
+                dsa::Layout<dsa::params::ML_DSA_##N>::sk_s2, dsa::Layout<dsa::params::ML_DSA_##N>::eta_poly,   \
                 openpqc_mldsa##N##_keygen_from_seed, openpqc_mldsa##N##_check_keypair,                         \
                 openpqc_testing_mldsa##N##_sign_derand, openpqc_mldsa##N##_verify, openpqc_mldsa##N##_external_mu,    \
                 openpqc_testing_mldsa##N##_sign_mu_derand, openpqc_mldsa##N##_verify_mu,                             \
@@ -457,6 +467,22 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
                     OPENPQC_ERR_INVALID_SIGNATURE);
             refused(opqc_sycl_mldsa_verify(c, d_sig.p, nullptr, offsets, ctx.data(), ctxlen, d_pk.p, st, n),
                     OPENPQC_ERR_INVALID_SIGNATURE);
+            // sign_stats reports the last signing call: 0 rounds and 0 attempts after one that is refused, and
+            // after a randomized one of n = 0, which launches nothing (not the figures of the call before)
+            std::size_t rounds_ran = 0, attempts_ran = 0, rounds_refused = 99, attempts_refused = 99, rounds_empty = 99,
+                        attempts_empty = 99;
+            CHECK(opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_rnd.p, d_sk.p, st,
+                                              n) == 0);
+            CHECK(opqc_sycl_mldsa_sign_stats(c, &rounds_ran, &attempts_ran) == 0);
+            bad_api += opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_rnd.p,
+                                                   d_sk.p + 2, st, n) != -1;
+            CHECK(opqc_sycl_mldsa_sign_stats(c, &rounds_refused, &attempts_refused) == 0);
+            CHECK(opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_rnd.p, d_sk.p, st,
+                                              n) == 0);
+            bad_api += opqc_sycl_mldsa_sign(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctxlen, d_sk.p, st, 0) != 0;
+            CHECK(opqc_sycl_mldsa_sign_stats(c, &rounds_empty, &attempts_empty) == 0);
+            bad_api += rounds_ran == 0 || attempts_ran < n || rounds_refused != 0 || attempts_refused != 0 ||
+                       rounds_empty != 0 || attempts_empty != 0;
             CHECK(bad_api == 0);
             CHECK(opqc_sycl_mldsa_sync(c) == 0);   // no refusal fails the context
         }
@@ -579,6 +605,141 @@ void test_level(int device, const CpuApi& api, std::size_t n, std::size_t max_ba
                     static_cast<double>(attempts) / static_cast<double>(n));
     }
     opqc_sycl_mldsa_destroy(c);
+}
+
+// Malformed private keys (FIPS 204, Algorithm 25, lines 3 and 6; Section 7.2): skDecode maps each bitlen(2 eta)-bit
+// code v of s1 and s2 to eta - v, so a code above 2 eta gives a coefficient below -eta (a code cannot give one above
+// eta). As the CPU library does, the device's signer refuses such a key: the operation gets an all-zero signature
+// and OPENPQC_ERR_INVALID_SECRET_KEY in status, and a call without status returns it; the other operations of the
+// call are signed as the CPU signs them. Seven key pairs in launches of three: keys 1 (in the first launch), 3 and
+// 5 (in the second) malformed -- key 1 with s1[0][0] = -eta - 1, key 3 with s2[k - 1][255] = -eta - 1, key 5 with
+// s1[l - 1][100] at the lowest code's value, eta - (2^bitlen(2 eta) - 1) -- and keys 0, 2, 4 and 6 as KeyGen made
+// them; sign_derand, sign_mu_derand and the randomized sign with and without status, and sign_one_key_derand and
+// sign_one_key under key 1. Returns the number of mismatches.
+std::size_t test_bad_keys(int device, const CpuApi& api) {
+    constexpr std::size_t N = 7, BATCH = 3;
+    std::mt19937_64 rng(static_cast<std::uint64_t>(api.level) * 7919);
+    const auto random_bytes = [&](std::size_t len) {
+        Bytes b(len);
+        for (auto& x : b) x = static_cast<std::uint8_t>(rng());
+        return b;
+    };
+    const Bytes seeds = random_bytes(32 * N), rnd = random_bytes(32 * N), ctx = random_bytes(5);
+    Batch msgs;
+    for (std::size_t i = 0; i < N; i++) msgs.add(random_bytes(10 + 13 * i));
+    Bytes pk(api.pk * N), sk(api.sk * N), mu(64 * N);
+    for (std::size_t i = 0; i < N; i++) {
+        CHECK(api.keypair_derand(&pk[i * api.pk], &sk[i * api.sk], &seeds[32 * i]) == 0);
+        CHECK(api.external_mu(&mu[64 * i], msgs.at(i), msgs.length(i), ctx.data(), ctx.size(), &pk[i * api.pk]) == 0);
+    }
+    const auto bits = static_cast<unsigned>(api.eta_bits);
+    const auto set_code = [&](std::size_t key, std::size_t offset, unsigned coefficient, std::uint32_t code) {
+        set_packed(&sk[key * api.sk + offset], coefficient, bits, code);
+    };
+    const auto low = static_cast<std::uint32_t>(2 * api.eta + 1);    // -eta - 1
+    const std::uint32_t lowest = (1u << bits) - 1;                   // eta - (2^bits - 1)
+    set_code(1, api.sk_s1, 0, low);
+    set_code(3, api.sk_s2 + (api.k - 1) * api.eta_poly, 255, low);
+    set_code(5, api.sk_s1 + (api.l - 1) * api.eta_poly, 100, lowest);
+    const auto bad = [&](std::size_t i) { return i == 1 || i == 3 || i == 5; };
+    // the CPU's signatures and results (the malformed keys: -6 and zeros)
+    Bytes sig(api.sig * N, 0xA5), sig_mu(api.sig * N, 0xA5), sig_one(api.sig * N, 0xA5);
+    std::vector<std::int32_t> want(N), want_mu(N);
+    std::size_t bad_cpu = 0;
+    for (std::size_t i = 0; i < N; i++) {
+        want[i] = api.sign_derand(&sig[i * api.sig], msgs.at(i), msgs.length(i), ctx.data(), ctx.size(), &rnd[32 * i],
+                                  &sk[i * api.sk]);
+        want_mu[i] = api.sign_mu_derand(&sig_mu[i * api.sig], &mu[64 * i], &rnd[32 * i], &sk[i * api.sk]);
+        CHECK(api.sign_derand(&sig_one[i * api.sig], msgs.at(i), msgs.length(i), ctx.data(), ctx.size(), &rnd[32 * i],
+                              &sk[1 * api.sk]) == OPENPQC_ERR_INVALID_SECRET_KEY);
+        const std::int32_t expect = bad(i) ? OPENPQC_ERR_INVALID_SECRET_KEY : 0;
+        bad_cpu += want[i] != expect || want_mu[i] != expect;
+        const std::uint8_t* si = sig.data() + i * api.sig;
+        bad_cpu += bad(i) && !std::all_of(si, si + api.sig, [](std::uint8_t b) { return b == 0; });
+    }
+    CHECK(bad_cpu == 0);   // the CPU library refuses exactly the malformed keys
+
+    opqc_sycl_mldsa* c = nullptr;
+    CHECK(opqc_sycl_mldsa_create(&c, api.level, BATCH, device) == 0);
+    if (!c) return 1;
+    std::size_t bad_gpu = 0;
+    std::string detail;
+    {
+        DeviceBuffer d_sk(c, sk.size()), d_sig(c, api.sig * N), d_rnd(c, rnd.size()), d_mu(c, mu.size()),
+                d_msg(c, msgs.bytes.size()), d_offsets(c, 8 * (N + 1)), d_status(c, 4 * N);
+        d_sk.put(sk);
+        d_rnd.put(rnd);
+        d_mu.put(mu);
+        d_msg.put(msgs.bytes);
+        d_offsets.put(msgs.offsets);
+        const auto* offsets = d_offsets.as<const std::uint64_t>();
+        auto* st = d_status.as<std::int32_t>();
+        std::vector<std::int32_t> status(N);
+        Bytes g(api.sig * N);
+        // A call into a signature buffer of 0xA5 and a status of SENTINEL. want_status: the CPU's result of each
+        // operation; want_sig: the CPU's signatures (deterministic calls), or empty (randomized calls: every
+        // signature that is not refused must verify under its key's pk). Without status, the call returns
+        // OPENPQC_ERR_INVALID_SECRET_KEY and leaves status alone.
+        const auto run = [&](const char* name, auto call, bool with_status, const Bytes& want_sig,
+                             const std::vector<std::int32_t>& want_status) {
+            d_sig.put(Bytes(api.sig * N, 0xA5));
+            std::fill(status.begin(), status.end(), SENTINEL);
+            d_status.put(status);
+            const int rc = call(with_status ? st : nullptr);
+            CHECK(opqc_sycl_mldsa_sync(c) == 0);
+            d_sig.get(g);
+            d_status.get(status);
+            std::size_t bad_here = with_status ? rc != 0 : rc != OPENPQC_ERR_INVALID_SECRET_KEY;
+            for (std::size_t i = 0; i < N; i++) {
+                const std::uint8_t* gi = &g[i * api.sig];
+                bad_here += with_status ? status[i] != want_status[i] : status[i] != SENTINEL;
+                if (want_status[i] == OPENPQC_ERR_INVALID_SECRET_KEY) {
+                    bad_here += !std::all_of(gi, gi + api.sig, [](std::uint8_t b) { return b == 0; });
+                    continue;
+                }
+                if (!want_sig.empty()) bad_here += std::memcmp(gi, &want_sig[i * api.sig], api.sig) != 0;
+                bad_here += api.verify(gi, api.sig, msgs.at(i), msgs.length(i), ctx.data(), ctx.size(),
+                                       &pk[i * api.pk]) != 0;
+            }
+            bad_gpu += bad_here;
+            detail += std::string(detail.empty() ? "" : ", ") + name + (with_status ? "" : " (no status)") + " " +
+                      std::to_string(rc) + (bad_here ? " WRONG" : "");
+        };
+        const std::vector<std::int32_t> all_refused(N, OPENPQC_ERR_INVALID_SECRET_KEY);
+        for (const bool with_status : {true, false}) {
+            run("sign_derand",
+                [&](std::int32_t* s) {
+                    return opqc_sycl_mldsa_sign_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctx.size(), d_rnd.p,
+                                                       d_sk.p, s, N);
+                },
+                with_status, sig, want);
+            run("sign_mu_derand",
+                [&](std::int32_t* s) { return opqc_sycl_mldsa_sign_mu_derand(c, d_sig.p, d_mu.p, d_rnd.p, d_sk.p, s, N); },
+                with_status, sig_mu, want_mu);
+            run("sign",
+                [&](std::int32_t* s) {
+                    return opqc_sycl_mldsa_sign(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctx.size(), d_sk.p, s, N);
+                },
+                with_status, Bytes{}, want);
+            run("sign_one_key_derand under key 1",
+                [&](std::int32_t* s) {
+                    return opqc_sycl_mldsa_sign_one_key_derand(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctx.size(),
+                                                               d_rnd.p, d_sk.p + 1 * api.sk, s, N);
+                },
+                with_status, sig_one, all_refused);
+            run("sign_one_key under key 1",
+                [&](std::int32_t* s) {
+                    return opqc_sycl_mldsa_sign_one_key(c, d_sig.p, d_msg.p, offsets, ctx.data(), ctx.size(),
+                                                        d_sk.p + 1 * api.sk, s, N);
+                },
+                with_status, Bytes{}, all_refused);
+        }
+    }
+    opqc_sycl_mldsa_destroy(c);
+    std::printf("  ML-DSA-%d, malformed keys 1, 3 and 5 of %zu in launches of %zu: %s; mismatches %zu\n", api.level, N,
+                BATCH, detail.c_str(), bad_gpu);
+    CHECK(bad_gpu == 0);
+    return bad_gpu;
 }
 
 // The self-test's answers, computed by the CPU library from the inputs of mldsa_sycl_self_test.hpp
@@ -870,6 +1031,7 @@ int main(int argc, char** argv) {
             test_level(d, api, n, n, 0);       // one launch
             test_level(d, api, 257, 100, 1);   // chunks, ragged last chunk
             test_level(d, api, 50, 50, 255);
+            test_bad_keys(d, api);
         }
     }
     if (failures) {

@@ -11,6 +11,7 @@
 
 #include "opqc_platform.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -19,8 +20,7 @@
 #endif
 
 #if defined(OPQC_CONFIG_EXTERNAL_RANDOMBYTES)
-/* provided by the application, see opqc_platform.h */
-int randombytes(uint8_t *out, size_t outlen);
+/* opqc_external_randombytes: provided by the application, see opqc_platform.h */
 #elif defined(_WIN32)
 #include <bcrypt.h>
 #elif defined(__linux__)
@@ -30,7 +30,7 @@ int randombytes(uint8_t *out, size_t outlen);
     defined(__OpenBSD__)
 #include <stdlib.h>
 #else
-#error "No operating-system RNG known for this platform: build with OPQC_CONFIG_EXTERNAL_RANDOMBYTES and provide randombytes()"
+#error "No operating-system RNG known for this platform: build with the CMake option OPENPQC_EXTERNAL_RANDOMBYTES (OPQC_CONFIG_EXTERNAL_RANDOMBYTES) and provide opqc_external_randombytes()"
 #endif
 
 void opqc_zeroize(void *p, size_t len)
@@ -49,10 +49,12 @@ void opqc_zeroize(void *p, size_t len)
 #endif
 }
 
+/* The default source: the application's in a build with
+ * OPQC_CONFIG_EXTERNAL_RANDOMBYTES, the operating system's otherwise. */
 static int opqc_system_random(uint8_t *out, size_t len)
 {
 #if defined(OPQC_CONFIG_EXTERNAL_RANDOMBYTES)
-    return randombytes(out, len);
+    return opqc_external_randombytes(out, len);
 #elif defined(_WIN32)
     while (len > 0) {
         ULONG n = len > 0x1000000 ? 0x1000000 : (ULONG)len;
@@ -90,9 +92,65 @@ static int opqc_system_random(uint8_t *out, size_t len)
 #endif
 }
 
+/*
+ * The registered source (opqc_set_randombytes): fn and ctx, set by one thread
+ * and read by every draw, on any thread. A draw must see a pair that one
+ * registration wrote, never the new fn with the old ctx. A sequence counter
+ * gives that without a lock on the draws (a sequence lock): a registration
+ * makes the counter odd, writes fn and ctx, and makes it even again; a draw
+ * reads the counter, fn, ctx and the counter again, and reads once more if the
+ * counter was odd or changed in between. fn and ctx are atomic objects too, so
+ * that a draw that overlaps a registration is not a data race (C11, 5.1.2.4).
+ * Registrations from several threads take turns on the counter. A NULL fn
+ * means the default source.
+ */
+static atomic_uint opqc_rng_sequence;
+static _Atomic(opqc_randombytes_fn) opqc_rng_fn;
+static _Atomic(void *) opqc_rng_ctx;
+
+int opqc_set_randombytes(opqc_randombytes_fn fn, void *ctx)
+{
+    unsigned s = atomic_load_explicit(&opqc_rng_sequence, memory_order_relaxed);
+    for (;;) {
+        /* from an even value (no registration under way) to the next, odd one */
+        if ((s & 1u) == 0 &&
+            atomic_compare_exchange_weak_explicit(&opqc_rng_sequence, &s, s + 1u,
+                                                  memory_order_acquire, memory_order_relaxed)) {
+            break;
+        }
+        s = atomic_load_explicit(&opqc_rng_sequence, memory_order_relaxed);
+    }
+    /* the odd counter becomes visible before the new pair */
+    atomic_thread_fence(memory_order_release);
+    atomic_store_explicit(&opqc_rng_fn, fn, memory_order_relaxed);
+    atomic_store_explicit(&opqc_rng_ctx, fn != NULL ? ctx : NULL, memory_order_relaxed);
+    /* and the new pair before the even counter */
+    atomic_store_explicit(&opqc_rng_sequence, s + 2u, memory_order_release);
+    return 0;
+}
+
+/* The registered source: fn (NULL: none) and its ctx, written by one registration */
+static opqc_randombytes_fn opqc_registered_source(void **ctx)
+{
+    for (;;) {
+        const unsigned s = atomic_load_explicit(&opqc_rng_sequence, memory_order_acquire);
+        const opqc_randombytes_fn fn = atomic_load_explicit(&opqc_rng_fn, memory_order_relaxed);
+        void *const c = atomic_load_explicit(&opqc_rng_ctx, memory_order_relaxed);
+        /* the loads of fn and ctx happen before the second read of the counter */
+        atomic_thread_fence(memory_order_acquire);
+        if ((s & 1u) == 0 && atomic_load_explicit(&opqc_rng_sequence, memory_order_relaxed) == s) {
+            *ctx = c;
+            return fn;
+        }
+    }
+}
+
 int opqc_randombytes(uint8_t *out, size_t len)
 {
-    if (opqc_system_random(out, len) != 0) {
+    void *ctx = NULL;
+    const opqc_randombytes_fn fn = opqc_registered_source(&ctx);
+    const int rc = fn != NULL ? fn(ctx, out, len) : opqc_system_random(out, len);
+    if (rc != 0) {
         opqc_zeroize(out, len);
         return -1;
     }

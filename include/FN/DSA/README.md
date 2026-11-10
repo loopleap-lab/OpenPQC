@@ -4,7 +4,7 @@ Not implemented yet. **FIPS 206 has not been published**: as of 2026-10 there is
 announced design changes relative to Falcon (round 3, specification v1.2). Thomas Pornin's
 [c-fn-dsa](https://github.com/pornin/c-fn-dsa) implements a best guess of the draft and explicitly does not promise
 compatibility. Any OpenPQC implementation is therefore provisional until NIST publishes the text and test vectors.
-Full catalog: [docs/catalog/FN-DSA.md](../../docs/catalog/FN-DSA.md).
+Full catalog: [docs/catalog/FN-DSA.md](../../../docs/catalog/FN-DSA.md).
 
 ## Parameters
 
@@ -22,7 +22,7 @@ Ring Z_q[x]/(x^n + 1), q = 12289 (complete NTT for n ≤ 1024).
 | Primitive | Group |
 |---|---|
 | SHAKE256, incremental (μ, tr, HashToPoint, sampler PRNG) | **Core**: `opqc_shake256_inc_*` exists. A buffered byte-wise reader (`next_u8/u16/u64`) belongs to FN-DSA |
-| `randombytes()`, constant-time masks/selects, zeroize | **Core** (Core's `ct.h` needs 32/64-bit variants) |
+| Randomness, constant-time masks/selects, zeroize | **Core**: `opqc_randombytes` (`Core/opqc_platform.h`: a source registered with `opqc_set_randombytes`, else the application's `opqc_external_randombytes` in a build with `OPENPQC_EXTERNAL_RANDOMBYTES`, else the operating system's generator), `Core/opqc_ct.h` (8- and 32-bit masks and selects; FN-DSA needs 64-bit ones too), `opqc_zeroize` and `Core/zeroize.hpp` |
 | μ framing (domain separator, context, pre-hash OIDs), the same as FIPS 204 | **Core**: `Core/prehash.hpp` (pre-hash functions, OIDs, the 255-byte context limit) and `Core/openpqc_prehash.h`, shared by HashML-DSA and HashSLH-DSA; the two-byte prefix (domain separator, \|ctx\|) is written at each scheme's call site |
 | NTT mod 12289 (n = 512/1024, 9/10 layers), Montgomery-style reduction, pointwise multiplication and **division** in NTT domain | Core (pattern) |
 | HashToPoint (16-bit SHAKE256 chunks < 5q, reduced mod q) | Core (pattern), rejection sampling |
@@ -42,7 +42,7 @@ Ring Z_q[x]/(x^n + 1), q = 12289 (complete NTT for n ≤ 1024).
    (`opqc_sponge_*`) and randomness.
 3. Refresh the KATs when NIST publishes vectors. Compare GPU signatures with CPU signatures under the same seed.
 
-## GPU considerations (details in [docs/GPU_ACCELERATION.md](../../docs/GPU_ACCELERATION.md))
+## GPU considerations (details in [docs/GPU_ACCELERATION.md](../../../docs/GPU_ACCELERATION.md))
 
 - **Verification** is integer-only (NTT mod 12289, HashToPoint, norm check) and maps well to GPUs. Do it first.
 - **Signing** needs exact binary64 results: FP32 or double-float would change the signatures and can leak the key.

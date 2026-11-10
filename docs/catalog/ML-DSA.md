@@ -13,9 +13,9 @@ is marked "(inferred)".
 > test 87/130/190, the key checks 56/86/129, Sign 85/127/186, Verify 64/99/147 KiB for ML-DSA-44/65/87) and per thread
 > (`OPENPQC_MLDSA44/65/87_STACK_BYTES`, 128/160/224 KiB), `-fstack-clash-protection` and the frame limit
 > `OPENPQC_MAX_FRAME_BYTES` (192 KiB); the scheme layer's sponge functions on secret input zero the call-used
-> registers on return (`zero_call_used_regs`, GCC 11 and Clang 15 or later, x86 and AArch64), except that Clang 23 at
-> `-O1`, `-O2`, `-O3` and `-Os` on x86-64 (not at `-O0`, and GCC 16 at no level; other compiler versions, 32-bit x86
-> and AArch64 not checked) compiles `H` as a tail jump to `openpqc::sponge`, so that no clearing follows its squeeze;
+> registers on return (`zero_call_used_regs`, GCC 11 and Clang 15 or later, x86 and AArch64; `H` fences its call of
+> the sponge so that it cannot become a tail jump, which Clang 23 had made of it at `-O1` to `-Os`, and
+> `mldsa_regs_asm` checks the x86-64 code of GCC and Clang; 32-bit x86 and AArch64 not checked);
 > the pair-wise consistency test (`OPENPQC_MLDSA_KEYGEN_PCT`) is a property of the compiled library, as key generation
 > lives in an inline namespace named after its configuration (`keygen_no_pct`, `keygen_pct`,
 > `keygen_pct_breakage_test`), tested by `mldsa_pct`, `mldsa_pct_fail` and `mldsa_pct_odr`. The interfaces that FIPS 204

@@ -11,9 +11,10 @@
 #   sycl/              batched ML-KEM on GPUs and other SYCL devices (optional)
 #
 # Targets:
-#   openpqc_mlkem_objects   the compiled C API, which goes into the library openpqc (top-level CMakeLists.txt)
+#   openpqc_mlkem_objects   the compiled C API, which goes into the library openpqc (top-level CMakeLists.txt);
+#                           randomness from Core (opqc_randombytes: by default the operating system)
 #   openpqc_mlkem           the same objects as a static library, for the tests and benchmarks
-#   openpqc_mlkem_testrng   the same, with randomness from the application's randombytes() (tests only)
+#   openpqc_mlkem_testrng   the same, with randomness from the application's opqc_external_randombytes() (tests only)
 #   (both built only when a test or benchmark needs them)
 #   openpqc_mlkem_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
 #                           library for the benchmarks (top-level CMakeLists.txt; the tests use OpenPQC::sycl_testing)

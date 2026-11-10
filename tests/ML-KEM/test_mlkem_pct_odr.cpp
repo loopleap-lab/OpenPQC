@@ -13,7 +13,8 @@
 // library's, it would keep these, and KeyGen would return keys that were never checked (ml_kem_keygen_derand
 // and ml_kem_keygen, which run in frames of their own and so are always called out of line, and
 // keygen_derand, which Clang 23 called out of line from the C API) or checked by a check that passes. The
-// configurations name their own inline namespaces instead (scheme/ml_kem.hpp).
+// configurations name their own inline namespaces instead (scheme/ml_kem.hpp). The names' other half, the
+// stack burn, is tested by mlkem_config_odr (test_mlkem_config_odr.cpp).
 //
 // The application is compiled without the check whatever the build's own flags: a build that turns the check
 // on for the whole project (-DOPENPQC_MLKEM_KEYGEN_PCT in CMAKE_CXX_FLAGS) passes the macro to this file too.

@@ -6,7 +6,7 @@
 /*
  * test_slhdsa_ct.c -- constant-time test of SLH-DSA, run under valgrind (memcheck)
  *
- * randombytes() marks every byte it returns as undefined for valgrind, so the
+ * opqc_external_randombytes() marks every byte it returns as undefined for valgrind, so the
  * seeds SK.seed, SK.prf and PK.seed of KeyGen and the addrnd of hedged signing,
  * and everything computed from them, are secret. valgrind reports any branch
  * and any memory index that depends on such a value. The library is built with
@@ -48,10 +48,10 @@
 
 #include "SLH/DSA/openpqc_slhdsa.h"
 
-int randombytes(uint8_t *out, size_t n);
+int opqc_external_randombytes(uint8_t *out, size_t n);
 
 /* xorshift64*, marked as secret */
-int randombytes(uint8_t *out, size_t n)
+int opqc_external_randombytes(uint8_t *out, size_t n)
 {
     static uint64_t state = UINT64_C(0x0123456789ABCDEF);
     for (size_t i = 0; i < n; i++) {

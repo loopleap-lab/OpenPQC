@@ -9,7 +9,7 @@
  * Section 7.1, item 4; see ML/KEM/scheme/ml_kem.hpp). The check is compiled into KeyGen, which must
  * still succeed for every parameter set, randomized and from a seed, and give keys that pass the
  * checks of Sections 7.2 and 7.3 and encapsulate and decapsulate to the same key. The check draws its
- * m from randombytes() (here the test's own): keypair_derand must make exactly that one call of 32
+ * m from opqc_external_randombytes() (here the test's own): keypair_derand must make exactly that one call of 32
  * bytes, which a build without the check does not make, and still be deterministic; keypair makes two
  * (d || z, then m). If either call fails, KeyGen must return OPENPQC_ERR_RNG, and if the
  * check's call fails, the keys it has computed must be zeroized. (That a passing check leaves the keys
@@ -41,7 +41,7 @@ static int failures = 0;
     } while (0)
 
 /*
- * randombytes() of the library's test-RNG variant (openpqc_core_testrng): a counter stream, so that
+ * opqc_external_randombytes() of the library's test-RNG variant (openpqc_core_testrng): a counter stream, so that
  * every call gives new bytes; it counts its calls and their lengths, and fails on call number
  * rng_fail_call (1, 2, ...; 0: never).
  */
@@ -49,8 +49,8 @@ static unsigned rng_calls, rng_fail_call;
 static size_t rng_bytes;
 static uint8_t rng_counter;
 
-int randombytes(uint8_t *out, size_t outlen);
-int randombytes(uint8_t *out, size_t outlen)
+int opqc_external_randombytes(uint8_t *out, size_t outlen);
+int opqc_external_randombytes(uint8_t *out, size_t outlen)
 {
     rng_calls++;
     if (rng_calls == rng_fail_call) {

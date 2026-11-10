@@ -13,10 +13,10 @@
  * keeps the first attempt that succeeded. Larger s means fewer rounds but more attempts computed in vain; every
  * signature still makes at most 821 attempts (FIPS 204, Appendix C). Defaults: max_attempts = 16, fill = 512,
  * chosen on an RTX 3050; a device that runs more (or fewer) attempts at once without slowing down wants a larger
- * (smaller) fill. sign_stats reports the rounds and the attempts computed by the last signing call (for a
- * hedged one of more than max_batch operations, those of its last launch); a call that is refused or makes no
- * launch leaves them unchanged. Both return OPENPQC_ERR_UNSUPPORTED on a context that is not ML-DSA's and
- * OPENPQC_ERR_INVALID_ARGUMENT for a NULL context or max_attempts = 0.
+ * (smaller) fill. sign_stats reports the rounds and the attempts computed by the last signing call (for a hedged
+ * one of more than max_batch operations, those of its last launch); a call that is refused or makes no launch
+ * reports 0 and 0, not the figures of the call before it. Both return OPENPQC_ERR_UNSUPPORTED on a context that is
+ * not ML-DSA's and OPENPQC_ERR_INVALID_ARGUMENT for a NULL context or max_attempts = 0.
  */
 
 #ifndef OPENPQC_GPU_EXPERIMENTAL_H

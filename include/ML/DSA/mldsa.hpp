@@ -11,7 +11,7 @@
 //
 //   using DSA = openpqc::ML_DSA_65;                 // openpqc/openpqc.hpp; = openpqc::mldsa::MLDSA<65>
 //   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
-//   openpqc::check(DSA::keygen(pk, sk));            // randomness from the operating system
+//   openpqc::check(DSA::keygen(pk, sk));            // randomness from opqc_randombytes (below)
 //   openpqc::check(DSA::sign(sig, message, sk));    // hedged; optional context string last
 //   bool valid = DSA::verify(sig, message, pk) == openpqc::status::ok;    // ok and only ok: valid
 //   openpqc::check(DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk));   // HashML-DSA
@@ -23,6 +23,12 @@
 // place of sk (FIPS 204, Section 3.6.3); the *_deterministic functions sign
 // with rnd = {0}^32 (Sections 3.4 and 5.2). Signing with rnd given and the
 // internal functions are for testing only, in openpqc/testing.hpp.
+//
+// keygen and the hedged signing functions (sign, prehash_sign, sign_mu) draw xi or rnd
+// through Core's opqc_randombytes (Core/opqc_platform.h): from the source that the
+// application registered with opqc_set_randombytes, else, in a library built with the
+// CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
+// opqc_external_randombytes, else from the operating system (the default).
 #pragma once
 
 #include <array>
@@ -104,7 +110,7 @@ struct MLDSA {
     using sig_out = std::span<std::uint8_t, signature_bytes>;
     using mu_in = std::span<const std::uint8_t, mu_bytes>;
 
-    // ML-DSA.KeyGen, FIPS 204 Algorithm 1 (xi from the operating system)
+    // ML-DSA.KeyGen, FIPS 204 Algorithm 1 (xi from opqc_randombytes, above)
     [[nodiscard]] static status keygen(std::span<std::uint8_t, public_key_bytes> pk,
                                        std::span<std::uint8_t, secret_key_bytes> sk) {
         return to_status(api::keygen(pk.data(), sk.data()));
@@ -126,7 +132,7 @@ struct MLDSA {
         return to_status(api::check_keypair(pk.data(), sk.data()));
     }
 
-    // ML-DSA.Sign, Algorithm 2: hedged (rnd from the operating system), and the deterministic variant
+    // ML-DSA.Sign, Algorithm 2: hedged (rnd from opqc_randombytes, above), and the deterministic variant
     [[nodiscard]] static status sign(sig_out sig, bytes message, sk_in sk, bytes ctx = {}) {
         return to_status(api::sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data()));
     }

@@ -71,7 +71,10 @@ measuring laptop: `bench/results/` is git-ignored, so they are not part of the p
 - **ML-DSA followed the same plan** (§10.3; design, experiments and measurements in
   [include/ML/DSA/README.md](../include/ML/DSA/README.md)):
   - On the RTX 3050, ML-DSA-65 reaches 716 thousand KeyGen/s, 131 thousand Sign/s and 710 thousand Verify/s
-    (kernel-only, batch 16384, DPC++); end to end that is 3.1–4.7× the AVX2 reference on all 8 CPU threads.
+    (kernel-only, batch 16384, DPC++); end to end that is 3.1–4.7× the AVX2 reference on all 8 CPU threads. These
+    figures date from October 2026, before verification began to zeroize what it computes, and were not measured
+    again; the zeroization adds 5–10.5 % to the device time of a verification launch at 8192 operations (two
+    indicative runs on the laptop, §10.3).
   - The signing loop runs in rounds of speculative attempts over the unfinished signatures; the signatures are still
     the CPU's, byte for byte.
   - Normalised per SM and per GHz: 1.0× / 1.2× / 1.2× NVIDIA's cuPQC figures for the H100 (§7.2).
@@ -361,7 +364,7 @@ if (openpqc_gpu_create(&gpu, OPENPQC_ML_KEM_768, NULL) != OPENPQC_OK)      /* de
     return -1;                                    /* no such device, no memory, or the self-test failed */
 uint8_t *pk = openpqc_gpu_malloc(gpu, n * a->public_key_bytes);           /* ... likewise sk, ct, ss, ss2 */
 int32_t *kg_st = openpqc_gpu_malloc(gpu, n * sizeof(int32_t));            /* ... likewise enc_st, dec_st */
-openpqc_status rc = openpqc_gpu_kem_keygen(gpu, pk, sk, kg_st, n);        /* coins from the OS RNG, on the host */
+openpqc_status rc = openpqc_gpu_kem_keygen(gpu, pk, sk, kg_st, n);        /* coins from opqc_randombytes, on the host */
 if (rc == OPENPQC_OK) rc = openpqc_gpu_kem_encaps(gpu, ct, ss, pk, enc_st, n);  /* status: required on every call */
 if (rc == OPENPQC_OK) rc = openpqc_gpu_kem_decaps(gpu, ss2, ct, sk, dec_st, n);
 if (rc == OPENPQC_OK) rc = openpqc_gpu_sync(gpu);                        /* OPENPQC_ERR_DEVICE: the context failed */
@@ -403,8 +406,8 @@ openpqc::sycl::Results r = gpu.sign(std::span(sig), std::span<const std::span<co
   memory from `openpqc_gpu_malloc_host` (for transfers), or, for a context of `openpqc_gpu_create_on`, the
   application's own. They are 8-byte aligned and status buffers 4-byte aligned (messages and ML-DSA signatures may
   start at any byte), and outputs must not overlap inputs. The calls refuse NULL, misaligned and pageable host memory
-  with `OPENPQC_ERR_INVALID_ARGUMENT` (on Intel GPUs under Level Zero, pageable memory used to be read as zeros, with
-  status 0). The check asks the SYCL runtime, and some memory passes it: a freed buffer under DPC++'s
+  with `OPENPQC_ERR_INVALID_ARGUMENT` (under DPC++'s Level Zero backend, pageable memory used to be read as zeros,
+  with status 0). The check asks the SYCL runtime, and some memory passes it: a freed buffer under DPC++'s
   Level Zero and on AdaptiveCpp's OpenMP host device (the runtime still reports it as the context's; a Decaps of a
   freed ciphertext returned 0 with status 0 there; AdaptiveCpp's Level Zero refused freed SLH-DSA buffers), any
   pointer on the OpenMP host device (a Decaps of a ciphertext in another GPU's device memory ended the process there),
@@ -436,19 +439,21 @@ openpqc::sycl::Results r = gpu.sign(std::span(sig), std::span<const std::span<co
   `openpqc_gpu_memcpy` waits for its copy and so for the work before it, `openpqc_gpu_memcpy_async` does not. Every
   call takes the context's lock, so threads may share a context; their calls take turns.
 - **Failures.** A device error or an exception of the SYCL runtime fails the context for good: every later call,
-  `openpqc_gpu_sync` and copy returns `OPENPQC_ERR_DEVICE`, whatever else is wrong with it, and no kernel runs; destroy
-  the context and create a new one. On CUDA a fault that is sticky (an invalid address) leaves the device unusable for
-  the rest of the process: every context on it fails, a new create on it fails, and only a new process can use the
-  device again. A device error found through the context's queue does not end the process (the header names the three
-  cases the library cannot catch: an error that the SYCL runtime gives to the SYCL context's handler instead of the
-  queue's, a failure inside the runtime itself and, on AdaptiveCpp's OpenMP host device, a buffer in another GPU's
-  device memory).
-- **Randomness.** The randomized calls draw the coins from the operating system on the host into page-locked memory
-  that the context holds, copy them into the workspace and wipe them on the host at once and in the workspace after
-  the launch. `openpqc_gpu_kem_keygen_from_seed` expands seeds d ‖ z (64 bytes per operation) stored in place of the
-  decapsulation keys (FIPS 203 §3.3), as the CPU library's `keygen_from_seed` does. Encapsulation with an m that the
-  caller chooses is for testing only (whoever knows m knows K; FIPS 203 §3.3): `openpqc_testing_gpu_kem_encaps_derand`
-  of `openpqc/sycl_testing.h`, in the library `OpenPQC::sycl_testing`, which the build makes from the same objects for
+  `openpqc_gpu_sync` and copy returns `OPENPQC_ERR_DEVICE`, whatever else is wrong with it, and no kernel runs;
+  destroy the context and create a new one. On CUDA a fault that is sticky (an invalid address) leaves the device
+  unusable for the rest of the process: every context on it fails, at its next call or `openpqc_gpu_sync` (Core's sync
+  queues a command of its own before it waits, so that a context that has queued nothing since its last wait finds the
+  fault too), a new create on it fails, and only a new process can use the device again. A device error found through
+  the context's queue does not end the process (the header names the three cases the library cannot catch: an error
+  that the SYCL runtime gives to the SYCL context's handler instead of the queue's, a failure inside the runtime
+  itself and, on AdaptiveCpp's OpenMP host device, a buffer in another GPU's device memory).
+- **Randomness.** The randomized calls draw the coins on the host through Core's `opqc_randombytes` (a source the
+  application registered with `opqc_set_randombytes`, or else the operating system) into page-locked memory that the
+  context holds, copy them into the workspace and wipe them on the host at once and in the workspace after the launch.
+  `openpqc_gpu_kem_keygen_from_seed` expands seeds d ‖ z (64 bytes per operation) stored in place of the decapsulation
+  keys (FIPS 203 §3.3), as the CPU library's `keygen_from_seed` does. Encapsulation with an m that the caller chooses
+  is for testing only (whoever knows m knows K; FIPS 203 §3.3): `openpqc_testing_gpu_kem_encaps_derand` of
+  `openpqc/sycl_testing.h`, in the library `OpenPQC::sycl_testing`, which the build makes from the same objects for
   the tests, benchmarks and examples and never installs.
 - **Signature contexts** take the n messages of a call as one `openpqc_gpu_messages` (data with n + 1 offsets, or a
   stride, and the size of data, which the device checks the offsets against: an operation whose message lies outside
@@ -611,10 +616,11 @@ CPU library on every SYCL device of the machine, for each parameter set, with ra
 [`tests/gpu/test_mlkem_sycl_faults.cpp`](../tests/gpu/test_mlkem_sycl_faults.cpp) (`mlkem_sycl_faults`) compiles the
 backend itself and makes its work fail part way by fault injection: the status entries and all outputs must read as
 failed and zero, the workspace must be zeroized, the context must stay failed, and an RNG failure must be reported;
-and a create that fails (a wrong self-test answer, a refused launch, a workspace too large for the device) must leave
-none of its device memory allocated. The test sees the self-test's device memory on every device, but a leaked
-workspace only through the device's free memory, on GPUs whose runtime reports it (three of the six GPU combinations
-below report none), and only a leak of workspace size.
+and a create that fails (a wrong self-test answer, a refused launch, a lock that throws, and on GPUs a workspace too
+large for the device) must free all the device memory it allocated, its workspace included. The test counts the USM
+allocations that Core's helpers hold (a count compiled into tests only, `OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS`), so it
+sees a leaked workspace or buffer of any size on every device, the OpenMP host included; where a GPU's runtime reports
+its free memory, the test checks that it has not shrunk by the size of the leaked workspaces as well.
 
 | SYCL implementation | Devices that passed |
 |---|---|
@@ -1260,8 +1266,10 @@ distributed with OpenPQC, and nothing in OpenPQC was derived from cuPQC binaries
    NVIDIA, Intel and Arm GPUs were reported unaffected. The arithmetic kernels therefore overwrite their polynomials
    in local memory with zeros before they end (`clear_local`).
 
-**On the CPU** the same math core is checked with valgrind: `mlkemNNN_ct` marks the coins as secret and fails on any
-branch or memory index that depends on them. A test run with a branch planted in `opqc_ct_cmov` confirmed that the
+**On the CPU** the same math core is checked with valgrind: `mlkemNNN_ct` marks the secret inputs of a fixed test
+vector (d and z, m and dk) as secret and fails on any branch or memory index that depends on them (its randomized
+rounds run on coins that are not marked), and `mlkemNNN_ct_production` does the same for Encaps and Decaps of the
+production library as built. A test run with a branch planted in `opqc_ct_cmov` confirmed that the
 check catches it. SLH-DSA's kernels follow the same rules: their control flow and memory indices depend only on the
 message digest, the indices taken from it and the digits of public messages, secrets only enter hash functions, every
 workspace section a call used is zeroized after it, and the tree kernels clear their local memory; on the CPU,
@@ -1401,20 +1409,25 @@ states the contract):
 - **Status.** Verification requires `status` (NULL or misaligned: -1); every entry is set to
   `OPENPQC_ERR_INVALID_SIGNATURE` before the first kernel, and again, waited for, when a call is refused or
   fails, so that an entry no kernel reached never reads as valid. Signing keeps `status` optional.
-- **Failures.** The context is Core's: a device error or an exception fails it for good (every call, `sync` and
-  `memcpy` whose arguments are accepted then return -2), and the workspace is zeroized once by the first call or
-  `sync` that finds the failure (a `memcpy` that finds it does not zeroize; the next accepted call, `sync` or
-  `destroy` does). After a sticky CUDA fault every context on the device fails and a new create on it returns -1:
+- **Failures.** The context is Core's: a device error or an exception fails it for good (every call, `sync` and `memcpy`
+  whose arguments are accepted then return -2), and the workspace is zeroized once by the first call or `sync` that
+  finds the failure (a `memcpy` that finds it does not zeroize; the next accepted call, `sync` or `destroy` does). After
+  a sticky CUDA fault every context on the device fails, at its next call or `sync`, and a new create on it returns -1:
   only a new process can use the device again (`mldsa_sycl_sticky` checks that another context fails and that a new
-  create fails without a context, not that it returns -1). Signing reads its counters back
-  after every round and stops at the first round that finds the context failed or incomplete, so that it can neither
-  loop for ever nor return 0 without signatures after a fault. A KeyGen call that fails zeroes pk and sk of all n
-  operations.
+  create fails without a context, not that it returns -1). Core's `sync` queues a 4-byte write of its own before it
+  waits, so that the wait reaches the device also for a context that has queued nothing since its last wait: DPC++'s
+  CUDA backend otherwise answers such a wait without asking the driver, so that the context's `sync` could return 0 on a
+  device that another context's fault had made unusable (`core_sycl_sticky` checks two such contexts). In two short runs
+  (host time, indicative, laptop): about 1–2 µs more per `sync` that waits for work on the RTX 3050 and 9–14 µs on the
+  Iris Xe; a `sync` with nothing to wait for, which cost nothing, now costs the command's round trip, 4–6 µs on the RTX
+  3050 and 22–28 µs on the Iris Xe. Signing reads its counters back after every round and stops at the first round that
+  finds the context failed or incomplete, so that it can neither loop for ever nor return 0 without signatures after a
+  fault. A KeyGen call that fails zeroes pk and sk of all n operations.
 - **Self-test and pair-wise consistency test.** `create` runs a KeyGen, a deterministic signature and two
-  verifications of fixed inputs and refuses a device that miscomputes (`OPQC_SYCL_MLDSA_SELF_TEST_FAIL`, -7).
-  `OPENPQC_MLDSA_KEYGEN_PCT`, given to `openpqc_mldsa_sycl` as a compile definition (the CMake option of that name
-  reaches the CPU library only), makes the batched KeyGen sign and verify with every key
-  pair (2.4–4.6 KiB more workspace per operation, KeyGen about as costly as KeyGen, Sign and Verify together).
+  verifications of fixed inputs and refuses a device that miscomputes (`OPQC_SYCL_MLDSA_SELF_TEST_FAIL`, -7), and then
+  zeroizes the whole workspace, so that a new context holds none of the self-test's values. The CMake option
+  `OPENPQC_MLDSA_KEYGEN_PCT` (which also reaches the CPU libraries) makes the batched KeyGen sign and verify with every
+  key pair (2.4–4.6 KiB more workspace per operation, KeyGen about as costly as KeyGen, Sign and Verify together).
 - **Inputs.** Every buffer of a call with n > 0 must be memory of the context: NULL, misaligned and pageable buffers
   are refused with -1 before anything is queued, with the gaps of ML-KEM's backend (§4.2): freed buffers pass under
   DPC++'s Level Zero and on the OpenMP host device, the OpenMP host device takes any pointer (pageable host memory
@@ -1428,10 +1441,34 @@ states the contract):
   signature; review finding F073), while the backend's own functions read decreasing offsets as the empty message
   and cannot see an end past the buffer, whose length they do not take; and `openpqc_gpu_free` overwrites what it
   frees.
-- **Still not done:** the signer does not check that s1 and s2 of a private key are in range (the CPU library
-  refuses such keys; check imported keys with `openpqc_mldsaNN_check_sk`); verification does not wipe its
-  intermediate values from the workspace; the backend's `opqc_sycl_mldsa_free` does not wipe.
-- The throughput figures of the README were measured before these changes and not again.
+- **Private keys.** The signer refuses a key whose s1 or s2 has a coefficient outside [−η, η], as the CPU library
+  does: the operation gets an all-zero signature and `OPENPQC_ERR_INVALID_SECRET_KEY` (in `status`, or as the result
+  of a backend call without one, before the signing limit), checked without a branch on a coefficient in the stage
+  that decodes sk, and acted on when the first round ends. The GPU API's signing calls, which require `status`,
+  report it there.
+- **Verification data.** Verification zeroizes every section it wrote except Â (FIPS 204 §3.6.3 lets an
+  implementation keep Â), and the workspace copy of the context string: it queues the zeroization behind its kernels
+  before it returns, so that it runs before any later work on the context, and on a failure the whole workspace is
+  zeroized, as far as the device still accepts work. Measured in two indicative runs on the RTX 3050 Laptop GPU under
+  DPC++, the project's and the review's (device time of one launch, laptop): the zeroization adds about 30 µs per
+  launch at small batches (its 7 memsets; 6–9 % at 1 and 64 operations, the project's run) and, at 8192 operations,
+  6.5–10.5 % in the project's run and 5.1–10.2 % in the review's (about 86–88, 117–118 and 155–156 ns per operation
+  for ML-DSA-44, -65 and -87: memory bandwidth). End to end, a call and its `sync` at 8192 operations took 4–5 %
+  longer in the project's run, and in the review's 7.8–12.6 % (ML-DSA-44), 4.5–9.3 % (-65) and 4.5–6.6 % (-87)
+  longer: without control of the clocks, the end-to-end figure depends on the run.
+- **Signing data.** Signing zeroizes μ of every operation, which is computed from the message, behind each launch, and
+  the workspace copy of the context string behind the last one, before it returns, also when a key is refused or a
+  signature reaches the limit (FIPS 204 §3.6.3 counts the message as sensitive in some applications; the CPU's Sign
+  destroys μ); a call that fails zeroizes the whole workspace instead, as far as the device still accepts work. Measured
+  once on the RTX 3050 under DPC++ (indicative, laptop): the two memsets, one per launch and one per call, take 2–5 µs
+  of device time each, under 1 % of a signing call at batch 1 and under 0.03 % at 8192 operations.
+  The GPU API's signing and verification calls end in the same functions of the backend (`sign_any`, `verify_any`),
+  so that both zeroizations hold for them too.
+- **Still not done:** signing leaves the challenges c of its attempts, and their flags, in the workspace until later
+  calls overwrite them or `destroy` zeroizes it (the CPU's Sign destroys c at the end of each attempt); the backend's
+  `opqc_sycl_mldsa_free` does not wipe.
+- The throughput figures of the README, and those of the Summary, were measured before these changes and not again;
+  the costs of the zeroizations and of `sync`'s command are given above.
 
 ### 10.4 FN-DSA
 

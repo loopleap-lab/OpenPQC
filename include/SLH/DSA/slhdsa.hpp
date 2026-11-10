@@ -10,7 +10,7 @@
 //
 //   using DSA = openpqc::SLH_DSA_SHAKE_128f;       // openpqc/openpqc.hpp; = openpqc::slhdsa::SLHDSA_SHAKE_128f
 //   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
-//   openpqc::check(DSA::keygen(pk, sk));            // randomness from the operating system
+//   openpqc::check(DSA::keygen(pk, sk));            // randomness from opqc_randombytes (below)
 //   openpqc::check(DSA::sign(sig, message, sk));    // hedged; optional context string last
 //   bool valid = DSA::verify(sig, message, pk) == openpqc::status::ok;    // ok and only ok: valid
 //   openpqc::check(DSA::sign_deterministic(sig, message, sk));            // the deterministic variant
@@ -21,6 +21,12 @@
 // 9.2: opt_rand = PK.seed). Key generation from given seeds, signing with
 // addrnd given and the internal functions of Section 9 are for testing only, in
 // openpqc/testing.hpp.
+//
+// keygen and the hedged signing functions (sign, prehash_sign) draw the seeds or addrnd
+// through Core's opqc_randombytes (Core/opqc_platform.h): from the source that the
+// application registered with opqc_set_randombytes, else, in a library built with the
+// CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
+// opqc_external_randombytes, else from the operating system (the default).
 //
 // Signatures are up to 49,856 bytes (SLH-DSA-*-256f), which is a lot for a
 // stack: callers that sign on small thread stacks may prefer to hold
@@ -115,7 +121,7 @@ struct SLHDSA {
     using sk_in = std::span<const std::uint8_t, secret_key_bytes>;
     using sig_out = std::span<std::uint8_t, signature_bytes>;
 
-    // slh_keygen, FIPS 205 Algorithm 21 (the seeds from the operating system)
+    // slh_keygen, FIPS 205 Algorithm 21 (the seeds from opqc_randombytes, above)
     [[nodiscard]] static status keygen(std::span<std::uint8_t, public_key_bytes> pk,
                                        std::span<std::uint8_t, secret_key_bytes> sk) {
         return to_status(api::keygen(pk.data(), sk.data()));
@@ -128,7 +134,7 @@ struct SLHDSA {
         return to_status(api::check_keypair(pk.data(), sk.data()));
     }
 
-    // slh_sign, Algorithm 22: hedged (addrnd from the operating system), and the deterministic variant
+    // slh_sign, Algorithm 22: hedged (addrnd from opqc_randombytes, above), and the deterministic variant
     [[nodiscard]] static status sign(sig_out sig, bytes message, sk_in sk, bytes ctx = {}) {
         return to_status(api::sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data()));
     }

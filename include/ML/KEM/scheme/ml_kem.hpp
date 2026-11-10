@@ -36,7 +36,9 @@
 // is never inlined (ml_kem_keygen, ml_kem_encaps, ml_kem_decaps, ...), below a
 // frame of padding (call_below_padding), and when it has returned, burn_stack
 // overwrites the stack below with zeros, further down than the algorithm
-// reached. Registers are not cleared (ML/KEM/README.md lists what remains).
+// reached (unless the library is built without the burn, CMake option
+// OPENPQC_MLKEM_STACK_BURN=OFF: see burn_stack for what that gives up).
+// Registers are not cleared (ML/KEM/README.md lists what remains).
 #pragma once
 
 #include <array>
@@ -134,26 +136,6 @@ OPENPQC_MLKEM_NOINLINE void clear_stack() {
     opqc_zeroize(stack.data(), stack.size());
 }
 
-// The stack burn, called right after call_below_padding (below), from the same caller: touches (and
-// zeroizes) the stack that clear_stack will use, then clears it with one array, which covers the bytes that
-// the frames of touch_stack leave between their arrays (return addresses, stack-protector canaries,
-// padding). Every operation therefore needs a little more than stack_burn_bytes of stack below its caller
-// (openpqc_mlkem.h).
-//
-// OPENPQC_MLKEM_TEST_NO_STACK_BURN (tests only) leaves the burn out. The burn overwrites every frame in
-// which the named wipes (ZeroizeOnExit) and the destructor of Poly run, so as long as it is there, no
-// test can tell whether they still destroy what they guard; tests/ML-KEM builds copies of mlkem.cpp with
-// this definition, each linked into a test program of its own (mlkem_stack_noburn, _noburn_pct), to check
-// them alone. The library's targets never define it, and nothing else may: a library built so does not
-// meet Section 3.3.
-template <ParameterSet P>
-void burn_stack() {
-#if !defined(OPENPQC_MLKEM_TEST_NO_STACK_BURN)
-    touch_stack<stack_burn_bytes<P> + 1024>();
-    clear_stack<stack_burn_bytes<P>>();
-#endif
-}
-
 // The first bytes of the frames of touch_stack and clear_stack, right below their caller, are their own, and
 // some of them they do not write: alignment padding, and with AddressSanitizer the red zones of their arrays
 // (128 and 256 bytes). With AddressSanitizer, Decaps left 32 bytes of its first frame there. So an operation
@@ -171,24 +153,73 @@ OPENPQC_MLKEM_NOINLINE Status call_below_padding(Args... args) {
     return s;
 }
 
-// The configuration of key generation. keygen_derand and keygen run the pair-wise consistency check only
-// where this header is compiled with OPENPQC_MLKEM_KEYGEN_PCT (mlkem.cpp, for a FIPS 140-3 module), and the
-// check fails on purpose with OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST (tests only). Each translation unit that
-// uses these templates for a parameter set has its own copy of them, and the linker keeps one copy per
-// name. Under one name for every configuration, the copy of an application compiled without the check could
-// take the place of the library's, and KeyGen would return keys that were never checked (and the program
-// would break C++'s one-definition rule): with Clang 23, which calls keygen_derand out of line from the C
-// API, an application that instantiated it had that effect, and ml_kem_keygen_derand below is out of line
-// with every compiler. So each configuration defines them in an inline namespace of its own: part of the
-// names the linker sees, not of the names that callers write.
-#if defined(OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST)
-#define OPENPQC_MLKEM_KEYGEN_CONFIGURATION keygen_pct_breakage_test
-#elif defined(OPENPQC_MLKEM_KEYGEN_PCT)
-#define OPENPQC_MLKEM_KEYGEN_CONFIGURATION keygen_pct
-#else
-#define OPENPQC_MLKEM_KEYGEN_CONFIGURATION keygen_no_pct
+// The configuration. Two settings change the bodies of the templates below:
+//   - the pair-wise consistency check after KeyGen, which keygen_derand and keygen run only where this
+//     header is compiled with OPENPQC_MLKEM_KEYGEN_PCT (mlkem.cpp, for a FIPS 140-3 module; the CMake
+//     option of that name), and which fails on purpose with OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST (tests
+//     only);
+//   - the stack burn after every operation, which burn_stack leaves out where this header is compiled with
+//     OPENPQC_MLKEM_NO_STACK_BURN (mlkem.cpp; the CMake option OPENPQC_MLKEM_STACK_BURN=OFF).
+// Each translation unit that uses these templates for a parameter set has its own copy of them, and the
+// linker keeps one copy per name. Under one name for every configuration, the copy of an application
+// compiled otherwise could take the place of the library's (and the program would break C++'s
+// one-definition rule): KeyGen would return keys that were never checked, or the operations of a library
+// built with the burn would return without it. With Clang 23, which calls keygen_derand out of line from the
+// C API, an application that instantiated it without the check had the first effect, and
+// ml_kem_keygen_derand below is out of line with every compiler. So each configuration defines them in an
+// inline namespace of its own, named after the check and the burn: part of the names the linker sees, not
+// of the names that callers write.
+//
+//   pct_burn, no_pct_burn (the default)              with the stack burn
+//   pct_no_burn, no_pct_no_burn                      without it
+//   pct_breakage_test_burn, pct_breakage_test_no_burn  the check made to fail (tests only)
+//
+// Copies built in one configuration with other compiler flags still share their names.
+#if defined(OPENPQC_MLKEM_TEST_NO_STACK_BURN) && !defined(OPENPQC_MLKEM_NO_STACK_BURN)
+#define OPENPQC_MLKEM_NO_STACK_BURN   // the earlier name of the setting, still accepted
 #endif
-inline namespace OPENPQC_MLKEM_KEYGEN_CONFIGURATION {
+#if !defined(OPENPQC_MLKEM_NO_STACK_BURN)
+#if defined(OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST)
+#define OPENPQC_MLKEM_CONFIGURATION pct_breakage_test_burn
+#elif defined(OPENPQC_MLKEM_KEYGEN_PCT)
+#define OPENPQC_MLKEM_CONFIGURATION pct_burn
+#else
+#define OPENPQC_MLKEM_CONFIGURATION no_pct_burn
+#endif
+#else
+#if defined(OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST)
+#define OPENPQC_MLKEM_CONFIGURATION pct_breakage_test_no_burn
+#elif defined(OPENPQC_MLKEM_KEYGEN_PCT)
+#define OPENPQC_MLKEM_CONFIGURATION pct_no_burn
+#else
+#define OPENPQC_MLKEM_CONFIGURATION no_pct_no_burn
+#endif
+#endif
+inline namespace OPENPQC_MLKEM_CONFIGURATION {
+
+// The stack burn, called right after call_below_padding (above), from the same caller: touches (and
+// zeroizes) the stack that clear_stack will use, then clears it with one array, which covers the bytes that
+// the frames of touch_stack leave between their arrays (return addresses, stack-protector canaries,
+// padding). Every operation therefore needs a little more than stack_burn_bytes of stack below its caller
+// (openpqc_mlkem.h).
+//
+// Built with OPENPQC_MLKEM_NO_STACK_BURN, burn_stack does nothing. The operations still destroy every
+// value that the code names (ZeroizeOnExit, the destructor of Poly), but the stack below them is no longer
+// overwritten: the copies that the compiler made in stack slots of its own, and what the helpers of the
+// math core and of Core left in their frames, stay there until something overwrites them. Section 3.3's
+// "only the designated output can be retained in memory" then holds only as far as the compiler keeps no
+// secret outside what the code names. With GCC 16 and Clang 23 at -O3 on x86-64, no secret of the
+// operations was found in those bytes (tests/ML-KEM, mlkem_stack_noburn), but 1.3 to 11.4 KB below the
+// calls still depended on their data. The burn overwrites every frame in which the named wipes run, so as
+// long as it is there, no test can tell whether they still destroy what they guard; tests/ML-KEM builds
+// copies of mlkem.cpp without it (mlkem_stack_noburn, _noburn_pct) to check them alone.
+template <ParameterSet P>
+void burn_stack() {
+#if !defined(OPENPQC_MLKEM_NO_STACK_BURN)
+    touch_stack<stack_burn_bytes<P> + 1024>();
+    clear_stack<stack_burn_bytes<P>>();
+#endif
+}
 
 // Section 7.1, item 4, pair-wise consistency: Decaps_internal(dk, c) == K for
 // (K, c) = Encaps_internal(ek, m) and a random m. FIPS 203 makes this check
@@ -265,9 +296,6 @@ Status keygen(std::span<std::uint8_t, Sizes<P>::ek> ek, std::span<std::uint8_t, 
     burn_stack<P>();
     return s;
 }
-
-} // namespace OPENPQC_MLKEM_KEYGEN_CONFIGURATION
-#undef OPENPQC_MLKEM_KEYGEN_CONFIGURATION
 
 // Algorithm 20, lines 5-6, with m given; checks ek first (Section 7.2). Call it as encaps_derand.
 template <ParameterSet P>
@@ -364,6 +392,9 @@ Status check_key_pair(std::span<const std::uint8_t, Sizes<P>::ek> ek, std::span<
     burn_stack<P>();
     return s;
 }
+
+} // namespace OPENPQC_MLKEM_CONFIGURATION
+#undef OPENPQC_MLKEM_CONFIGURATION
 
 OPENPQC_ABI_END
 } // namespace openpqc::mlkem

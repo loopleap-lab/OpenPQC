@@ -20,8 +20,8 @@ Path prefixes used throughout:
 | `STYLE` | `workspace:openpqc-style.md`: the conventions SLH-DSA must follow, with decisions marked [SLH] (fixed) and [open] |
 | `ORACLE`, `ERRATA`, `GPUINFRA`, `GPULIT` | `workspace:sphincsplus-oracle.md`, `workspace:errata-acvp.md`, `workspace:gpu-infra.md`, `workspace:gpu-literature.md` |
 
-`workspace:` is the SLH-DSA working-notes directory `docs/slhdsa-notes/`, which stays on the machine that wrote it and
-is not part of the published repository.
+`workspace:` names a file of the SLH-DSA working notes, which stay on the machine that wrote them and are not part of
+the published repository.
 
 Classification legend (used in every catalog row; same meaning as in [ML-DSA.md](ML-DSA.md)):
 

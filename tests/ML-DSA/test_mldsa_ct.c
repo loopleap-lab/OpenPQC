@@ -6,7 +6,7 @@
 /*
  * test_mldsa_ct.c -- constant-time test of ML-DSA, run under valgrind (memcheck)
  *
- * randombytes() marks every byte it returns as undefined for valgrind, so the
+ * opqc_external_randombytes() marks every byte it returns as undefined for valgrind, so the
  * seed xi of KeyGen and the randomness rnd of signing, and everything computed
  * from them (rho', K, s1, s2, t0, y, w, ...), are secret. valgrind reports any
  * branch and any memory index that depends on such a value. The library is
@@ -30,10 +30,10 @@
 
 #include "ML/DSA/openpqc_mldsa.h"
 
-int randombytes(uint8_t *out, size_t n);
+int opqc_external_randombytes(uint8_t *out, size_t n);
 
 /* xorshift64*, marked as secret */
-int randombytes(uint8_t *out, size_t n)
+int opqc_external_randombytes(uint8_t *out, size_t n)
 {
     static uint64_t state = UINT64_C(0x0123456789ABCDEF);
     for (size_t i = 0; i < n; i++) {

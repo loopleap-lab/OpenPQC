@@ -91,6 +91,21 @@ if(_openpqc)
                                                          C_EXTENSIONS OFF)
     add_test(NAME slhdsa_pct_odr COMMAND test_slhdsa_pct_odr)
 
+    #   slhdsa_fresh   keypair, sign and prehash_sign of the library as built (randomness from Core, by
+    #                  default the operating system) draw fresh random values for every call (FIPS 205,
+    #                  Algorithms 21-23): no seed, PK.root, R or signature repeats, none equals the output of
+    #                  all-zero seeds, of an all-zero addrnd or of the deterministic variant; and with a
+    #                  recording source registered through opqc_set_randombytes(), every call draws once and
+    #                  equals its _derand function on the bytes drawn
+    #   slhdsa_fresh_control   the same checks with sources that give the same bytes on every call (registered
+    #                  with opqc_set_randombytes()): they must report the repeats
+    add_executable(test_slhdsa_fresh test_slhdsa_fresh.c)
+    target_link_libraries(test_slhdsa_fresh PRIVATE openpqc_slhdsa openpqc_strict_warnings)
+    set_target_properties(test_slhdsa_fresh PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
+                                                       C_EXTENSIONS OFF)
+    add_test(NAME slhdsa_fresh COMMAND test_slhdsa_fresh)
+    add_test(NAME slhdsa_fresh_control COMMAND test_slhdsa_fresh control)
+
     #   slhdsa_stack   no secret intermediate values left on the stack after KeyGen, Sign and Verify
     #                  (FIPS 205, Section 3.1), also in the byte-swapped word images of SHA-2's message
     #                  schedule and in the words that SHA-2's compressions leave; the library as built,
@@ -160,14 +175,18 @@ if(_openpqc)
         add_test(NAME slhdsa_stack_pct COMMAND test_slhdsa_stack_pct ${_frames})
     endif()
 
-    #   slhdsa_ct   test_slhdsa_ct.c under valgrind: randombytes() marks its output as secret, the library
+    #   slhdsa_ct   test_slhdsa_ct.c under valgrind: its opqc_external_randombytes() (the randomness of
+    #               openpqc_core_testrng) marks its output as secret, the library
     #               (built with OPQC_CT_TESTING) declassifies what FIPS 205 makes public, and valgrind
     #               fails on any branch or memory index that depends on a secret
     #   slhdsa_O2_ct  the same with the library compiled at -O2 whatever the build type, so that a Debug
     #               build (-O0) also checks optimized code (one level: each run takes about 10 minutes);
     #               not in a sanitizer build, whose programs valgrind cannot run
-    # Objects and programs are compiled without the x86-64 extensions that valgrind cannot decode
-    # (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt).
+    # The copies of the library for these tests are compiled as the library's objects are: with its warning and
+    # hardening options (openpqc_strict_warnings, with -fstack-clash-protection where the compiler has it) and as
+    # position-independent code. So they differ from it only in OPQC_CT_TESTING, the level (in slhdsa_O2_ct), and
+    # the x86-64 extensions that valgrind cannot decode, which the copies and the test programs are compiled
+    # without (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt).
     find_program(OPENPQC_VALGRIND valgrind)
     find_path(OPENPQC_VALGRIND_INCLUDE_DIR valgrind/memcheck.h)
     if(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
@@ -192,6 +211,8 @@ if(_openpqc)
                                                            ${OPENPQC_VALGRIND_INCLUDE_DIR})
             target_compile_definitions(${_objects} PRIVATE OPQC_CT_TESTING)
             target_compile_features(${_objects} PRIVATE cxx_std_20)
+            target_link_libraries(${_objects} PRIVATE openpqc_strict_warnings)
+            set_target_properties(${_objects} PROPERTIES POSITION_INDEPENDENT_CODE ON)
             # a target's options come after those of the build type, so -${opt} wins
             target_compile_options(${_objects} PRIVATE ${OPENPQC_CT_ISA_FLAGS} $<$<BOOL:${opt}>:-${opt}>)
             add_executable(test_${_name} test_slhdsa_ct.c $<TARGET_OBJECTS:${_objects}>)

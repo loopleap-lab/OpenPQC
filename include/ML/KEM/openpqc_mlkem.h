@@ -65,13 +65,14 @@
  * to the same key (OPENPQC_ERR_PCT; OPENPQC_ERR_RNG without randomness for m). Comparisons of secret values run in
  * constant time, and every intermediate value is destroyed.
  *
- * Randomness. keygen, encaps and check_keypair take their randomness from the operating system
- * (Core/opqc_platform.h).
+ * Randomness. keygen, encaps and check_keypair take their randomness from opqc_randombytes (Core/opqc_platform.h): from
+ * the source that the application registered with opqc_set_randombytes, or else from the operating system, or, in a
+ * library built with the CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes.
  *
  * Pair-wise consistency test (FIPS 140-3). If mlkem.cpp is compiled with the definition OPENPQC_MLKEM_KEYGEN_PCT
  * (the CMake option OPENPQC_MLKEM_KEYGEN_PCT gives it to the library's objects; the tests compile their own
  * copies, tests/ML-KEM), keygen and keygen_from_seed check every new key pair as FIPS 203, Section 7.1, item 4
- * describes. keygen_from_seed then takes 32 bytes from the operating system as well, for the test's m. If they are
+ * describes. keygen_from_seed then takes 32 bytes from opqc_randombytes as well, for the test's m. If they are
  * not available (OPENPQC_ERR_RNG) or the check fails (OPENPQC_ERR_PCT), pk and sk are zeroized. A key pair that
  * passes is not changed: keygen_from_seed gives the same keys for the same seed with and without the check. The
  * check is a property of the compiled library: the library's copy of the scheme layer carries names of its own
@@ -79,22 +80,28 @@
  * of key generation, which cannot take the place of the library's.
  *
  * Destruction of intermediate values (FIPS 203, Section 3.3). keygen, keygen_from_seed, encaps, decaps and
- * check_keypair destroy their intermediate values before they return: the code zeroizes what it names, and then
- * the stack the operation used is overwritten with zeros, which removes what the compiler kept in stack slots of
- * its own. Registers are not cleared. ML/KEM/README.md says what that covers.
+ * check_keypair destroy their intermediate values before they return: the code zeroizes what it names, and then the
+ * stack the operation used is overwritten with zeros, which removes what the compiler kept in stack slots of its own
+ * (the stack burn). A library built with the CMake option OPENPQC_MLKEM_STACK_BURN=OFF leaves the burn out: it still
+ * zeroizes what the code names, but the copies that the compiler kept in stack slots of its own stay on the stack until
+ * something overwrites them. The setting is part of the names of the scheme templates (ML/KEM/scheme), so an
+ * application's own copies of them, compiled with the other setting, cannot take the place of the library's. Registers
+ * are not cleared. ML/KEM/README.md says what that covers.
  *
- * Stack. For that, keygen, keygen_from_seed, encaps and decaps need about 48, 58 and 68 KiB of stack below their
- * caller for ML-KEM-512, -768 and -1024 (the 44, 54 and 64 KiB they overwrite, and the frames above it; 56, 68
- * and 79 KiB with AddressSanitizer); check_pk and check_sk need at most about 9 KiB, and check_keypair as much as
- * KeyGen. Unoptimized builds (-O0, GCC 16 and Clang 23) stay within these sizes too, by a small margin (ML-KEM-1024
- * with Clang 23: 69,512 of the 69,632 bytes). The library is compiled with -fstack-clash-protection where the
- * compiler has it (cmake/OpenPQCWarnings.cmake), so that on a stack that is too small a call ends in a fault at the
- * guard page (tests/ML-KEM, mlkem_thread_stack). Built without it, the frames of Encaps and Decaps of ML-KEM-768
- * and -1024 and of KeyGen of ML-KEM-1024, larger than a page, can write below the guard page first: with Clang 23
- * at -O3, they changed memory up to about 15 KB below a 4 KiB guard page with 16 KiB of stack left below the
- * caller, and up to about 5 KB with 28 KiB (GCC 16: Decaps of ML-KEM-768 and KeyGen, Encaps and Decaps of
- * ML-KEM-1024, up to about 9 KB). Code that compiles the scheme templates itself (ML/KEM/scheme) needs the flag as
- * well.
+ * Stack. For that, keygen, keygen_from_seed, encaps and decaps need about 48, 58 and 68 KiB of stack below their caller
+ * for ML-KEM-512, -768 and -1024 (the 44, 54 and 64 KiB they overwrite, and the frames above it; 56, 68 and 79 KiB with
+ * AddressSanitizer); check_pk and check_sk need at most about 9 KiB, and check_keypair as much as KeyGen. Unoptimized
+ * builds (-O0, GCC 16 and Clang 23) stay within these sizes too, by a small margin (ML-KEM-1024 with Clang 23: 69,512
+ * of the 69,632 bytes). Built with OPENPQC_MLKEM_STACK_BURN=OFF, the functions need only what their frames use, at -O3
+ * on x86-64 at most about 17, 24 and 33 KiB with GCC 16 and 21, 30 and 39 KiB with Clang 23 (with or without the
+ * pair-wise consistency test), and the sizes above remain an upper bound for such a library. The library is compiled
+ * with -fstack-clash-protection where the compiler has it (cmake/OpenPQCWarnings.cmake), so that on a stack that is too
+ * small a call ends in a fault at the guard page (tests/ML-KEM, mlkem_thread_stack). Built without that flag, the
+ * frames of Encaps and Decaps of ML-KEM-768 and -1024 and of KeyGen of ML-KEM-1024, larger than a page, can write below
+ * the guard page first: with Clang 23 at -O3, they changed memory up to about 15 KB below a 4 KiB guard page with 16
+ * KiB of stack left below the caller, and up to about 5 KB with 28 KiB (GCC 16: Decaps of ML-KEM-768 and KeyGen, Encaps
+ * and Decaps of ML-KEM-1024, up to about 9 KB). Code that compiles the scheme templates itself (ML/KEM/scheme) needs
+ * the flag as well.
  *
  * The result codes keep the values of mlkem-native's MLK_ERR_* codes, on which earlier OpenPQC versions were
  * built. The implementation is ML/KEM/mlkem.cpp, with the algorithms in ML/KEM/scheme.

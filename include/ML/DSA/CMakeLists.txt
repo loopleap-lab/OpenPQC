@@ -11,9 +11,10 @@
 #   sycl/              batched ML-DSA on GPUs and other SYCL devices (optional)
 #
 # Targets:
-#   openpqc_mldsa_objects   the compiled C API, which goes into the library openpqc (top-level CMakeLists.txt)
+#   openpqc_mldsa_objects   the compiled C API, which goes into the library openpqc (top-level CMakeLists.txt);
+#                           randomness from Core (opqc_randombytes: by default the operating system)
 #   openpqc_mldsa           the same objects as a static library, for the tests and benchmarks
-#   openpqc_mldsa_testrng   the same, with randomness from the application's randombytes() (tests only)
+#   openpqc_mldsa_testrng   the same, with randomness from the application's opqc_external_randombytes() (tests only)
 #   (both built only when a test or benchmark needs them)
 #   openpqc_mldsa_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
 #                           library for the benchmarks (top-level CMakeLists.txt; the tests use OpenPQC::sycl_testing)
@@ -50,4 +51,10 @@ if(OPENPQC_HAVE_SYCL)
     _openpqc_sycl_backend(openpqc_mldsa_sycl sycl/mldsa_sycl.cpp)   # top-level CMakeLists.txt
     add_library(openpqc::mldsa_sycl ALIAS openpqc_mldsa_sycl)
     target_link_libraries(openpqc_mldsa_sycl PUBLIC openpqc_core openpqc_core_sycl)
+    # KeyGen with the pair-wise consistency test of FIPS 140-3 (sycl/mldsa_sycl.cpp), as for the CPU
+    # library (the option OPENPQC_MLDSA_KEYGEN_PCT, top-level CMakeLists.txt): on the backend's objects, which
+    # the libraries openpqc_sycl and openpqc_sycl_testing and the static openpqc_mldsa_sycl are made of
+    if(OPENPQC_MLDSA_KEYGEN_PCT)
+        target_compile_definitions(openpqc_mldsa_sycl_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
+    endif()
 endif()

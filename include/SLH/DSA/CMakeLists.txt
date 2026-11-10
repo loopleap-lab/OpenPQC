@@ -11,9 +11,9 @@
 #   sycl/              batched SLH-DSA on GPUs and other SYCL devices (optional)
 #
 # Targets:
-#   openpqc_slhdsa           the library; randomness from the operating system
+#   openpqc_slhdsa           the library; randomness from Core (opqc_randombytes: by default the operating system)
 #   openpqc_slhdsa_testrng   the same code, randomness from the application's
-#                            randombytes(), for the tests
+#                            opqc_external_randombytes(), for the tests
 #   openpqc_slhdsa_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
 #                           library for the benchmarks (top-level CMakeLists.txt; the tests use OpenPQC::sycl_testing)
 #
@@ -53,9 +53,10 @@ add_library(openpqc::slhdsa ALIAS openpqc_slhdsa)
 # executable (the backend's own compile: about 1.2 minutes), mostly for the fully unrolled SHA-2 rounds. For
 # development builds, OPENPQC_SLHDSA_SYCL_SETS=<id>[,<id>...] (the OPENPQC_SLHDSA_* ids, 1-12) compiles only
 # those sets (two sets: about 1.3 minutes per executable), and -DOPQC_SHA2_UNROLL_PASSES=1 in OPENPQC_SYCL_FLAGS
-# rolls the SHA-2 rounds (all twelve: about 2 minutes; the same bytes, SHA-2 6-11 % slower on the GPUs,
-# docs/slhdsa-notes/experiments/H1.md). The set filter is public, so that the tests and benchmarks skip the
-# other sets. Empty (the default): all twelve.
+# rolls the SHA-2 rounds (all twelve: about 2 minutes; the same bytes, SHA-2 6-11 % slower on the GPUs, as
+# measured in October 2026 with the DPC++ nightly of 2026-10-11 and AdaptiveCpp on an RTX 3050 Laptop and an
+# Iris Xe). The set filter is public, so that the tests and benchmarks skip the other sets. Empty (the
+# default): all twelve.
 set(OPENPQC_SLHDSA_SYCL_SETS "" CACHE STRING
     "Development only: the SLH-DSA parameter-set ids (1-12) that the SYCL backend contains, e.g. 3,4; empty: all")
 if(OPENPQC_HAVE_SYCL)

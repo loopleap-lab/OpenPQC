@@ -12,7 +12,7 @@
 //   using KEM = openpqc::ML_KEM_768;            // openpqc/openpqc.hpp; = openpqc::mlkem::MLKEM<768>
 //   KEM::public_key pk;  KEM::secret_key sk;
 //   KEM::ciphertext ct;  KEM::shared_secret ss, ss2;
-//   openpqc::check(KEM::keygen(pk, sk));        // randomness from the operating system
+//   openpqc::check(KEM::keygen(pk, sk));        // randomness from opqc_randombytes (below)
 //   openpqc::check(KEM::encaps(ct, ss, pk));    // checks pk first (FIPS 203, Section 7.2)
 //   openpqc::check(KEM::decaps(ss2, ct, sk));   // ss2 == ss
 //
@@ -22,6 +22,12 @@
 // openpqc::secret and C arrays all fit. keygen_from_seed expands a seed d || z
 // stored in place of dk (FIPS 203, Section 3.3); encapsulation with m given is
 // for testing only, in openpqc/testing.hpp.
+//
+// keygen and encaps draw their random values through Core's opqc_randombytes
+// (Core/opqc_platform.h): from the source that the application registered with
+// opqc_set_randombytes, else, in a library built with the CMake option
+// OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes,
+// else from the operating system (the default).
 #pragma once
 
 #include <array>
@@ -80,7 +86,7 @@ struct MLKEM {
     using shared_secret = openpqc::secret<shared_secret_bytes>;
     using seed = openpqc::secret<seed_bytes>;
 
-    // ML-KEM.KeyGen, FIPS 203 Algorithm 19 (d and z from the operating system). If the library is built with
+    // ML-KEM.KeyGen, FIPS 203 Algorithm 19 (d and z from opqc_randombytes, above). If the library is built with
     // OPENPQC_MLKEM_KEYGEN_PCT, the pair-wise consistency test follows (openpqc_mlkem.h).
     [[nodiscard]] static status keygen(std::span<std::uint8_t, public_key_bytes> pk,
                                        std::span<std::uint8_t, secret_key_bytes> sk) {
@@ -94,7 +100,7 @@ struct MLKEM {
         return to_status(api::keygen_from_seed(pk.data(), sk.data(), d_z.data()));
     }
 
-    // ML-KEM.Encaps, Algorithm 20 (m from the operating system), after the check of ek (Section 7.2)
+    // ML-KEM.Encaps, Algorithm 20 (m from opqc_randombytes, above), after the check of ek (Section 7.2)
     [[nodiscard]] static status encaps(std::span<std::uint8_t, ciphertext_bytes> ct,
                                        std::span<std::uint8_t, shared_secret_bytes> ss,
                                        std::span<const std::uint8_t, public_key_bytes> pk) {

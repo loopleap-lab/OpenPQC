@@ -97,11 +97,12 @@
  * the computation of the top XMSS tree. A program for production use calls keygen, sign or prehash_sign (or, without
  * a random bit generator, their deterministic variants), and verify or prehash_verify.
  *
- * Randomness. keygen draws the three seeds with one call of 3n bytes, in the order SK.seed, SK.prf, PK.seed, and
- * sign and prehash_sign draw addrnd, from the operating system (Core/opqc_platform.h). The set ids
- * OPENPQC_SLHDSA_<SET> number the parameter sets in the order of Table 2; they are the low byte of the sets'
- * openpqc_alg values (openpqc/common.h). The implementation is SLH/DSA/slhdsa.cpp, with the algorithms in
- * SLH/DSA/scheme.
+ * Randomness. keygen draws the three seeds with one call of 3n bytes, in the order SK.seed, SK.prf, PK.seed, and sign
+ * and prehash_sign draw addrnd, from opqc_randombytes (Core/opqc_platform.h): from the source that the application
+ * registered with opqc_set_randombytes, or else from the operating system, or, in a library built with the CMake option
+ * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes. The set ids OPENPQC_SLHDSA_<SET>
+ * number the parameter sets in the order of Table 2; they are the low byte of the sets' openpqc_alg values
+ * (openpqc/common.h). The implementation is SLH/DSA/slhdsa.cpp, with the algorithms in SLH/DSA/scheme.
  *
  * Linking. The functions are in the library openpqc: OpenPQC::openpqc in CMake (find_package(OpenPQC), or
  * add_subdirectory), openpqc for pkg-config. Its C++ code is compiled without exceptions and RTTI and needs nothing

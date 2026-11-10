@@ -81,14 +81,14 @@
 
 /*
  * OPENPQC_API: on every function of the C APIs (the schemes', the GPU
- * backends', and Core's opqc_randombytes, opqc_zeroize and openpqc_version).
- * The libraries are compiled with hidden visibility (-fvisibility=hidden), so
- * that a shared library exports these functions and nothing else: the C++
- * layers inside it stay out of its dynamic symbol table, where another shared
- * object could interpose them (decision D3 (b); for static libraries,
- * Core/abi.hpp keeps an application's copies of the C++ layers apart). With
- * GCC and Clang, default visibility. On Windows, dllexport while a DLL of
- * OpenPQC is built (OPENPQC_SHARED_BUILD) and dllimport for its users
+ * backends', and Core's opqc_randombytes, opqc_set_randombytes, opqc_zeroize
+ * and openpqc_version). The libraries are compiled with hidden visibility
+ * (-fvisibility=hidden), so that a shared library exports these functions and
+ * nothing else: the C++ layers inside it stay out of its dynamic symbol table,
+ * where another shared object could interpose them (decision D3 (b); for static
+ * libraries, Core/abi.hpp keeps an application's copies of the C++ layers
+ * apart). With GCC and Clang, default visibility. On Windows, dllexport while a
+ * DLL of OpenPQC is built (OPENPQC_SHARED_BUILD) and dllimport for its users
  * (OPENPQC_SHARED); both are set by the CMake targets. Windows is not tested.
  */
 #if defined(_WIN32) || defined(__CYGWIN__)

@@ -21,7 +21,7 @@ compare their behavior and performance across hardware platforms.
   runs on NVIDIA and Intel GPUs.
 - **Check against independent implementations.** Differential tests compare results byte for byte
   with mlkem-native, CRYSTALS-Dilithium, and SPHINCS+. The suite also includes known-answer tests,
-  NIST ACVP vectors, and ML-KEM Wycheproof tests.
+  NIST ACVP vectors, and ML-KEM and ML-DSA Wycheproof tests.
 - **Learn by running.** Start with the Jupyter tutorial, then explore standalone API examples,
   application demos, and CPU/GPU benchmarks.
 
@@ -40,7 +40,8 @@ before you use it, and use a validated module for production and FIPS deployment
 | **SLH-DSA** | FIPS 205 | All 12 SHA2/SHAKE sets: 128s/f, 192s/f, 256s/f | Key generation, signing, verification; HashSLH-DSA |
 
 The shared core provides Keccak-f[1600], SHA-3, SHAKE, SHA-2, the twelve pre-hash functions used by
-HashML-DSA and HashSLH-DSA, constant-time helpers, OS randomness, and zeroization.
+HashML-DSA and HashSLH-DSA, constant-time helpers, randomness (the operating system's, or a source the
+application registers), and zeroization.
 
 All of it is one library, `openpqc` (CMake target `OpenPQC::openpqc`). The GPU API, `openpqc/sycl.h` in the
 library `openpqc_sycl` (`OpenPQC::sycl`), runs operations in batches, with one context type for all 18 parameter
@@ -389,8 +390,8 @@ OpenPQC's tests cover the math core, scheme APIs, and CPU/GPU agreement:
   [mlkem-native](https://github.com/pq-code-package/mlkem-native),
   [CRYSTALS-Dilithium](https://github.com/pq-crystals/dilithium), and
   [SPHINCS+](https://github.com/sphincs/sphincsplus).
-- **Test vectors:** known-answer tests and NIST ACVP vectors for all three schemes, plus
-  Wycheproof tests for ML-KEM.
+- **Test vectors:** known-answer tests and NIST ACVP vectors for all three schemes and for SHA-2, SHA-3
+  and SHAKE, plus Wycheproof tests for ML-KEM and ML-DSA.
 - **Implementation checks:** math-core tests, malformed-input cases, Valgrind-based constant-time
   tests, stack-residue tests, and comparisons between SYCL and CPU results, with the GPU error contract
   and fault injection.
@@ -406,10 +407,10 @@ reference implementations; it does not mean ready for production ([Maturity and 
 
 | Group | CPU | GPU | Tests |
 | --- | --- | --- | --- |
-| Core | Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11); the twelve pre-hash functions of HashML-DSA and HashSLH-DSA with their OIDs; constant-time helpers, OS randomness that fails closed, zeroization and stack clearing | the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message and workspace helpers; the context that the three backends share: a lock, a failed state after a device error, wiping of the workspace, page-locked coin staging | known answers, incremental vs one-shot, the sponge's phase checks, stack and register residue (also 32-bit x86), constant time at -O0 to -Os (valgrind) and branch-free assembly on seven processors (compile only), the RNG's failure paths, the OID table; on the GPU the helpers and the context's failure handling |
-| ML-KEM | implemented (512/768/1024), C11/C++20; optional pair-wise consistency test | SYCL: batched KeyGen (also from seeds d ‖ z)/Encaps/Decaps through the GPU API (`openpqc/sycl.h`), all parameter sets; status required on every call and fail-closed, a known-answer self-test when a context is created; Encaps with given randomness only in the testing library (`OpenPQC::sycl_testing`); no pair-wise consistency test | KAT, ACVP (435 cases), Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind constant-time tests (also of the library at fixed optimization levels), stack-residue tests, fresh randomness, the pair-wise consistency test; SYCL: byte identity, the error contract and fault injection on every device |
-| ML-DSA | implemented (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20; malformed private keys refused, key checks; optional pair-wise consistency test | SYCL: batched KeyGen (also from seeds xi)/Sign/Verify (messages or mu; hedged or deterministic; one key per operation or one for all), all parameter sets; status required on every call and fail-closed, a known-answer self-test when a context is created, the optional pair-wise consistency test; HashML-DSA through mu; signing with given randomness only in the testing library; the signer does not check private keys | KAT, ACVP (1335 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), exhaustive math tests, valgrind constant-time tests (also at fixed levels), malformed private keys, stack-residue and thread-stack tests; SYCL: byte identity, the error contract and fault injection on every device |
-| SLH-DSA | implemented (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic and hedged signing, the internal functions), C11/C++20; optional pair-wise consistency test | SYCL: batched KeyGen/Sign/Verify, also pre-hash (PH(M) given) and one-key, hedged or deterministic, all parameter sets; status required on every call and fail-closed; the internal functions and signing with given randomness only in the backend's internal API and the testing library; no self-test and no pair-wise consistency test; the baseline pipeline only (the optimisation experiments are planned, not done) | KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), math-core tests against transcriptions of the standard, valgrind constant-time test (also at -O2), stack-residue and short-stack tests; SYCL: byte identity, fresh randomness and fault injection on every device |
+| Core | Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11); the twelve pre-hash functions of HashML-DSA and HashSLH-DSA with their OIDs; constant-time helpers, randomness that fails closed (the operating system's, or a source the application registers or links), zeroization and stack clearing | the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message and workspace helpers; the context that the three backends share: a lock, a failed state after a device error, wiping of the workspace, page-locked coin staging | known answers, incremental vs one-shot, the sponge's phase checks, stack and register residue (also 32-bit x86), constant time at -O0 to -Os (valgrind) and branch-free assembly on seven processors (compile only), the RNG's failure paths and registered sources, NIST ACVP for SHA-2, SHA-3 and SHAKE, the OID table; on the GPU the helpers and the context's failure handling |
+| ML-KEM | implemented (512/768/1024), C11/C++20; optional pair-wise consistency test; the stack burn can be left out (`OPENPQC_MLKEM_STACK_BURN`) | SYCL: batched KeyGen (also from seeds d ‖ z)/Encaps/Decaps through the GPU API (`openpqc/sycl.h`), all parameter sets; status required on every call and fail-closed, a known-answer self-test when a context is created; Encaps with given randomness only in the testing library (`OpenPQC::sycl_testing`); no pair-wise consistency test | KAT, ACVP (435 cases), Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind constant-time tests (also of the library at fixed optimization levels, and of Encaps and Decaps in the library as built), stack-residue tests, fresh randomness, the pair-wise consistency test; SYCL: byte identity, the error contract and fault injection on every device |
+| ML-DSA | implemented (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20; malformed private keys refused, key checks; optional pair-wise consistency test | SYCL: batched KeyGen (also from seeds xi)/Sign/Verify (messages or mu; hedged or deterministic; one key per operation or one for all), all parameter sets; status required on every call and fail-closed, a known-answer self-test when a context is created, the optional pair-wise consistency test; HashML-DSA through mu; signing with given randomness only in the testing library; malformed private keys refused, verification's values zeroized | KAT, ACVP (1335 vectors), Wycheproof (1138 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), exhaustive math tests, valgrind constant-time tests (also at fixed levels), malformed private keys, stack-residue and thread-stack tests, fresh randomness, the register clearing in the x86-64 code; SYCL: byte identity, the error contract and fault injection on every device |
+| SLH-DSA | implemented (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic and hedged signing, the internal functions), C11/C++20; optional pair-wise consistency test | SYCL: batched KeyGen/Sign/Verify, also pre-hash (PH(M) given) and one-key, hedged or deterministic, all parameter sets; status required on every call and fail-closed; the internal functions and signing with given randomness only in the backend's internal API and the testing library; no self-test and no pair-wise consistency test; the baseline pipeline only (the optimisation experiments are planned, not done) | KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), math-core tests against transcriptions of the standard, valgrind constant-time test (also at -O2), stack-residue and short-stack tests, fresh randomness; SYCL: byte identity, fresh randomness and fault injection on every device |
 | FN-DSA | planned, waiting for FIPS 206 | planned | - |
 
 ### Running the tests
@@ -422,10 +423,7 @@ every test that it leaves out and why (no valgrind, Python 3, OpenSSL, Clang, th
 with `--wrap`, no AVX2 build of the reference, a host that is not x86-64, a build that is not Linux with GCC or Clang,
 a sanitizer build), and CTest reports those tests as skipped (in a sanitizer build four constant-time tests are
 registered; CMake 3.28 or later disables them and CTest reports them as not run, while older CMake warns that they
-will fail), with one exception: the ML-KEM no-burn and thread-stack tests (`mlkem_stack_noburn`, `mlkem_thread_stack`
-and their `_pct` variants) are left out without a message where the build is not Linux with GCC or Clang, and the
-thread-stack tests also where threads are missing. `-DOPENPQC_REQUIRE_FULL_TESTS=ON` turns a missing tool into a
-configuration error instead.
+will fail). `-DOPENPQC_REQUIRE_FULL_TESTS=ON` turns a missing tool into a configuration error instead.
 
 Besides the schemes' own tests, the suite checks the library's interfaces: `runtime_api` (every function that
 chooses the parameter set at run time against the per-set function it stands for), `c_api_errors` (every error path
@@ -442,7 +440,8 @@ and `sycl.hpp`, linked as an application links it: every parameter set of the bu
 of checks, messages outside their buffer, launches of 3 operations, a context on the application's SYCL context, the
 C++ layer), `device_hash` (the hash functions of `openpqc/sycl/device.hpp` against Core's CPU functions, 1856 cases),
 `mlkem_sycl`, `mldsa_sycl` and `slhdsa_sycl` (the backends' own C APIs: byte identity with the CPU library, the status
-and error contract, fresh randomness, two threads on one context), `mlkem_sycl_faults`, `mldsa_sycl_faults` and
+and error contract, fresh randomness, two threads on one context), `mlkem_sycl_faults`, `mldsa_sycl_faults` (also as
+`mldsa_sycl_faults_nopct`, the backend without KeyGen's pair-wise consistency test, as built by default) and
 `slhdsa_sycl_faults` (device work that fails part way, by fault injection: fail-closed status and outputs,
 zeroization, the failed context), `core_sycl` (the helpers the backends share), and `core_sycl_sticky`,
 `mldsa_sycl_sticky` and `slhdsa_sycl_faults_sticky`, which cause a real fault on an NVIDIA GPU in a process of their
@@ -545,13 +544,15 @@ builds, with the -O0 figures given apart.
 | `OPENPQC_SYCL_FLAGS` | Empty | Extra flags for SYCL sources and, with DPC++, linking; e.g. `-DOPQC_SHA2_UNROLL_PASSES=1`, which keeps the SHA-2 rounds in loops: the same results, a DPC++ link of SLH-DSA's backend in about 2 instead of 10 minutes, SHA-256 on the GPUs measured 6–10 % slower |
 | `OPENPQC_SLHDSA_SYCL_SETS` | Empty: all 12 | Development builds: select SLH-DSA GPU parameter-set IDs (1–12, separated by commas, e.g. `3,4`; the CMake list form `3;4` does not build). DPC++ generates the device code of every set when it links `openpqc_sycl` and each white-box test that compiles the backend, about 10 minutes and 1.2 GiB for all twelve |
 | `OPENPQC_MLKEM_KEYGEN_PCT` | `OFF` | ML-KEM's KeyGen runs the pair-wise consistency test of FIPS 203 §7.1 (CPU library; SLH-DSA's test is a compile definition, see its README) |
-| `OPENPQC_MLDSA_KEYGEN_PCT` | `OFF` | ML-DSA's KeyGen runs the pair-wise consistency test of FIPS 140-3: it signs and verifies with each new key pair (CPU library; the GPU backend takes the compile definition of the same name, which the option does not give it) |
+| `OPENPQC_MLDSA_KEYGEN_PCT` | `OFF` | ML-DSA's KeyGen runs the pair-wise consistency test of FIPS 140-3: it signs and verifies with each new key pair (the CPU library and the GPU backend in `openpqc_sycl`) |
+| `OPENPQC_MLKEM_STACK_BURN` | `ON` | ML-KEM overwrites the stack below every call with zeros when it returns (44, 54 or 64 KiB, the stack burn), which removes what the compiler kept in stack slots of its own (FIPS 203 §3.3); a call then needs about 48, 58 or 68 KiB of stack and 1.3–4.0 % more cycles. `OFF` keeps the named wipes and `Poly`'s destructor but leaves the compiler's copies on the stack, and the ML-KEM tests then check the library so built (see [include/ML/KEM/README.md](include/ML/KEM/README.md#choices-that-differ-from-mlkem-native)) |
+| `OPENPQC_EXTERNAL_RANDOMBYTES` | `OFF` | The libraries, the GPU library included, take their randomness from the application's `int opqc_external_randombytes(uint8_t *out, size_t len)` instead of the operating system (`Core/opqc_platform.h`; [Security notes](#security-notes)); the project's tests, benchmarks and demos do not define that function, so configuring stops unless `OPENPQC_BUILD_TESTS`, `_BENCHMARKS` and `_EXAMPLES` are `OFF` |
 | `OPENPQC_REQUIRE_FULL_TESTS` | `OFF` | Fail the configuration when a tool that tests need is missing (Python 3, OpenSSL, valgrind, threads, Clang, and on x86-64 the 32-bit C and C++ libraries for `hash_m32`) instead of leaving those tests out |
 | `OPENPQC_SANITIZE` | Empty | Sanitizers for every target (GCC, Clang), e.g. `address,undefined`; the constant-time tests are then left out (valgrind cannot run them) |
 | `OPENPQC_TEST_TIMEOUT_FACTOR` | Empty | Multiplies the TIMEOUT of every test; empty: 10 in a sanitizer build, 3 in a Debug build, 1 otherwise |
-| `OPENPQC_MAX_FRAME_BYTES` | `196608` | The largest stack frame in the targets that link `openpqc_strict_warnings` (see `OPENPQC_WERROR`), in optimized builds without AddressSanitizer, as a warning (an error with `OPENPQC_WERROR`); 0: no limit. Core's and the schemes' CPU libraries are also compiled with `-fstack-clash-protection` where the compiler has it (not the SYCL backends, and not the copies of the scheme libraries that the constant-time tests compile) |
+| `OPENPQC_MAX_FRAME_BYTES` | `196608` | The largest stack frame in the targets that link `openpqc_strict_warnings` (see `OPENPQC_WERROR`), in optimized builds without AddressSanitizer, as a warning (an error with `OPENPQC_WERROR`); 0: no limit. Core's and the schemes' CPU libraries, and the copies of the scheme libraries that the constant-time tests compile, are also compiled with `-fstack-clash-protection` where the compiler has it (not the SYCL backends) |
 | `OPENPQC_BENCH_CYCLES` | `PERF` | Cycle counter for the single-thread CPU benchmarks: `NO`, `PERF`, `PMU`, or `MAC` |
-| `OPENPQC_VALGRIND` | Found on `PATH` | Valgrind executable for the constant-time tests: `core_*_ct`, `mlkemNNN_ct`, `mldsa_ct`, `slhdsa_ct` at the build's optimization level, and the same with the libraries compiled at fixed levels (`mlkemNNN_O1_ct` … `_Os_ct`, `mldsa_O1_ct` … `_Os_ct`, `slhdsa_O2_ct`); `OFF` leaves them out (CTest reports them as skipped) |
+| `OPENPQC_VALGRIND` | Found on `PATH` | Valgrind executable for the constant-time tests: `core_*_ct`, `mlkemNNN_ct`, `mldsa_ct`, `slhdsa_ct` at the build's optimization level, the same with the libraries compiled at fixed levels (`mlkemNNN_O1_ct` … `_Os_ct`, `mldsa_O1_ct` … `_Os_ct`, `slhdsa_O2_ct`), and `mlkemNNN_ct_production` (ML-KEM's Encaps and Decaps in the library as built); `OFF` leaves them out (CTest reports them as skipped) |
 | `OPENPQC_VALGRIND_INCLUDE_DIR` | Auto-detected | Valgrind headers for the constant-time tests |
 | `OPENPQC_CUPQC_DIR` | Empty | Optional NVIDIA cuPQC SDK path: builds the cuPQC baseline benchmarks (needs CUDA); their results are covered by NVIDIA's licence, and this repository does not publish them |
 
@@ -594,18 +595,28 @@ values on the stack; the ML-KEM GPU context takes a lock, as the other two do; t
 entries read as failures until a kernel decides them, a context that has seen a device error refuses all further work,
 and a device error found through a context's queue no longer ends the process) and the ML-KEM and ML-DSA contexts test
 the device when they are created; ML-DSA refuses malformed private keys, and its stack needs are measured, documented
-and tested; every result of the C APIs must be checked. By 2026-11-03 the review had re-verified the fixes in this
-tree on frozen copies: it rates the three high findings fixed and, of its 53 medium findings, 24 fixed, 15 partly
-fixed, 7 kept as documented limits and 1 fixed before its last snapshot; 6 have no verdict (3 are not fixed, 3 have a
-fix that was not among those re-verified). The documentation changes made after 2026-11-03 have not been re-verified.
-[SECURITY.md](SECURITY.md) lists what remains open.
+and tested; every result of the C APIs must be checked. In November 2026 a further fix round followed: ML-KEM's stack
+burn became a build option, the unprefixed `randombytes()` hook gave way to `opqc_set_randombytes` and the build option
+`OPENPQC_EXTERNAL_RANDOMBYTES`, the ML-DSA GPU signer refuses malformed private keys and its verification zeroizes what
+it computed, ML-DSA's `H` clears its registers under Clang too, and tests were added (Wycheproof's ML-DSA vectors,
+NIST's ACVP vectors of the hash functions, fresh randomness for ML-DSA and SLH-DSA, the constant-time test of ML-KEM's
+production library). By 2026-11-08 the review had re-verified the fixes up to that round on frozen copies: it rates the
+three high findings fixed and, of its 53 medium findings, 30 fixed, 14 partly fixed, 6 kept as documented limits and 1
+fixed before its last snapshot; 2 have no verdict (no fix touched them). It found no regression, and 25 new findings,
+none of them high or medium. Not re-verified: the documentation changes of 2026-11-04, where the November round did not
+change them again, and a smaller round of 2026-11-09 that followed the re-verification (GPU ML-DSA signing also zeroizes
+μ and the context string, a GPU context's `sync` also reports another context's sticky fault, the constant-time tests
+compile their copies of ML-KEM and SLH-DSA with the libraries' options, and a test checks that ML-KEM code compiled with
+the other setting of the stack burn cannot take the place of the library's). [SECURITY.md](SECURITY.md) lists what
+remains open.
 
 **Side channels and secrets.** The project's valgrind tests check that secret data decides no branch and no memory
 address, on x86-64 Linux, for the operations the tests run, with copies of the libraries that the tests compile (with
-`OPQC_CT_TESTING`, without the x86-64 extensions that valgrind cannot decode) by GCC 16 and Clang 23, at the levels
-listed under [Security notes](#security-notes). No constant-time property is claimed for other compilers, other
-processors or the GPU. On the CPU, the schemes destroy seeds, keys, shared secrets and their secret intermediate
-values (FIPS 203 §3.3, FIPS 204 §3.6.3, FIPS 205 §3.1); ML-KEM and SLH-DSA also overwrite the stack below each call,
+`OPQC_CT_TESTING`, without the x86-64 extensions that valgrind cannot decode), and for ML-KEM's Encaps and Decaps also
+with the library as built, by GCC 16 and Clang 23, at the levels listed under [Security notes](#security-notes). No
+constant-time property is claimed for other compilers, other processors or the GPU. On the CPU, the schemes destroy
+seeds, keys, shared secrets and their secret intermediate values (FIPS 203 §3.3, FIPS 204 §3.6.3, FIPS 205 §3.1);
+ML-KEM (unless it is built with `OPENPQC_MLKEM_STACK_BURN=OFF`) and SLH-DSA also overwrite the stack below each call,
 while ML-DSA's values destroy themselves and Core clears the frames of its hash functions; what lies beyond that is
 under Security notes. Physical attacks (power, electromagnetic) and fault attacks are out of scope: there are no
 countermeasures such as verification after signing.
@@ -619,33 +630,41 @@ countermeasures such as verification after signing.
 (`Core/opqc_ct.h`, [include/Core/README.md](include/Core/README.md#constant-time)). The check is valgrind's: the tests
 mark the seeds and keys secret, and fail when a branch or an address depends on them. They run on x86-64 Linux, on
 copies of the libraries that the tests compile (with `OPQC_CT_TESTING`, without the x86-64 extensions that valgrind
-cannot decode), with the compiler the build was configured with (GCC 16 and Clang 23 are the ones checked), at the
-build's optimization level and, in every build, at fixed levels: Core's helpers at -O0 to -O3 and -Os, ML-KEM and
-ML-DSA at -O1 to -O3 and -Os, SLH-DSA at -O2; the CI presets add the schemes at -O0, -O2, -O3 and -Os under both
-compilers (SLH-DSA not at -O0, where valgrind would take hours). For other processors only Clang's assembly of the
-helpers is checked (`core_ct_asm`: AArch64, RV64GC, i686, Armv7-M, Armv6-M; nothing runs there). Not claimed: other
-compilers (MSVC's cl.exe gets the volatile barrier, which only GCC and Clang have compiled, in the
+cannot decode) and, for ML-KEM's Encaps and Decaps, also on the library as built (`mlkemNNN_ct_production`, skipped
+where the build's flags enable such extensions), with the compiler the build was configured with (GCC 16 and Clang 23
+are the ones checked), at the build's optimization level and, in every build, at fixed levels: Core's helpers at -O0 to
+-O3 and -Os, ML-KEM and ML-DSA at -O1 to -O3 and -Os, SLH-DSA at -O2; the CI presets add the schemes at -O0, -O2, -O3
+and -Os under both compilers (SLH-DSA not at -O0, where valgrind would take hours). For other processors only Clang's
+assembly of the helpers is checked (`core_ct_asm`: AArch64, RV64GC, i686, Armv7-M, Armv6-M; nothing runs there). Not
+claimed: other compilers (MSVC's cl.exe gets the volatile barrier, which only GCC and Clang have compiled, in the
 `core_volatile_*_ct` tests; clang-cl gets the assembly barrier), other processors, link-time optimization, and the GPU
 code, where the barrier is the identity: there the generated code of ML-KEM's implicit-rejection select was read (both
-CUDA toolchains had made it a load from a secret-dependent address; it is now masked through device memory), but
-device timing has never been measured. In scope is timing through branches and memory addresses only; the values that
-FIPS 204 makes public and ML-DSA therefore branches on (rejected signing attempts, the challenge) are listed in
+CUDA toolchains had made it a load from a secret-dependent address; it is now masked through device memory), but device
+timing has never been measured. In scope is timing through branches and memory addresses only; the values that FIPS 204
+makes public and ML-DSA therefore branches on (rejected signing attempts, the challenge) are listed in
 [include/ML/DSA/README.md](include/ML/DSA/README.md#choices-that-differ-from-the-reference-implementation).
 
 **Randomness: the approved RBG is the integrator's.** FIPS 203 §3.3, FIPS 204 §3.6.1 and FIPS 205 §3.1 require the
-random values of key generation (and ML-KEM's m) to come from an approved random bit generator (SP 800-90A, B and C)
-of sufficient security strength: 128, 192 and 256 bits for ML-KEM-512, -768 and -1024; 192 and 256 bits for ML-DSA-65
-and -87 and at least 128 for ML-DSA-44 (192 to keep its category 2); 8n bits for SLH-DSA. ML-DSA's rnd should come
-from one. OpenPQC's libraries take these values from the operating system (`getrandom`, `arc4random_buf`,
+random values of key generation (and ML-KEM's m) to come from an approved random bit generator (SP 800-90A, B and C) of
+sufficient security strength: 128, 192 and 256 bits for ML-KEM-512, -768 and -1024; 192 and 256 bits for ML-DSA-65 and
+-87 and at least 128 for ML-DSA-44 (192 to keep its category 2); 8n bits for SLH-DSA. ML-DSA's rnd should come from one.
+By default OpenPQC's libraries take these values from the operating system (`getrandom`, `arc4random_buf`,
 `BCryptGenRandom`): a sound source that fails closed (without randomness the buffer is zeroed and every randomized
 function returns its RNG failure code, -3), but not an approved RBG within a module boundary, and the library has no
-DRBG or health tests of its own. To supply one, build the library with the definition
-`OPQC_CONFIG_EXTERNAL_RANDOMBYTES`, as the `*_testrng` targets are built: `opqc_randombytes` then calls the
-application's `int randombytes(uint8_t *out, size_t outlen)`, which must fill the buffer from an approved DRBG of the
-required strength and return 0, or return nonzero (the library then zeroizes the buffer and the call fails). There is
-no CMake option for a production build of that variant yet; the `*_testrng` targets are meant for the tests, and a
-test variant must never be linked into a program together with a production library: both define `opqc_randombytes`,
-and the linker keeps the first without an error. The GPU backends link the operating-system variant, `openpqc_core`.
+DRBG or health tests of its own. To supply one, register it with `opqc_set_randombytes(fn, ctx)`
+(`Core/opqc_platform.h`) before other threads draw. Every later `opqc_randombytes` call then calls `fn(ctx, out, len)`,
+and so does every randomized function of the three schemes, the coins of the GPU backends included. `fn` must fill all
+`len` bytes from an approved DRBG of the required strength and return 0, or return nonzero (the library then zeroizes
+the buffer and the call fails with `OPENPQC_ERR_RNG`, -3); `opqc_set_randombytes(NULL, NULL)` restores the default. `fn`
+must be callable from every thread at once, must not write outside `out` or call `opqc_randombytes`, and must stay
+valid, with its `ctx`, until no draw that may have read them can still be running (`Core/opqc_platform.h` has the whole
+contract); the library gives a registered DRBG no way to reach the operating system's generator, so it brings its own
+entropy input. Alternatively, build the libraries with the CMake option `OPENPQC_EXTERNAL_RANDOMBYTES`:
+`opqc_randombytes` then calls the application's `int opqc_external_randombytes(uint8_t *out, size_t len)`, under the
+same contract, where it would ask the operating system. OpenPQC's libraries call no unprefixed `randombytes()`. The
+`*_testrng` targets are built as with that option and are meant for the tests: a test variant must never be linked into
+a program together with a production library, as both define `opqc_randombytes` and the linker keeps the first without
+an error.
 
 **Threads.** The CPU libraries keep no state between calls: any number of threads may call them at once, with the same
 keys too. A GPU context (`openpqc_gpu`, of any parameter set) may be shared by host threads: each call holds the
@@ -657,25 +676,29 @@ process, and the contexts take the errors of the application's own SYCL queues a
 
 **Stack.** Each C header documents the stack its functions need ("Stack"), for optimized builds on x86-64 (the headers
 give the -O0 figures apart): ML-KEM about 48, 58 and 68 KiB below the call for ML-KEM-512, -768 and -1024, because
-every operation overwrites the stack it used; ML-DSA a thread stack of `OPENPQC_MLDSA44_STACK_BYTES`, `…65…` or `…87…`
-(128, 160 and 224 KiB), so musl's default of 128 KiB fits only ML-DSA-44 entirely; SLH-DSA about 35 KiB below the
-call, and up to 83.4 KiB for KeyGen with the pair-wise consistency test. A thread needs room for itself on top. Core's
-and the schemes' CPU libraries are compiled with `-fstack-clash-protection` where the compiler has it, so that a stack
-that is too small faults at its guard page instead of being overrun (tested for ML-KEM, ML-DSA and SLH-DSA; the SYCL
-backends' host code and the copies of the scheme libraries that the constant-time tests compile do not get the flag).
+every operation overwrites the stack it used (built with `OPENPQC_MLKEM_STACK_BURN=OFF`, at most about 17, 24 and 33
+KiB with GCC 16 and 21, 30 and 39 KiB with Clang 23 at -O3); ML-DSA a thread stack of `OPENPQC_MLDSA44_STACK_BYTES`,
+`…65…` or `…87…` (128, 160 and 224 KiB), so musl's default of 128 KiB fits only ML-DSA-44 entirely; SLH-DSA about 35 KiB
+below the call, and up to 83.4 KiB for KeyGen with the pair-wise consistency test. A thread needs room for itself on
+top. Core's and the schemes' CPU libraries are compiled with `-fstack-clash-protection` where the compiler has it, so
+that a stack that is too small faults at its guard page instead of being overrun (tested for ML-KEM, ML-DSA and
+SLH-DSA). The copies of the scheme libraries that the constant-time tests compile get the flag too; the SYCL backends'
+host code does not.
 
 **What is not destroyed.** On the CPU: registers, which nothing clears at the end of an ML-KEM, ML-DSA or SLH-DSA
 operation (Core's hash functions and the functions of ML-DSA that run a sponge on secret input zero the call-used
-registers when they return, with GCC 11 and Clang 15 or later on x86 and AArch64 only, except ML-DSA's `H` as Clang 23
-compiles it at -O1, -O2, -O3 and -Os on x86-64: it ends in a jump to the sponge, which returns without the clearing;
-at -O0, and with GCC 16 at every level, `H` clears them; other compiler versions, 32-bit x86 and AArch64 were not
-checked), and which the kernel or the dynamic linker can copy to memory; copies that the operating system makes (swap,
-core dumps); the caller's buffers. On the GPU: the random coins pass through page-locked memory that is wiped after
-each copy, but NVIDIA's driver has been seen to keep copies of such small transfers in memory of its own, also after
-`destroy`; after a sticky device fault (on CUDA an invalid address) no wipe can run any more; ML-DSA's verification
-leaves its values in device memory. `openpqc_gpu_free` overwrites what it frees with zeros for every scheme (the
-backends' own `opqc_sycl_mldsa_free` and `opqc_sycl_slhdsa_free`, which the shared GPU library does not export, free
-without wiping). The scheme READMEs give the details and the tests that check what is destroyed.
+registers when they return, where the compiler has `zero_call_used_regs`: GCC 11 and Clang 15 or later, on x86 and
+AArch64; `mldsa_regs_asm` checks ML-DSA's functions, and Core's as compiled into ML-DSA, in the x86-64 code of GCC
+and Clang at -O1, -O2, -O3 and -Os; 32-bit x86 and AArch64 were not checked), and which the kernel or the dynamic
+linker can copy to memory; in an ML-KEM library built with `OPENPQC_MLKEM_STACK_BURN=OFF`, the copies that the
+compiler keeps in stack slots of its own; copies that the operating system makes (swap, core dumps); the caller's
+buffers. On the GPU: the random coins pass through page-locked memory that is wiped after each copy, but NVIDIA's
+driver has been seen to keep copies of such small transfers in memory of its own, also after `destroy`; after a
+sticky device fault (on CUDA an invalid address) no wipe can run any more; ML-DSA's signing leaves the challenges c of
+its attempts in the context's workspace until later calls overwrite them or `destroy` zeroizes it.
+`openpqc_gpu_free` overwrites what it frees with zeros for every scheme (the backends' own `opqc_sycl_mldsa_free` and
+`opqc_sycl_slhdsa_free`, which the shared GPU library does not export, free without wiping). The scheme READMEs give
+the details and the tests that check what is destroyed.
 
 **GPU backends.** Suitable for experiments and benchmarks on hardware the operator controls, not yet for a production
 service, and not for a GPU shared with untrusted code: device timing has not been measured. Every call of the GPU API
@@ -687,12 +710,11 @@ fails, a new create on it fails too, and only a new process can use the device a
 runtime, which does not tell a freed buffer from a live one under DPC++'s Level Zero and on AdaptiveCpp's OpenMP host
 device, that host device takes every pointer for its own (a call with another GPU's device memory ended the process
 there), and DPC++ and AdaptiveCpp take USM memory of another SYCL context on the same device for the context's:
-pass only buffers of the context that are still allocated, and for the application's own allocations create the context in its SYCL
-context (`openpqc_gpu_create_on`). SLH-DSA's context runs no self-test when it is created, and no GPU KeyGen has a
-pair-wise consistency test except ML-DSA's when `openpqc_mldsa_sycl` is built with the definition
-`OPENPQC_MLDSA_KEYGEN_PCT` (the CMake option of that name gives it to the CPU library only); the ML-DSA signer does
-not check private keys (check imported keys with the CPU library's `openpqc_mldsaNN_check_sk` or
-`openpqc_sig_check_secret_key`).
+pass only buffers of the context that are still allocated, and for the application's own allocations create the
+context in its SYCL context (`openpqc_gpu_create_on`). SLH-DSA's context runs no self-test when it is created, and no
+GPU KeyGen has a pair-wise consistency test except ML-DSA's when the libraries are built with the CMake option
+`OPENPQC_MLDSA_KEYGEN_PCT`; the ML-DSA signer refuses private keys whose s1 or s2 is out of range, as the CPU library
+does (`OPENPQC_ERR_INVALID_SECRET_KEY` in the operation's status entry, with an all-zero signature).
 
 ## License
 

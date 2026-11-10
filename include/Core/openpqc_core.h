@@ -22,7 +22,8 @@
  *   Constant time (Core/opqc_ct.h), header-only:
  *     opqc_ct_memcmp, opqc_ct_cmov, opqc_value_barrier_u32, ...
  *   Operating system (Core/opqc_platform.h), in the library openpqc:
- *     opqc_randombytes(out, len), opqc_zeroize(p, len)
+ *     opqc_randombytes(out, len), opqc_zeroize(p, len),
+ *     opqc_set_randombytes(fn, ctx)              (the source of randomness)
  *
  * Preconditions and errors. The incremental sponge follows FIPS 202's order:
  * opqc_sponge_init with a rate that is a multiple of 8 from 8 to 192 (the
@@ -45,21 +46,31 @@
  * standards fix and does not look at the status. A caller with an order of
  * its own checks it, as the example in Core/README.md does.
  *
- * Randomness and the test variants. opqc_randombytes asks the operating
- * system; when it gets no randomness, it sets the buffer to zero and returns
- * nonzero, and the randomized functions of the schemes return their RNG
- * failure code. The libraries openpqc_core_testrng, openpqc_mlkem_testrng,
- * openpqc_mldsa_testrng and openpqc_slhdsa_testrng are the same code with an
- * opqc_randombytes that calls the application's
- * int randombytes(uint8_t *out, size_t outlen) instead: they exist so that
- * the tests can drive OpenPQC and the reference implementations with one
- * deterministic generator, and must never be linked into a program for
- * production use, where the random values come from an approved random bit
- * generator of the cryptographic module (FIPS 203, Section 3.3; FIPS 204,
- * Section 3.6.1; FIPS 205, Section 3.1). Nor may one program link a test
- * variant together with a production library: both define opqc_randombytes,
- * and the linker keeps the first definition it finds, without an error, for
- * every scheme.
+ * Randomness. Every random value of the schemes comes from opqc_randombytes,
+ * which takes it from the source that the application registered with
+ * opqc_set_randombytes, or else from the default: the operating system, or in
+ * a library built with the CMake option OPENPQC_EXTERNAL_RANDOMBYTES the
+ * application's int opqc_external_randombytes(uint8_t *out, size_t len).
+ * When the source gives no randomness, opqc_randombytes sets the buffer to
+ * zero and returns nonzero, and the randomized functions of the schemes
+ * return their RNG failure code. Register before other threads draw; NULL
+ * restores the default; a source fills all len bytes or returns nonzero, does
+ * not call opqc_randombytes itself, and stays valid, with its ctx, until no
+ * draw that may have read it can still be running, which can be after the
+ * next registration has returned (Core/opqc_platform.h has the whole
+ * contract). In a module that FIPS 140-3 validates, the source is the
+ * module's approved random bit generator (FIPS 203, Section 3.3; FIPS 204,
+ * Section 3.6.1; FIPS 205, Section 3.1).
+ *
+ * The test variants. The libraries openpqc_core_testrng,
+ * openpqc_mlkem_testrng, openpqc_mldsa_testrng and openpqc_slhdsa_testrng are
+ * the same code built as with OPENPQC_EXTERNAL_RANDOMBYTES, so that the tests
+ * can drive OpenPQC and the reference implementations with one deterministic
+ * generator (opqc_external_randombytes, or the reference's randombytes behind
+ * a forwarder of the tests). They must never be linked into a program for
+ * production use. Nor may one program link a test variant together with a
+ * production library: both define opqc_randombytes, and the linker keeps the
+ * first definition it finds, without an error, for every scheme.
  *
  * Destruction of intermediate values. The one-shot functions destroy their
  * state before they return; an incremental state belongs to the caller, who
