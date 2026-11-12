@@ -465,6 +465,12 @@ int main(int argc, char **argv)
             return 2;
         const int rc = verify(P, args[SIGNATURE].data, args[SIGNATURE].len, I, ph, args[MESSAGE].data,
                               args[MESSAGE].len, args[CONTEXT].data, args[CONTEXT].len, args[PK].data);
+        /* false only for the rejection of the signature (-1: OPENPQC_ERR_INVALID_SIGNATURE, and what the
+         * reference's verification returns): any other result is no answer to the test case */
+        if (rc != 0 && rc != -1) {
+            fprintf(stderr, "sigVer: result %d is neither 0 nor -1 (the signature rejected)\n", rc);
+            return 3;
+        }
         printf("testPassed=%s\n", rc == 0 ? "true" : "false");
         return 0;
     }

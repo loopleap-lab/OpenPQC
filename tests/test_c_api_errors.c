@@ -144,6 +144,22 @@ static void check(int ok, const char *set, const char *what, int rc, int want) {
         memset(in_key, 0x11, SK);                                                                 \
         check(openpqc_mlkem##N##_check_keypair(pk_, in_key, NULL) == OPENPQC_ERR_INVALID_SECRET_KEY, \
               s_, "check_keypair, sk fails its check", 0, OPENPQC_ERR_INVALID_SECRET_KEY);        \
+        /* item 4, the pair-wise consistency check: two keys that each pass their own check (Sections 7.2 \
+         * and 7.3) but belong to different pairs, in both directions; and the check without randomness for m */ \
+        uint8_t pk2_[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], sk2_[OPENPQC_MLKEM##N##_SECRETKEYBYTES];  \
+        uint8_t seed2_[OPENPQC_MLKEM_SEEDBYTES];                                                  \
+        memset(seed2_, 0xC5, sizeof seed2_);                                                      \
+        check(openpqc_mlkem##N##_keygen_from_seed(pk2_, sk2_, seed2_) == OPENPQC_OK &&           \
+                      openpqc_mlkem##N##_check_keypair(pk2_, sk2_, NULL) == OPENPQC_OK,          \
+              s_, "control: check_keypair of a second pair", 0, 0);                              \
+        check(openpqc_mlkem##N##_check_keypair(pk_, sk2_, NULL) == OPENPQC_ERR_PCT,              \
+              s_, "check_keypair, pk of one pair and sk of another", 0, OPENPQC_ERR_PCT);        \
+        check(openpqc_mlkem##N##_check_keypair(pk2_, sk_, NULL) == OPENPQC_ERR_PCT,              \
+              s_, "check_keypair, sk of one pair and pk of another", 0, OPENPQC_ERR_PCT);        \
+        rng_fails = 1;                                                                            \
+        check(openpqc_mlkem##N##_check_keypair(pk_, sk_, NULL) == OPENPQC_ERR_RNG,               \
+              s_, "check_keypair, no randomness for the pair-wise consistency check", 0, OPENPQC_ERR_RNG); \
+        rng_fails = 0;                                                                            \
         seed_[0] ^= 1;                                                                            \
         check(openpqc_mlkem##N##_check_keypair(pk_, sk_, seed_) == OPENPQC_ERR_INVALID_SECRET_KEY, \
               s_, "check_keypair, another seed", 0, OPENPQC_ERR_INVALID_SECRET_KEY);              \

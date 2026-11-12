@@ -228,11 +228,13 @@ only for a full buffer (top-level README, [Security notes](../../README.md#secur
 
 ## Tests
 
-- `tests/Core/test_core_sha3.c`: Keccak-f[1600] on the zero state (the Keccak team's intermediate values), known
-  answers for SHA3-256, SHA3-512, SHAKE128 and SHAKE256 (Python's `hashlib`; for SHA3-256 also the inputs of one
-  block minus one byte and of one block; SHA3-224 and SHA3-384 are in `test_core_sha2.c`), and incremental absorbing
-  and squeezing in every chunk size from 1 to 200 bytes. The padding boundaries of SHA3-512, SHAKE128 and SHAKE256
-  are covered by the incremental comparison and by ACVP (`core_hash_acvp`), not by known answers.
+- `tests/Core/test_core_sha3.c`: Keccak-f[1600] on the zero state (the Keccak team's intermediate values); known
+  answers for SHA3-256, SHA3-512, SHAKE128 and SHAKE256 (Python's `hashlib`; more of SHA3-224 and SHA3-384 are in
+  `test_core_sha2.c`); for all six functions, NIST's own vectors at the padding boundaries (15 cases copied from the
+  ACVP files that `core_hash_acvp` pins: a message one byte short of the rate, a message of exactly the rate, and
+  for SHAKE128 two blocks); and incremental absorbing and squeezing against one call each, in every chunk size from
+  1 to 200 bytes and in pieces of changing sizes, for messages on both sides of the rate, of two blocks and of 500
+  bytes, at the rates of SHAKE128, SHAKE256 and SHA3-512.
 - `tests/Core/test_core_sha2.c`: the six SHA-2 functions, and SHA3-224 and SHA3-384, against known answers (Python's
   `hashlib`): the FIPS 180-4 examples, a million times "a", and the message lengths on both sides of every padding
   boundary; absorbing in pieces of every size from 1 to 200 bytes, and in pieces of random sizes from 0 to 300 bytes,

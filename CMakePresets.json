@@ -183,6 +183,7 @@
     {"name": "gcc-release-network", "inherits": "network", "configurePreset": "gcc-release"},
     {"name": "clang-release", "inherits": "offline", "configurePreset": "clang-release"},
     {"name": "clang-release-quick", "inherits": "quick", "configurePreset": "clang-release"},
+    {"name": "clang-release-network", "inherits": "network", "configurePreset": "clang-release"},
     {
       "name": "sanitizers",
       "hidden": true,

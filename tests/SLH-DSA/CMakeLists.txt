@@ -38,7 +38,9 @@ if(_openpqc)
 
     #   slhdsa_differential   OpenPQC == the reference (ref, and avx2 where it is built), byte for byte, on
     #                         random and tampered inputs for all twelve parameter sets; PH(M) for the
-    #                         reference from OpenSSL where it is found. 6 minutes (label "slow").
+    #                         reference from OpenSSL where it is found. 6 minutes (label "slow") on the
+    #                         development machine; 27 minutes on GitHub's hosted runner of a private
+    #                         repository (2 processors) with three other tests beside it, hence the TIMEOUT.
     add_executable(test_slhdsa_differential test_slhdsa_differential.cpp)
     target_link_libraries(test_slhdsa_differential PRIVATE openpqc_slhdsa_testrng openpqc_reference_slhdsa)
     if(OPENPQC_HAVE_REFERENCE_SLHDSA_AVX2)
@@ -53,7 +55,7 @@ if(_openpqc)
     target_compile_options(test_slhdsa_differential PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:$<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>>)
     add_test(NAME slhdsa_differential COMMAND test_slhdsa_differential)
-    set_tests_properties(slhdsa_differential PROPERTIES LABELS slow TIMEOUT 1800)
+    set_tests_properties(slhdsa_differential PROPERTIES LABELS slow TIMEOUT 3600)
 
     #   slhdsa_pct   the library built with the pair-wise consistency test after KeyGen
     #                (OPENPQC_SLHDSA_KEYGEN_PCT, FIPS 140-3), so that this configuration is compiled
@@ -182,6 +184,9 @@ if(_openpqc)
     #   slhdsa_O2_ct  the same with the library compiled at -O2 whatever the build type, so that a Debug
     #               build (-O0) also checks optimized code (one level: each run takes about 10 minutes);
     #               not in a sanitizer build, whose programs valgrind cannot run
+    # TIMEOUT: a run takes 5 to 13 minutes with a processor to itself (the development machine, and GitHub's
+    # hosted runner in the constant-time jobs) and took more than 30 on that runner with three other tests on
+    # its 2 processors, where a limit of 1800 s failed both tests in the release jobs.
     # The copies of the library for these tests are compiled as the library's objects are: with its warning and
     # hardening options (openpqc_strict_warnings, with -fstack-clash-protection where the compiler has it) and as
     # position-independent code. So they differ from it only in OPQC_CT_TESTING, the level (in slhdsa_O2_ct), and
@@ -227,7 +232,7 @@ if(_openpqc)
             endif()
             add_test(NAME ${_name} COMMAND ${OPENPQC_VALGRIND} --error-exitcode=1 --track-origins=yes
                                            $<TARGET_FILE:test_${_name}>)
-            set_tests_properties(${_name} PROPERTIES LABELS slow TIMEOUT 1800)
+            set_tests_properties(${_name} PROPERTIES LABELS slow TIMEOUT 3600)
         endforeach()
     else()
         message(STATUS "valgrind or valgrind/memcheck.h not found: constant-time test (slhdsa_ct) disabled")
@@ -386,6 +391,9 @@ endforeach()
 #                           of NIST's ACVP server for the twelve parameter sets, 1248 test cases, run
 #                           through acvp_slhdsa (downloads them on first use into the build
 #                           directory; label "network")
+#   slhdsa_acvp_control     the positive control of the client (acvp_client.py --control, as
+#                           mldsa_acvp_control): the first case of every group through a stand-in
+#                           driver that breaks every answer; every one of these runs must be reported
 #   reference_slhdsa_acvp   the same vectors through the reference (reference_acvp_slhdsa, the same
 #                           driver built with OPENPQC_ACVP_REFERENCE, which computes the pre-hash
 #                           PH(M) with OpenSSL): the check of the checks
@@ -421,6 +429,14 @@ endfunction()
 
 if(_openpqc)
     acvp_driver(acvp_slhdsa slhdsa_acvp SLOW LIBRARIES OpenPQC::testing)   # openpqc/sig.h, openpqc/testing.h
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME slhdsa_acvp_control
+                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/acvp/acvp_client.py
+                         --binary $<TARGET_FILE:acvp_slhdsa> --cache ${CMAKE_CURRENT_BINARY_DIR}/acvp-data --jobs 4
+                         --control)
+        set_tests_properties(slhdsa_acvp_control PROPERTIES LABELS network TIMEOUT 3600 PROCESSORS 4
+                                                            RESOURCE_LOCK slhdsa_acvp_data)
+    endif()
 endif()
 if(OpenSSL_FOUND)
     acvp_driver(reference_acvp_slhdsa reference_slhdsa_acvp SLOW

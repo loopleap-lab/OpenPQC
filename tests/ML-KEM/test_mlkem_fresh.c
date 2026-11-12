@@ -49,11 +49,13 @@ int opqc_external_randombytes(uint8_t *out, size_t outlen)
 typedef struct {
     const char *name;
     size_t pk_bytes, sk_bytes, ct_bytes;
-    int (*keypair_derand)(uint8_t *pk, uint8_t *sk, const uint8_t *coins);
-    int (*keypair)(uint8_t *pk, uint8_t *sk);
-    int (*enc_derand)(uint8_t *ct, uint8_t *ss, const uint8_t *pk, const uint8_t *coins);
-    int (*enc)(uint8_t *ct, uint8_t *ss, const uint8_t *pk);
-    int (*dec)(uint8_t *ss, const uint8_t *ct, const uint8_t *sk);
+    /* the functions' own types: through a pointer to a function that returns int, the call is one through an
+     * incompatible type as Clang's -fsanitize=function sees it, which stops the program */
+    openpqc_status (*keypair_derand)(uint8_t *pk, uint8_t *sk, const uint8_t *coins);
+    openpqc_status (*keypair)(uint8_t *pk, uint8_t *sk);
+    openpqc_status (*enc_derand)(uint8_t *ct, uint8_t *ss, const uint8_t *pk, const uint8_t *coins);
+    openpqc_status (*enc)(uint8_t *ct, uint8_t *ss, const uint8_t *pk);
+    openpqc_status (*dec)(uint8_t *ss, const uint8_t *ct, const uint8_t *sk);
 } level_t;
 
 static const level_t levels[] = {

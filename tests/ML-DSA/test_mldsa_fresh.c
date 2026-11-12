@@ -45,24 +45,27 @@
 typedef struct {
     const char *name;
     size_t pk_bytes, sk_bytes, sig_bytes;
-    int (*keypair)(uint8_t *pk, uint8_t *sk);
-    int (*keypair_derand)(uint8_t *pk, uint8_t *sk, const uint8_t *seed);
-    int (*sign)(uint8_t *sig, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *sk);
-    int (*sign_derand)(uint8_t *sig, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen,
-                       const uint8_t *rnd, const uint8_t *sk);
-    int (*verify)(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen,
-                  const uint8_t *pk);
-    int (*prehash_sign)(uint8_t *sig, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, int ph,
-                        const uint8_t *sk);
-    int (*prehash_sign_derand)(uint8_t *sig, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, int ph,
-                               const uint8_t *rnd, const uint8_t *sk);
-    int (*prehash_verify)(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx,
-                          size_t ctxlen, int ph, const uint8_t *pk);
-    int (*external_mu)(uint8_t *mu, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen,
-                       const uint8_t *pk);
-    int (*sign_mu)(uint8_t *sig, const uint8_t *mu, const uint8_t *sk);
-    int (*sign_mu_derand)(uint8_t *sig, const uint8_t *mu, const uint8_t *rnd, const uint8_t *sk);
-    int (*verify_mu)(const uint8_t *sig, size_t siglen, const uint8_t *mu, const uint8_t *pk);
+    /* the functions' own types: through a pointer to a function that returns int, the call is one through an
+     * incompatible type as Clang's -fsanitize=function sees it, which stops the program */
+    openpqc_status (*keypair)(uint8_t *pk, uint8_t *sk);
+    openpqc_status (*keypair_derand)(uint8_t *pk, uint8_t *sk, const uint8_t *seed);
+    openpqc_status (*sign)(uint8_t *sig, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen,
+                           const uint8_t *sk);
+    openpqc_status (*sign_derand)(uint8_t *sig, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen,
+                                  const uint8_t *rnd, const uint8_t *sk);
+    openpqc_status (*verify)(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx,
+                             size_t ctxlen, const uint8_t *pk);
+    openpqc_status (*prehash_sign)(uint8_t *sig, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen,
+                                   int ph, const uint8_t *sk);
+    openpqc_status (*prehash_sign_derand)(uint8_t *sig, const uint8_t *m, size_t mlen, const uint8_t *ctx,
+                                          size_t ctxlen, int ph, const uint8_t *rnd, const uint8_t *sk);
+    openpqc_status (*prehash_verify)(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen,
+                                     const uint8_t *ctx, size_t ctxlen, int ph, const uint8_t *pk);
+    openpqc_status (*external_mu)(uint8_t *mu, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen,
+                                  const uint8_t *pk);
+    openpqc_status (*sign_mu)(uint8_t *sig, const uint8_t *mu, const uint8_t *sk);
+    openpqc_status (*sign_mu_derand)(uint8_t *sig, const uint8_t *mu, const uint8_t *rnd, const uint8_t *sk);
+    openpqc_status (*verify_mu)(const uint8_t *sig, size_t siglen, const uint8_t *mu, const uint8_t *pk);
 } level_t;
 
 #define OPENPQC_TEST_LEVEL(N)                                                                                       \

@@ -18,9 +18,17 @@
 #               (FIPS 140-3) compiled into the ML-KEM and ML-DSA libraries (OPENPQC_MLKEM_KEYGEN_PCT,
 #               OPENPQC_MLDSA_KEYGEN_PCT): the quick offline tests of ML-KEM and ML-DSA against them
 #   vendoring   the vendored references and test programs are those of the pinned upstream commits
-#   network     NIST ACVP and Wycheproof vectors, pinned by SHA-256: weekly and on demand
+#   vectors     GCC and Clang, Release (-O3): NIST's ACVP vectors for ML-KEM, ML-DSA, SLH-DSA and Core's hash
+#               functions, and the Wycheproof vectors, with the positive controls of their clients (the tests
+#               with the label "network"). These are the tests that compare the library with NIST's own
+#               answers, so they run on every push. The vector files are downloaded from the commits that the
+#               tests' scripts name and checked against the SHA-256 pinned there on every run; the cache only
+#               spares the download, and a cached file that differs from its pin fails the test.
 # Every preset sets OPENPQC_REQUIRE_FULL_TESTS, so a missing tool fails the configuration instead of
-# leaving tests out. The commands are those of a local run (CMakePresets.json), with -j 4.
+# leaving tests out. The commands are those of a local run (CMakePresets.json), with as many jobs as the
+# runner has processors (GitHub's hosted Linux runner: 2 for a private repository, 4 for a public one). More
+# tests at a time than processors is what a test's TIMEOUT does not allow for: with -j 4 on 2 processors,
+# slhdsa_ct and slhdsa_O2_ct (5 to 9 minutes each in the constant-time jobs) ran for more than 30.
 
 name: ci
 
@@ -29,7 +37,7 @@ on:
     branches: [main]   # other branches through their pull requests
   pull_request:
   schedule:
-    - cron: "17 3 * * 1"   # Mondays, 03:17 UTC: every job, the network tests included
+    - cron: "17 3 * * 1"   # Mondays, 03:17 UTC: every job again, with the toolchain that the container has that day
   workflow_dispatch:
 
 permissions:
@@ -56,13 +64,13 @@ jobs:
         run: |
           grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
           pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         run: cmake --preset ${{ matrix.compiler }}-release
       - name: Build
-        run: cmake --build --preset ${{ matrix.compiler }}-release -j 4
+        run: cmake --build --preset ${{ matrix.compiler }}-release -j "$(nproc)"
       - name: Test (offline)
-        run: ctest --preset ${{ matrix.compiler }}-release -j 4
+        run: ctest --preset ${{ matrix.compiler }}-release -j "$(nproc)"
 
   ct:
     name: constant time (${{ matrix.compiler }} -${{ matrix.level }})
@@ -79,13 +87,13 @@ jobs:
         run: |
           grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
           pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         run: cmake --preset ct-${{ matrix.compiler }}-${{ matrix.level }}
       - name: Build
-        run: cmake --build --preset ct-${{ matrix.compiler }}-${{ matrix.level }} -j 4
+        run: cmake --build --preset ct-${{ matrix.compiler }}-${{ matrix.level }} -j "$(nproc)"
       - name: Test (valgrind)
-        run: ctest --preset ct-${{ matrix.compiler }}-${{ matrix.level }} -j 4
+        run: ctest --preset ct-${{ matrix.compiler }}-${{ matrix.level }} -j "$(nproc)"
 
   sanitizers:
     name: sanitizers (${{ matrix.compiler }})
@@ -103,13 +111,13 @@ jobs:
         run: |
           grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
           pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         run: cmake --preset ${{ matrix.compiler }}-asan-ubsan
       - name: Build
-        run: cmake --build --preset ${{ matrix.compiler }}-asan-ubsan -j 4
+        run: cmake --build --preset ${{ matrix.compiler }}-asan-ubsan -j "$(nproc)"
       - name: Test (quick, offline)
-        run: ctest --preset ${{ matrix.compiler }}-asan-ubsan -j 4
+        run: ctest --preset ${{ matrix.compiler }}-asan-ubsan -j "$(nproc)"
 
   pct:
     name: pair-wise consistency tests (${{ matrix.compiler }})
@@ -125,19 +133,19 @@ jobs:
         run: |
           grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
           pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         run: cmake --preset ${{ matrix.compiler }}-release-pct
       - name: Build
-        run: cmake --build --preset ${{ matrix.compiler }}-release-pct -j 4
+        run: cmake --build --preset ${{ matrix.compiler }}-release-pct -j "$(nproc)"
       - name: Test (ML-KEM and ML-DSA, quick, offline)
-        run: ctest --preset ${{ matrix.compiler }}-release-pct -j 4
+        run: ctest --preset ${{ matrix.compiler }}-release-pct -j "$(nproc)"
 
   vendoring:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Upstream checkouts (the submodules' pinned commits)
         run: git submodule update --init reference/repos/mlkem-native reference/repos/dilithium reference/repos/sphincsplus
       - name: Vendored files up to date
@@ -146,20 +154,34 @@ jobs:
           python3 -I scripts/vendor_dilithium.py --upstream reference/repos/dilithium --check
           python3 -I scripts/vendor_sphincsplus.py --upstream reference/repos/sphincsplus --check
 
-  network:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  vectors:
+    name: NIST and Wycheproof vectors (${{ matrix.compiler }})
     runs-on: ubuntu-24.04
     container: archlinux:latest
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
     steps:
       - name: Toolchain
         run: |
           grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
           pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Vector files (each test checks them against its pinned SHA-256; the cache spares the download)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build-presets/${{ matrix.compiler }}-release/tests/acvp-hash-data
+            build-presets/${{ matrix.compiler }}-release/tests/ML-KEM/vector-data
+            build-presets/${{ matrix.compiler }}-release/tests/ML-DSA/acvp-data
+            build-presets/${{ matrix.compiler }}-release/tests/ML-DSA/vector-data
+            build-presets/${{ matrix.compiler }}-release/tests/SLH-DSA/acvp-data
+          key: vectors-${{ matrix.compiler }}-${{ hashFiles('tests/Core/acvp_hash.py', 'tests/ML-KEM/pinned_vectors.py', 'tests/ML-DSA/acvp/acvp_client.py', 'tests/SLH-DSA/acvp/acvp_client.py') }}
       - name: Configure
-        run: cmake --preset gcc-release
+        run: cmake --preset ${{ matrix.compiler }}-release
       - name: Build
-        run: cmake --build --preset gcc-release -j 4
+        run: cmake --build --preset ${{ matrix.compiler }}-release -j "$(nproc)"
       - name: Test (ACVP and Wycheproof vectors)
-        run: ctest --preset gcc-release-network -j 4
+        run: ctest --preset ${{ matrix.compiler }}-release-network -j "$(nproc)"

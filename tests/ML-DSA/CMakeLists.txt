@@ -245,6 +245,10 @@ endforeach()
 #                mu, deterministic and hedged, keys given as seeds) and sigVer vectors of
 #                NIST's ACVP server, run through acvp_mldsa (downloads them on first use into
 #                the build directory; label "network")
+#   mldsa_acvp_control   the positive control of the client (acvp_client.py --control): the first
+#                case of every group runs through a stand-in driver that changes a hex digit of every
+#                key and signature, accepts every rejected signature and writes to stderr where one
+#                is accepted; the test passes only if every one of these runs is reported
 add_executable(acvp_mldsa acvp/acvp_mldsa.c)
 target_link_libraries(acvp_mldsa PRIVATE OpenPQC::testing openpqc_strict_warnings)   # openpqc/sig.h, openpqc/testing.h
 set_target_properties(acvp_mldsa PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
@@ -252,7 +256,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME mldsa_acvp
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/acvp/acvp_client.py
                      --binary $<TARGET_FILE:acvp_mldsa> --cache ${CMAKE_CURRENT_BINARY_DIR}/acvp-data)
-    set_tests_properties(mldsa_acvp PROPERTIES LABELS network)
+    add_test(NAME mldsa_acvp_control
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/acvp/acvp_client.py
+                     --binary $<TARGET_FILE:acvp_mldsa> --cache ${CMAKE_CURRENT_BINARY_DIR}/acvp-data --control)
+    set_tests_properties(mldsa_acvp mldsa_acvp_control PROPERTIES LABELS network RESOURCE_LOCK mldsa_acvp_data)
 endif()
 
 # --- Wycheproof vectors --------------------------------------------------------------------

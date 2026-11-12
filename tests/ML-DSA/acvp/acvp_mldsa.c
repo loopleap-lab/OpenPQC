@@ -208,7 +208,13 @@ int main(int argc, char **argv)
             rc = openpqc_sig_verify(alg, args[SIGNATURE].data, args[SIGNATURE].len, args[MESSAGE].data,
                                     args[MESSAGE].len, &opts, args[PK].data);
         }
-        printf("testPassed=%s\n", rc == 0 ? "true" : "false");
+        /* false only for the library's rejection of the signature: any other result (an argument refused, an
+         * algorithm that this build does not contain) is no answer to the test case */
+        if (rc != OPENPQC_OK && rc != OPENPQC_ERR_INVALID_SIGNATURE) {
+            fprintf(stderr, "sigVer: result %d is neither OPENPQC_OK nor OPENPQC_ERR_INVALID_SIGNATURE\n", rc);
+            return 3;
+        }
+        printf("testPassed=%s\n", rc == OPENPQC_OK ? "true" : "false");
         return 0;
     }
     fprintf(stderr, "unknown function %s\n", argv[2]);

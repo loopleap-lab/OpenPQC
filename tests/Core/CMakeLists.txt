@@ -129,7 +129,10 @@ endif()
 #                 function, for x86-64, i686, AArch64, RV64GC with and without Zicond, Armv7-M and Armv6-M,
 #                 at -O1, -O2, -O3 and -Os, with both barriers (-S: nothing runs); each function must be
 #                 free of conditional branches and selects, and each positive control must have one
-#                 (see the top of test_core_ct_shapes.c). Targets this Clang cannot compile for are skipped.
+#                 (see the top of test_core_ct_shapes.c). A target for which this Clang has no code generator
+#                 (a file of one empty function does not compile) is left out, and is a failure with
+#                 OPENPQC_REQUIRE_FULL_TESTS; an error in compiling the source itself, and a function of the
+#                 source that is not found in the assembly, are failures.
 find_package(Python3 COMPONENTS Interpreter)
 if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
     set(OPENPQC_CT_ASM_CLANG ${CMAKE_C_COMPILER})
@@ -137,13 +140,17 @@ else()
     find_program(OPENPQC_CT_ASM_CLANG clang)
 endif()
 if(Python3_Interpreter_FOUND AND OPENPQC_CT_ASM_CLANG)
+    set(_ct_asm_require "")
+    if(OPENPQC_REQUIRE_FULL_TESTS)
+        set(_ct_asm_require --require-all)
+    endif()
     add_test(NAME core_ct_asm
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_ct_asm.py
                      --cc ${OPENPQC_CT_ASM_CLANG}
                      --source ${CMAKE_CURRENT_SOURCE_DIR}/test_core_ct_shapes.c
                      --include ${PROJECT_SOURCE_DIR}/src
                      --stub ${CMAKE_CURRENT_SOURCE_DIR}/freestanding
-                     --work ${CMAKE_CURRENT_BINARY_DIR}/ct_asm)
+                     --work ${CMAKE_CURRENT_BINARY_DIR}/ct_asm ${_ct_asm_require})
     set_tests_properties(core_ct_asm PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 else()
     message(STATUS "assembly check of the constant-time helpers (core_ct_asm) needs Python 3 and Clang: disabled")

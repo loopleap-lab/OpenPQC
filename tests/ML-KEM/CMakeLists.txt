@@ -13,6 +13,13 @@
 #   mlkemNNN_func             functional tests (test_mlkem.c)
 #   mlkemNNN_kat              known-answer tests: output hashed and compared with META.yml
 #   mlkemNNN_rng_fail         behaviour when randombytes() fails
+#   mlkem_fips203             fips203_check.py: the known answers of mlkemNNN_kat (META.yml) and of
+#                             mlkemNNN_func (test_vectors/) computed again from FIPS 203 written out in
+#                             Python (fips203_transcription.py: hashlib's hash functions, nothing of
+#                             OpenPQC or mlkem-native), with a control; and the library's KeyGen, Encaps
+#                             and Decaps, through acvp_mlkemNNN, against that transcription, with 36
+#                             rejected ciphertexts, whose key must be J(z || c) (Algorithm 18). Offline.
+#                             reference_mlkem_fips203: the library part through mlkem-native's drivers
 #   mlkem_acvp                NIST ACVP vectors        (downloads them; label "network")
 #   mlkem_wycheproof          Wycheproof vectors       (downloads them; label "network")
 #                             both through pinned_vectors.py: files pinned by SHA-256, every
@@ -148,6 +155,16 @@ foreach(target openpqc reference)
         endif()
     endforeach()
     if(Python3_Interpreter_FOUND)
+        set(_fips203_known_answers "")
+        if(target STREQUAL "reference")
+            set(_fips203_known_answers --no-known-answers)   # the files are the same: once is enough
+        endif()
+        add_test(NAME ${prefix}mlkem_fips203
+                 COMMAND ${Python3_EXECUTABLE} -I ${_src}/fips203_check.py --source ${_src} ${_fips203_known_answers}
+                         --driver 512=$<TARGET_FILE:${prefix}acvp_mlkem512>
+                         --driver 768=$<TARGET_FILE:${prefix}acvp_mlkem768>
+                         --driver 1024=$<TARGET_FILE:${prefix}acvp_mlkem1024>)
+        set_tests_properties(${prefix}mlkem_fips203 PROPERTIES TIMEOUT 600)
         foreach(kind acvp wycheproof)
             add_test(NAME ${prefix}mlkem_${kind}
                      COMMAND ${Python3_EXECUTABLE} ${_src}/pinned_vectors.py ${kind}

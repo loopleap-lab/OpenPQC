@@ -9,8 +9,16 @@
 # that target). See the top of test_core_ct_shapes.c.
 #
 #   check_ct_asm.py --cc <clang> --source <test_core_ct_shapes.c> --include <dir> --stub <dir> --work <dir>
+#                   [--require-all]
 #
-# Exit status: 0 every compiled target passes, 1 a failure, 77 Clang could compile for none of the targets.
+# A target is left out only if this Clang has no code generator for it, which a file of one empty function
+# shows; the source itself must then compile for every target that is left, so that an error in it (a header
+# that no longer compiles, a new warning under -Werror) is a failure and not a target left out. In every
+# compilation, the assembly must hold every function shape_* and control_* that the source defines: a function
+# that is missing, or that this script no longer finds in Clang's output, is a failure too. With --require-all
+# (the build passes it with OPENPQC_REQUIRE_FULL_TESTS) a target left out is a failure.
+#
+# Exit status: 0 every compiled target passes, 1 a failure, 77 Clang has a code generator for none of the targets.
 
 import argparse
 import os
@@ -72,22 +80,39 @@ def conditional(instructions, isa):
     return [i for i in instructions if pattern.fullmatch(i.split()[0].lower())]
 
 
+def defined_functions(source):
+    """the names of the functions shape_* and control_* that the source defines"""
+    text = open(source, encoding='utf-8').read()
+    return set(re.findall(r'^[A-Za-z_][\w \t\*]*?\b((?:shape|control)_\w+)\(', text, re.M))
+
+
 def main():
     ap = argparse.ArgumentParser()
     for a in ('--cc', '--source', '--include', '--stub', '--work'):
         ap.add_argument(a, required=True)
+    ap.add_argument('--require-all', action='store_true')
     args = ap.parse_args()
     os.makedirs(args.work, exist_ok=True)
     common = ['-std=c11', '-ffreestanding', '-nostdlibinc', '-isystem', args.stub, '-I', args.include,
               '-fno-stack-protector', '-fno-asynchronous-unwind-tables',
               '-Wall', '-Wextra', '-Wpedantic', '-Wshadow', '-Wconversion', '-Wsign-conversion', '-Werror']
+    expected = defined_functions(args.source)
+    if not any(n.startswith('shape_') for n in expected) or not any(n.startswith('control_') for n in expected):
+        print(f'{args.source}: no function shape_* or no function control_* found in the source')
+        return 1
+    empty = os.path.join(args.work, 'empty-function.c')
+    with open(empty, 'w', encoding='utf-8') as f:
+        f.write('void openpqc_ct_asm_probe(void);\nvoid openpqc_ct_asm_probe(void) {}\n')
     failures, cells, skipped = [], 0, []
     for tname, tflags, isa in TARGETS:
-        probe = subprocess.run([args.cc] + tflags + common + ['-O2', '-S', '-o', os.devnull, args.source],
-                               capture_output=True, text=True)
+        # does this Clang generate code for the target at all? (the source is not involved)
+        probe = subprocess.run([args.cc] + tflags + ['-std=c11', '-ffreestanding', '-O2', '-S', '-o', os.devnull,
+                                                     empty], capture_output=True, text=True)
         if probe.returncode != 0:
             skipped.append(tname)
-            print(f'{tname}: skipped, Clang cannot compile for it here:\n{probe.stderr.strip()[:800]}')
+            print(f'{tname}: left out, this Clang has no code generator for it:\n{probe.stderr.strip()[:800]}')
+            if args.require_all:
+                failures.append(f'{tname}: left out (no code generator in this Clang), and --require-all is given')
             continue
         for bname, bflags in BARRIERS:
             for level in LEVELS:
@@ -108,8 +133,9 @@ def main():
                             blind.append(name)
                     elif cond:
                         bad.append(f'{name}: ' + '; '.join(cond[:4]) + (' ...' if len(cond) > 4 else ''))
-                if not any(n.startswith('shape_') for n in funcs) or not any(n.startswith('control_') for n in funcs):
-                    blind.append('(no shape_ or control_ function found in the assembly)')
+                missing = sorted(expected - set(funcs))
+                if missing:
+                    blind.append('(not found in the assembly: ' + ', '.join(missing) + ')')
                 status = 'ok' if not bad and not blind else 'FAIL'
                 print(f'{cell}  {status}: {sum(n.startswith("shape_") for n in funcs)} functions straight-line'
                       if status == 'ok' else f'{cell}  FAIL')
@@ -117,11 +143,14 @@ def main():
                     failures.append(f'{cell}: conditional instruction on a secret in {b}')
                     print(f'    {b}')
                 for b in blind:
-                    failures.append(f'{cell}: positive control {b} has no conditional instruction: '
-                                    'the check cannot see one on this target')
+                    if b.startswith('('):
+                        failures.append(f'{cell}: functions of the source {b}: they were not checked')
+                    else:
+                        failures.append(f'{cell}: positive control {b} has no conditional instruction: '
+                                        'the check cannot see one on this target')
                     print(f'    blind: {b}')
-    if cells == 0:
-        print('SKIPPED: Clang could compile for none of the targets')
+    if cells == 0 and not failures:
+        print('SKIPPED: this Clang has a code generator for none of the targets')
         return 77
     if failures:
         print(f'\n{len(failures)} failure(s) in {cells} compilations' +

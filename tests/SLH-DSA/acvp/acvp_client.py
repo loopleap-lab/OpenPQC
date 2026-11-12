@@ -12,12 +12,14 @@ directory; then every test case is run through the driver and its output compare
 For the default version, the SHA-256 of every file and its number of test cases are pinned:
 a changed, damaged or truncated download is an error rather than a smaller test.
 
-Downloading, pinning and running the cases in parallel are the ML-DSA client's
-(tests/ML-DSA/acvp/acvp_client.py): this file gives it the SLH-DSA files, pins and command
-lines. The driver is acvp_slhdsa (OpenPQC) or reference_acvp_slhdsa (the reference, as the
-check of the checks); both take the same command lines.
+Downloading (from the commit that the version names), pinning, the check of every group's
+fields, running the cases in parallel, the check of every driver run and the positive control
+(--control) are the ML-DSA client's (tests/ML-DSA/acvp/acvp_client.py): this file gives it the
+SLH-DSA files, pins, group fields and command lines. The driver is acvp_slhdsa (OpenPQC) or
+reference_acvp_slhdsa (the reference, as the check of the checks); both take the same command
+lines.
 
-usage: acvp_client.py --binary PATH [--version TAG] [--cache DIR] [--jobs N]
+usage: acvp_client.py --binary PATH [--version TAG] [--cache DIR] [--jobs N] [--control] [--unpinned]
 """
 
 import importlib.util
@@ -37,6 +39,16 @@ PINNED = {
         "SLH-DSA-sigGen-FIPS205": ("62b42e7c27fda5de8a94aba2943ae413b59b6ea08141f3bc035b1eceae235dba", 624),
         "SLH-DSA-sigVer-FIPS205": ("a013fc2104f4ed4799d96d51141f65b965969b2cf10646626a021b6d456ce792", 504),
     },
+}
+
+
+# the fields of a test group (besides tgId and tests), and the values of each that command() knows
+GROUP_FIELDS = {
+    "testType": {"AFT"},
+    "parameterSet": {f"SLH-DSA-{h}-{n}{v}" for h in ("SHA2", "SHAKE") for n in (128, 192, 256) for v in "sf"},
+    "deterministic": {True, False},
+    "signatureInterface": {"internal", "external"},
+    "preHash": {"none", "pure", "preHash"},
 }
 
 
@@ -72,4 +84,5 @@ def mldsa_client():
 
 
 if __name__ == "__main__":
-    mldsa_client().main(command=command, files=FILES, pinned=PINNED, default_version=DEFAULT_VERSION)
+    mldsa_client().main(command=command, files=FILES, pinned=PINNED, default_version=DEFAULT_VERSION,
+                        group_fields=GROUP_FIELDS)

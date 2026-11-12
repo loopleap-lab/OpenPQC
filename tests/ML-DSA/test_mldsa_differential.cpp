@@ -154,6 +154,55 @@ void sign_with_large_z(std::uint8_t* sigma_out, const std::uint8_t* sk_bytes, co
     }
 }
 
+// Algorithm 7 without the check of c t0 on line 28 (the check of the number of hints stays). For a key
+// from KeyGen it gives the signature of Algorithm 7: ||c t0|| >= gamma2 has a probability of about 1e-7 per
+// attempt for ML-DSA-44, and cannot happen for ML-DSA-65 and -87, where tau 2^12 < gamma2. For the key of
+// the ct0 check in run() it gives another signature wherever that check decides an attempt, which is how
+// the test knows that its inputs reach line 28. Returns false if 1000 attempts gave no signature.
+template <dsa::ParameterSet P>
+bool sign_ignoring_ct0(std::uint8_t* sigma_out, const std::uint8_t* sk_bytes, const std::uint8_t* mu_bytes,
+                       const std::uint8_t* rnd_bytes) {
+    using S = dsa::Sizes<P>;
+    const std::span<const std::uint8_t, S::sk> sk(sk_bytes, S::sk);
+    const std::span<const std::uint8_t, 64> mu(mu_bytes, 64);
+    const std::span<const std::uint8_t, 32> rnd(rnd_bytes, 32);
+    dsa::PolyVec<P::l> s1, z;
+    dsa::PolyVec<P::k> s2, t0, w;
+    dsa::sk_decode<P>(s1, s2, t0, sk);
+    const auto s1_hat = dsa::ntt(s1);
+    const auto s2_hat = dsa::ntt(s2);
+    const auto t0_hat = dsa::ntt(t0);
+    const auto A_hat = dsa::expand_a<P>(sk.template first<32>());
+    const auto rho_pp = dsa::H<64>({sk.template subspan<32, 32>(), rnd, mu});
+    for (unsigned attempt = 0, kappa = 0; attempt < 1000; attempt++, kappa += P::l) {
+        const auto y = dsa::expand_mask<P>(rho_pp, kappa);
+        w = dsa::invntt(dsa::matrix_vector_ntt(A_hat, dsa::ntt(y)));
+        std::array<std::uint8_t, S::w1> w1_encoded;
+        dsa::w1_encode<P>(w1_encoded, dsa::highbits<P>(w));
+        const auto c_tilde = dsa::H<S::ctilde>({mu, w1_encoded});
+        dsa::Poly c;
+        mldsa_sample_in_ball(c.data(), c_tilde.data(), c_tilde.size(), P::tau);
+        const auto c_hat = dsa::ntt(c);
+        const auto cs2 = dsa::invntt(dsa::scalar_vector_ntt(c_hat, s2_hat));
+        const auto ct0 = dsa::invntt(dsa::scalar_vector_ntt(c_hat, t0_hat));
+        z = y + dsa::invntt(dsa::scalar_vector_ntt(c_hat, s1_hat));
+        const auto h = dsa::make_hint<P>(-ct0, w - cs2 + ct0);
+        if (!dsa::infnorm_geq(z, P::gamma1 - P::beta) &&
+            !dsa::infnorm_geq(dsa::lowbits<P>(w - cs2), P::gamma2 - P::beta) && dsa::count_ones(h) <= P::omega) {
+            dsa::sig_encode<P>(std::span<std::uint8_t, S::sig>(sigma_out, S::sig), c_tilde, z, h);
+            return true;
+        }
+    }
+    return false;
+}
+
+// mu = H(tr || M', 64) (Algorithm 7, line 6), tr being bytes 64 to 127 of sk
+void mu_of(std::uint8_t* mu_out, const std::uint8_t* sk_bytes, const std::uint8_t* mprime, std::size_t len) {
+    const std::span<const std::uint8_t> tr(sk_bytes + 64, 64), message(mprime, len);
+    const auto mu = dsa::H<64>({tr, message});
+    std::copy(mu.begin(), mu.end(), mu_out);
+}
+
 // A signature that is valid in every respect except possibly the bound on z: one
 // coefficient of z is exactly `value` (an integer, |value| < gamma1), all others are below
 // gamma1/4 + beta in norm, and c~, the hint, r0 and c t0 are those of an honest attempt.
@@ -251,6 +300,7 @@ struct OpenPQC {
     void (*sign_with_large_z)(uint8_t*, const uint8_t*, const uint8_t*);
     bool (*sign_with_z_at)(uint8_t*, const uint8_t*, const uint8_t*, std::int32_t);
     int (*check_signing_limit)();
+    bool (*sign_ignoring_ct0)(uint8_t*, const uint8_t*, const uint8_t*, const uint8_t*);
 };
 struct Reference {
     int (*keypair)(uint8_t*, uint8_t*);
@@ -272,7 +322,7 @@ struct ReferenceInternal {
                 as_int<openpqc_mldsa##N##_external_mu>::call, as_int<openpqc_mldsa##N##_verify_mu>::call,  \
                 as_int<openpqc_mldsa##N##_prehash_sign>::call, as_int<openpqc_mldsa##N##_sign_mu>::call,   \
                 sign_with_large_z<dsa::params::ML_DSA_##N>, sign_with_z_at<dsa::params::ML_DSA_##N>,       \
-                check_signing_limit<dsa::params::ML_DSA_##N>                                               \
+                check_signing_limit<dsa::params::ML_DSA_##N>, sign_ignoring_ct0<dsa::params::ML_DSA_##N>  \
     }
 #define REFERENCE(N, impl)                                                                                 \
     Reference {                                                                                            \
@@ -338,6 +388,59 @@ void run(const Level& L, int iterations) {
     }
     // the end of the signing loop (Appendix C)
     check(L.openpqc.check_signing_limit() == 0, L.name, "signing limit (Appendix C)", -1);
+
+    // Algorithm 7, line 28: an attempt whose c t0 has a coefficient of gamma2 or more is rejected. With a key
+    // from KeyGen that does not happen (about 1e-7 per attempt), so no other offline test reaches the check,
+    // and a library without it would pass them all. Here the t0 of a private key is replaced: every
+    // coefficient of its first two polynomials is 2^12 or -(2^12 - 1), the others are 0 (skDecode accepts
+    // every value of t0, and signing does not look at pk). Sign_internal with that key must give the
+    // reference's signature for every message, and for some of them that signature must differ from the one
+    // of Algorithm 7 without the check (sign_ignoring_ct0): those are decided by line 28. With the key as
+    // KeyGen made it, all three agree, which checks sign_ignoring_ct0 itself. ML-DSA-44 only: for ML-DSA-65
+    // and -87, ||c t0|| <= tau 2^12 < gamma2, and the check can never reject.
+    if (L.pk == 1312) {
+        constexpr int messages = 200, t0_bytes = 416;   // 256 coefficients of 13 bits
+        Bytes pk(L.pk), sk(L.sk), mu(64);
+        const Bytes xi(32, 0x44);
+        check(L.openpqc.keypair_derand(pk.data(), sk.data(), xi.data()) == 0, L.name, "keypair_derand", -1);
+        Bytes doctored = sk;
+        std::uint8_t* t0 = doctored.data() + (L.sk - L.k * t0_bytes);
+        for (unsigned poly = 0; poly < L.k; poly++)
+            for (unsigned i = 0; i < 256; i++)   // the packed value is 2^12 - t0
+                set_packed(t0 + poly * t0_bytes, i, 13, poly >= 2 ? 4096u : (rng() & 1) ? 0u : 8191u);
+        int decided = 0;
+        for (int it = 0; it < messages; it++) {
+            const Bytes mprime = random_bytes(static_cast<std::size_t>(1 + it));
+            const Bytes rnd = it % 2 ? random_bytes(32) : Bytes(32, 0);
+            for (const Bytes* key : {&sk, &doctored}) {
+                Bytes ours(L.sig, 0xAA), theirs(L.sig, 0x55), unchecked(L.sig, 0x33);
+                std::size_t siglen = 0;
+                mu_of(mu.data(), key->data(), mprime.data(), mprime.size());
+                const bool ok =
+                        L.openpqc.sign_internal(ours.data(), mprime.data(), mprime.size(), rnd.data(), key->data()) == 0 &&
+                        L.internal.signature_internal(theirs.data(), &siglen, mprime.data(), mprime.size(), nullptr, 0,
+                                                      rnd.data(), key->data()) == 0 &&
+                        siglen == L.sig &&
+                        L.openpqc.sign_ignoring_ct0(unchecked.data(), key->data(), mu.data(), rnd.data());
+                check(ok, L.name,
+                      key == &sk ? "ct0 check: signing with the key of KeyGen" : "ct0 check: signing with the replaced t0",
+                      it);
+                check(ours == theirs, L.name,
+                      key == &sk ? "Sign_internal == reference (key of KeyGen)"
+                                 : "Sign_internal == reference with ||c t0|| >= gamma2 in reach (Algorithm 7, line 28)",
+                      it);
+                if (key == &sk) {
+                    check(unchecked == theirs, L.name, "sign_ignoring_ct0 == reference for a key of KeyGen", it);
+                } else if (unchecked != theirs) {
+                    decided++;
+                }
+            }
+        }
+        std::printf("%s: %d of %d signatures with the replaced t0 were decided by the check of c t0\n", L.name, decided,
+                    messages);
+        check(decided >= 5, L.name, "fewer than 5 signatures were decided by the check of c t0: line 28 is not tested",
+              decided);
+    }
 
     for (int it = 0; it < iterations; it++) {
         const Bytes xi = random_bytes(32), rnd = random_bytes(32), zero_rnd(32, 0);

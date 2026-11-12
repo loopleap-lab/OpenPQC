@@ -376,6 +376,7 @@ foreach(_openpqc_prefix "" reference_)
     foreach(_openpqc_level 512 768 1024)
         openpqc_expect_tests(TESTS ${_openpqc_prefix}mlkem${_openpqc_level}_kat NEEDS python)
     endforeach()
+    openpqc_expect_tests(TESTS ${_openpqc_prefix}mlkem_fips203 NEEDS python)
     openpqc_expect_tests(TESTS ${_openpqc_prefix}mlkem_acvp ${_openpqc_prefix}mlkem_wycheproof NEEDS python
                          LABELS network)
     foreach(_openpqc_level 44 65 87)
@@ -407,10 +408,11 @@ openpqc_expect_tests(TESTS mlkem_stack mlkem_stack_pct mlkem_stack_O0 mlkem_stac
 openpqc_expect_tests(TESTS mlkem_thread_stack mlkem_thread_stack_pct mldsa_thread_stack mldsa_thread_stack_pct
                            slhdsa_stack slhdsa_stack_pct
                      NEEDS linux threads)
-openpqc_expect_tests(TESTS mldsa_acvp NEEDS python LABELS network)
+openpqc_expect_tests(TESTS mldsa_acvp mldsa_acvp_control NEEDS python LABELS network)
 openpqc_expect_tests(TESTS mldsa_ct mldsa_O1_ct mldsa_O2_ct mldsa_O3_ct mldsa_Os_ct NEEDS valgrind nosan)
 openpqc_expect_tests(TESTS slhdsa_ct slhdsa_O2_ct NEEDS valgrind nosan LABELS slow)
 openpqc_expect_tests(TESTS slhdsa_acvp NEEDS python LABELS network slow)
+openpqc_expect_tests(TESTS slhdsa_acvp_control NEEDS python LABELS network)
 openpqc_expect_tests(TESTS reference_slhdsa_acvp NEEDS python openssl LABELS network slow)
 openpqc_expect_tests(TESTS reference_slhdsa_avx2_acvp NEEDS python openssl avx2 LABELS network)
 openpqc_expect_tests(TESTS core_rng NEEDS wrap)
