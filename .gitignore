@@ -29,6 +29,10 @@ core.[0-9]*
 # notes, the toolchain-bug reproducers and local status reports stay on the machine that wrote them. The pages of
 # docs/ that document the code are tracked.
 docs/*
+!docs/README.md
+!docs/DOCUMENTATION.md
+!docs/BUILDING.md
+!docs/SECURITY-NOTES.md
 !docs/GPU_ACCELERATION.md
 !docs/SOURCE_MAP.md
 !docs/PRIMITIVES.md
