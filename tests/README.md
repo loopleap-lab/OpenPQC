@@ -115,8 +115,8 @@ cmake --workflow --preset gcc-release-pct       # ML-KEM and ML-DSA with their p
                                                 # and their quick tests; also clang-release-pct
 ```
 
-`.github/workflows/ci.yml` runs these presets in an Arch Linux container (GCC 16, Clang 23, valgrind); it has not
-yet run on a hosted runner.
+`.github/workflows/ci.yml` runs these presets in an Arch Linux container (GCC 16, Clang 23, valgrind) on GitHub's
+hosted runners: on every push to `main`, on every pull request and once a week.
 
 A separate job runs `python3 scripts/check_docs.py`: the size limits of the front page, and every link and anchor
 of the documentation ([docs/DOCUMENTATION.md](../docs/DOCUMENTATION.md)).
