@@ -46,7 +46,21 @@
  * It sees the extensions through the predefined macros of its own compilation with the build's C flags
  * (CMakeLists.txt gives it no flags of its own), which stand for the C++ flags of the library. Run without
  * valgrind, it makes the functional checks only and reports itself skipped.
+ *
+ * FIPS 140-3 mode (OPENPQC_FIPS140_3): the library draws m from the module's HMAC_DRBG, and registering
+ * another source is refused (Core/opqc_platform.h); the test checks that refusal. For enc, the DRBG's state
+ * is made secret instead: the program is linked with -Wl,--wrap=getrandom, and in a child process (fork())
+ * the DRBG reseeds before its first draw (Core/opqc_platform.c) from an entropy input that the wrapper marks
+ * as secret. Every byte the DRBG then gives is computed from secrets, m among them, so that valgrind checks
+ * the library's HMAC_DRBG (reseed and generate) and Encaps on secret data, in the library as built. The
+ * child checks that the reseed asked for one entropy input of 32 bytes, that ct and K came out secret, and
+ * that m was not the entropy input itself; valgrind reports the child's errors with the child's process id
+ * and makes it exit with 1 (--error-exitcode), which fails the test.
  */
+
+#if defined(OPENPQC_FIPS140_3) && defined(__linux__) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE /* ssize_t, fork() and waitpid() under -std=c11 */
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -58,6 +72,14 @@
 #include "Core/opqc_platform.h"
 #include "ML/KEM/openpqc_mlkem.h"
 #include "openpqc/testing.h"
+
+#if defined(OPENPQC_FIPS140_3)
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "openpqc/common.h" /* OPENPQC_ERR_NOT_APPROVED */
+#endif
 
 #if defined(__AVX512F__) || defined(__GFNI__) || defined(__VAES__) || defined(__VPCLMULQDQ__) || \
     defined(__APX_F__)
@@ -134,6 +156,29 @@ static int secret_source(void *ctx, uint8_t *out, size_t len)
     return 0;
 }
 
+#if defined(OPENPQC_FIPS140_3)
+/* The library's getrandom() (-Wl,--wrap=getrandom): the real one, until mark_entropy is set; then ENTROPY bytes,
+ * marked as secret, and counted */
+#define ENTROPY 0xE7
+static int mark_entropy;
+static unsigned entropy_calls;
+static size_t entropy_bytes;
+
+ssize_t __real_getrandom(void *buf, size_t buflen, unsigned int flags);
+ssize_t __wrap_getrandom(void *buf, size_t buflen, unsigned int flags);
+ssize_t __wrap_getrandom(void *buf, size_t buflen, unsigned int flags)
+{
+    if (!mark_entropy) {
+        return __real_getrandom(buf, buflen, flags);
+    }
+    entropy_calls++;
+    entropy_bytes += buflen;
+    memset(buf, ENTROPY, buflen);
+    VALGRIND_MAKE_MEM_UNDEFINED(buf, buflen);
+    return (ssize_t)buflen;
+}
+#endif
+
 static void check_level(const level_t *L)
 {
     static uint8_t ek[OPENPQC_MLKEM1024_PUBLICKEYBYTES], dk[OPENPQC_MLKEM1024_SECRETKEYBYTES];
@@ -184,6 +229,47 @@ static void check_level(const level_t *L)
                L->name);
     }
 
+#if defined(OPENPQC_FIPS140_3)
+    /* Encaps with m drawn by the library, from the module's DRBG: its state made secret in a child (above) */
+    source_t source = {(uint64_t)L->k << 32, 0, 0};
+    if (opqc_set_randombytes(secret_source, &source) != OPENPQC_ERR_NOT_APPROVED || source.calls != 0) {
+        fail(L, "opqc_set_randombytes: not refused with OPENPQC_ERR_NOT_APPROVED");
+    }
+    uint8_t byte;
+    if (opqc_randombytes(&byte, 1) != 0) fail(L, "opqc_randombytes"); /* the DRBG instantiated before the fork */
+    fflush(stdout);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        errors = 0;
+        mark_entropy = 1;
+        if (L->enc(ct, K, ek) != 0) fail(L, "enc");
+        if (entropy_calls != 1 || entropy_bytes != 32) {
+            fail(L, "enc: the DRBG did not reseed after fork() from one entropy input of 32 bytes");
+        }
+        if (RUNNING_ON_VALGRIND) {
+            printf("%s enc: %ld of %zu bytes of ct and %ld of %d of K computed from the secret m it drew from the"
+                   " DRBG\n",
+                   L->name, undefined_bytes(ct, L->ct_bytes), L->ct_bytes, undefined_bytes(K, sizeof K),
+                   OPENPQC_MLKEM_BYTES);
+        }
+        if (!marked(ct, L->ct_bytes, -1) || !marked(K, sizeof K, all)) fail(L, "enc: ct and K are not secret");
+        VALGRIND_MAKE_MEM_DEFINED(ct, L->ct_bytes);
+        VALGRIND_MAKE_MEM_DEFINED(K, sizeof K);
+        if (L->dec(K_dec, ct, dk) != 0) fail(L, "dec after enc");
+        VALGRIND_MAKE_MEM_DEFINED(K_dec, sizeof K_dec);
+        if (memcmp(K_dec, K, sizeof K) != 0) fail(L, "dec: K differs from that of enc");
+        /* m was the DRBG's output: the entropy input as m gives another K */
+        memset(m, ENTROPY, sizeof m);
+        if (L->enc_derand(ct_rejected, K_rejected, ek, m) != 0) fail(L, "enc_derand (the entropy input as m)");
+        if (memcmp(K_rejected, K, sizeof K) == 0) fail(L, "enc: m was the entropy input itself");
+        fflush(stdout);
+        _exit(errors != 0 ? 1 : 0);
+    }
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fail(L, "enc with m from the DRBG: its process failed (valgrind names its errors with that process's id)");
+    }
+#else
     /* Encaps with m drawn by the library */
     source_t source = {(uint64_t)L->k << 32, 0, 0};
     if (opqc_set_randombytes(secret_source, &source) != 0) fail(L, "opqc_set_randombytes");
@@ -200,6 +286,7 @@ static void check_level(const level_t *L)
     if (L->dec(K_dec, ct, dk) != 0) fail(L, "dec after enc");
     VALGRIND_MAKE_MEM_DEFINED(K_dec, sizeof K_dec);
     if (memcmp(K_dec, K, sizeof K) != 0) fail(L, "dec: K differs from that of enc");
+#endif
 
     /* the hash check of dk (Section 7.3), on the same marks */
     if (L->check_sk(dk) != 0) fail(L, "check_sk");

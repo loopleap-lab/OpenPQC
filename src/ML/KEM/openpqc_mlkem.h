@@ -37,7 +37,7 @@
  *   keygen, keygen_from_seed   pk and sk unchanged: no randomness for d || z (keygen, OPENPQC_ERR_RNG); pk and sk
  *                              zero: the key pair was generated and its pair-wise consistency test failed
  *                              (OPENPQC_ERR_PCT) or had no randomness (OPENPQC_ERR_RNG; only in a library built
- *                              with the test, below)
+ *                              with the test: FIPS 140-3 mode, below)
  *   encaps                     ct and ss unchanged: pk failed its check (OPENPQC_ERR_INVALID_PUBLIC_KEY), or no
  *                              randomness for m (OPENPQC_ERR_RNG)
  *   decaps                     ss unchanged: sk failed its check (OPENPQC_ERR_INVALID_SECRET_KEY)
@@ -68,16 +68,49 @@
  * Randomness. keygen, encaps and check_keypair take their randomness from opqc_randombytes (Core/opqc_platform.h): from
  * the source that the application registered with opqc_set_randombytes, or else from the operating system, or, in a
  * library built with the CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes.
+ * In FIPS 140-3 mode (below) the source is the module's own HMAC_DRBG, and registering another one is refused.
  *
- * Pair-wise consistency test (FIPS 140-3). If mlkem.cpp is compiled with the definition OPENPQC_MLKEM_KEYGEN_PCT
- * (the CMake option OPENPQC_MLKEM_KEYGEN_PCT gives it to the library's objects; the tests compile their own
- * copies, tests/ML-KEM), keygen and keygen_from_seed check every new key pair as FIPS 203, Section 7.1, item 4
- * describes. keygen_from_seed then takes 32 bytes from opqc_randombytes as well, for the test's m. If they are
- * not available (OPENPQC_ERR_RNG) or the check fails (OPENPQC_ERR_PCT), pk and sk are zeroized. A key pair that
- * passes is not changed: keygen_from_seed gives the same keys for the same seed with and without the check. The
- * check is a property of the compiled library: the library's copy of the scheme layer carries names of its own
- * (Core/abi.hpp), so an application that includes the scheme headers without the definition gets its own copies
- * of key generation, which cannot take the place of the library's.
+ * Pair-wise consistency test (FIPS 140-3). If mlkem.cpp is compiled with the definition OPENPQC_MLKEM_KEYGEN_PCT (FIPS
+ * 140-3 mode gives it to the library's objects, and no other build has it: there is no CMake option for it; the tests
+ * compile their own copies, tests/ML-KEM), keygen and keygen_from_seed check every new key pair as FIPS 203, Section
+ * 7.1, item 4 describes. keygen_from_seed then takes 32 bytes from opqc_randombytes as well, for the test's m. If they
+ * are not available (OPENPQC_ERR_RNG) or the check fails (OPENPQC_ERR_PCT), pk and sk are zeroized. A key pair that
+ * passes is not changed: keygen_from_seed gives the same keys for the same seed with and without the check. The check
+ * is a property of the compiled library: the library's copy of the scheme layer carries names of its own
+ * (Core/abi.hpp), so an application that includes the scheme headers without the definition gets its own copies of key
+ * generation, which cannot take the place of the library's. In FIPS 140-3 mode the check is always compiled in, and its
+ * failure also puts the module in its error state (below).
+ *
+ * FIPS 140-3 mode. A library built with the CMake option OPENPQC_FIPS140_3 is a FIPS 140-3 module, the shared
+ * library openpqc (docs/FIPS-140-3.md; not a validated module), and each function above is one of its services. All
+ * of them are approved services (FIPS 203: KeyGen, Encaps, Decaps, and the checks of Section 7). keygen_from_seed
+ * imports a key pair in its seed format: ML-KEM.KeyGen_internal(d, z) (Algorithm 16) on a seed d || z that an
+ * approved random bit generator of a cryptographic module generated (Section 3.3), this module's or another's. NIST's
+ * PQC FAQ (the answer on KeyGen seeds as a key format, last revised on 2026-06-16) allows "generating the seed in one
+ * cryptographic module and then importing or exporting it into another cryptographic module", and says that
+ * ML-KEM.KeyGen_Internal(d, z) "can be accessed for this purpose". The module cannot check where a seed came from,
+ * and keygen does not give its own seed out. Each function:
+ *   - first checks the module's state: in the error state, which a failed self-test, pair-wise consistency test or
+ *     random bit generator puts the module in, it returns OPENPQC_ERR_ERROR_STATE and writes nothing;
+ *   - checks the state again when its computation ends: if the module entered its error state meanwhile (another
+ *     thread's failed pair-wise consistency test, or a failure of the entropy source or of the DRBG on any thread,
+ *     this call's own draw included), it zeroizes its outputs and returns OPENPQC_ERR_ERROR_STATE, so that a call
+ *     whose own draw fails returns OPENPQC_ERR_ERROR_STATE, not OPENPQC_ERR_RNG. A result returned with OPENPQC_OK
+ *     was complete while the module was operational; an error state that begins after this second check does not
+ *     reach it;
+ *   - sets the calling thread's approved-service indicator last (openpqc_fips_service_approved, openpqc/fips.h): 1
+ *     if the service is approved and returned OPENPQC_OK, 0 otherwise; a call that fails, a key, ciphertext or
+ *     argument refused included, gives no output of the approved service and reports 0;
+ *   - keygen and keygen_from_seed: when the key pair fails its own pair-wise consistency test, the call returns
+ *     OPENPQC_ERR_PCT with pk and sk zeroized, as above, and the module enters its error state, so that every service
+ *     returns OPENPQC_ERR_ERROR_STATE until the module is loaded again (openpqc/fips.h). check_keypair's
+ *     OPENPQC_ERR_PCT is a verdict on a key pair that the caller gives and leaves the module operational.
+ * The testing interfaces (openpqc/testing.h, OpenPQC::testing) are not part of the module and are not approved
+ * services; in the module's error state they return OPENPQC_ERR_ERROR_STATE and compute nothing. The C++ API
+ * (ML/KEM/mlkem.hpp) is compiled into the application: its calls are calls of the functions above, and the
+ * indicator then reports theirs. The scheme templates (ML/KEM/scheme, in the source tree) compiled into an
+ * application are the application's own code, outside the module: no self-test, state or indicator of the module
+ * applies to them, and they are not approved services.
  *
  * Destruction of intermediate values (FIPS 203, Section 3.3). keygen, keygen_from_seed, encaps, decaps and
  * check_keypair destroy their intermediate values before they return: the code zeroizes what it names, and then the

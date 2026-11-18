@@ -21,7 +21,8 @@
  * a shared secret or a signature. So every result is checked, and a section
  * stops at the first call that fails; the headers declare the functions
  * OPENPQC_MUST_CHECK, and the compiler warns about a call whose result is not
- * used. The functions take their randomness from the operating system, except
+ * used. The functions take their randomness from opqc_randombytes (the operating
+ * system's RNG; in FIPS 140-3 mode the module's HMAC_DRBG), except
  * SLH-DSA's sign_deterministic, the deterministic variant that FIPS 205
  * permits. The functions that take the randomness from the caller, and the
  * internal functions, are for testing: they are in another library

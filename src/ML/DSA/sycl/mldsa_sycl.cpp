@@ -37,12 +37,13 @@
 // The secret ones are zeroized at the end of every call (FIPS 204, Section
 // 3.6.3), and the arithmetic stages clear their local memory before they end.
 // Signing also zeroizes mu and its copy of the context string, which come from
-// the message, as the CPU library destroys mu after Sign. Verification
+// the message, as the CPU library destroys mu after Sign, and the challenges c
+// and the result flags of its attempts. Verification
 // zeroizes all of its values but A^, which the standard lets an
 // implementation keep: its inputs may have to stay confidential (Section 3.6.3:
 // a signature used as a bearer token, a confidential message). create zeroizes
-// the whole workspace after its self-test, so that a new context holds none of
-// the self-test's values. What is public follows the CPU code
+// the whole workspace after its self-test (a build with it, below), so that a new
+// context holds none of the self-test's values. What is public follows the CPU code
 // (scheme/mldsa_internal.hpp): rho and A^, the rejection decisions and c~ of
 // every attempt, z and h of the attempt that succeeds, and whether sk is well
 // formed; the kernels branch on nothing else derived from secrets. As the CPU
@@ -59,12 +60,38 @@
 // context has failed, or when the counters are not those a complete round leaves.
 // Verification fills its status entries with OPENPQC_ERR_INVALID_SIGNATURE
 // before its first kernel, so that an entry no kernel decides never reads as
-// valid. create runs a known-answer self-test on the device
-// (mldsa_sycl_self_test.hpp), and a build with OPENPQC_MLDSA_KEYGEN_PCT tests
-// every key pair that KeyGen makes, as the CPU library's option does.
+// valid.
+//
+// FIPS 140-3 mode (OPENPQC_FIPS140_3), as the other two backends and the CPU
+// library do it:
+//  * create runs a known-answer self-test of the context's level on the device
+//    (self_test, mldsa_sycl_self_test.hpp: one KeyGen, one deterministic
+//    signature, and the verification of it and of a tampered copy, against the
+//    CPU library's answers) and fails with OPQC_SYCL_MLDSA_SELF_TEST_FAIL if the
+//    device computes a wrong result: FIPS 140-3 asks a module to test an
+//    algorithm before it uses it (IG 10.3.A), and the compilers of device code
+//    have been seen to miscompile code like this, some of them at run time on the
+//    machine that runs it. A build outside FIPS mode has no such check (the
+//    developer definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST compiles it in for
+//    the tests): there, only the tests compare the device's results with the CPU
+//    library's.
+//  * KeyGen tests every key pair it makes, as the CPU library does in this mode;
+//    a pair counts as passed only once the test's last kernel has seen it pass.
+//    Outside FIPS mode only test objects compiled with OPENPQC_MLDSA_KEYGEN_PCT
+//    have it.
 
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
+// Whether create runs the known-answer self-test (self_test): in FIPS 140-3 mode, and where the developer
+// definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST is given (the white-box test test_mldsa_sycl_faults; no target
+// of the libraries defines it). Without it, the self-test and its answers are not compiled at all, so that no
+// library of an ordinary build holds them (test gpu_self_test).
+#if defined(OPENPQC_FIPS140_3) || defined(OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST)
+#define OPQC_MLDSA_SYCL_SELF_TEST 1
+#else
+#define OPQC_MLDSA_SYCL_SELF_TEST 0
+#endif
 
 #include "ML/DSA/sycl/openpqc_mldsa_sycl.h"
 
@@ -99,7 +126,9 @@
 #include "ML/DSA/scheme/encoding.hpp"
 #include "ML/DSA/scheme/mldsa_internal.hpp"
 #include "ML/DSA/scheme/parameter_sets.hpp"
+#if OPQC_MLDSA_SYCL_SELF_TEST
 #include "ML/DSA/sycl/mldsa_sycl_self_test.hpp"
+#endif
 
 namespace openpqc::mldsa::gpu {
 namespace {
@@ -170,15 +199,21 @@ struct Workspace {
     std::uint32_t* count;      // signing: [0] signatures left for the next round, [1]          public
                                // signatures finished in the round, [2] signatures that reached
                                // the signing limit (Appendix C), [3] signatures whose key was
-                               // refused; KeyGen's test: [0] failures
+                               // refused; KeyGen's test: [0] failures, [1] passes
 };
 
-// Whether KeyGen tests the pair-wise consistency of every key pair it makes (keygen_pct)
-#if defined(OPENPQC_MLDSA_KEYGEN_PCT)
+// Whether KeyGen tests the pair-wise consistency of every key pair it makes (keygen_pct): in FIPS 140-3 mode,
+// since a module must test every key pair it generates (FIPS 140-3 IG 10.3.A), and in a test object that defines
+// OPENPQC_MLDSA_KEYGEN_PCT itself (the white-box test test_mldsa_sycl_faults; outside FIPS mode the build gives
+// that definition to no library)
+#if defined(OPENPQC_MLDSA_KEYGEN_PCT) || defined(OPENPQC_FIPS140_3)
 constexpr bool KEYGEN_PCT = true;
 #else
 constexpr bool KEYGEN_PCT = false;
 #endif
+// Whether create runs the known-answer self-test (self_test; OPQC_MLDSA_SYCL_SELF_TEST, above), for the tests: the
+// code itself uses the preprocessor's answer
+[[maybe_unused]] constexpr bool CREATE_SELF_TEST = OPQC_MLDSA_SYCL_SELF_TEST != 0;
 
 // The scheduling of the signing loop (see the top of the file). On the RTX 3050, these
 // defaults were within 9 % of the best setting measured for every batch size from 8 to
@@ -1285,8 +1320,9 @@ void verify(sycl::queue& q, const Workspace& ws, const std::uint8_t* sig, Messag
 }
 
 // KeyGen's pair-wise consistency test, after it: pk and sk of every operation whose test
-// failed (pct_status != 0) are overwritten with zeros, and the failures counted in count[0].
-// COPY_LANES work-items per operation.
+// failed (pct_status != 0) are overwritten with zeros; the failures are counted in count[0] and
+// the passes in count[1], so that the caller sees whether this kernel ran for every operation
+// (the two add up to n). COPY_LANES work-items per operation.
 template <class P>
 void discard_failed_pairs(sycl::queue& q, const Workspace& ws, std::uint8_t* pk_base, std::uint8_t* sk_base,
                           std::size_t n) {
@@ -1295,7 +1331,10 @@ void discard_failed_pairs(sycl::queue& q, const Workspace& ws, std::uint8_t* pk_
     for_each_item(q, n * COPY_LANES, [=](std::size_t t) {
         const std::size_t op = t / COPY_LANES;
         const unsigned lane = static_cast<unsigned>(t % COPY_LANES);
-        if (w.pct_status[op] == 0) return;
+        if (w.pct_status[op] == 0) {
+            if (lane == 0) count_up(w.count[1]);
+            return;
+        }
         std::uint8_t* pk = pk_base + op * S::pk;
         std::uint8_t* sk = sk_base + op * S::sk;
         for (std::size_t i = lane; i < S::pk; i += COPY_LANES) pk[i] = 0;
@@ -1304,19 +1343,23 @@ void discard_failed_pairs(sycl::queue& q, const Workspace& ws, std::uint8_t* pk_
     });
 }
 
-// The pair-wise consistency test of KeyGen (a build with OPENPQC_MLDSA_KEYGEN_PCT; FIPS 140-3
-// asks it of validated modules, as the CPU library's option does, scheme/ml_dsa.hpp): each of
+// The pair-wise consistency test of KeyGen (KEYGEN_PCT; FIPS 140-3 asks it of validated modules,
+// as the CPU library does in FIPS 140-3 mode, scheme/ml_dsa.hpp): each of
 // the n key pairs at pk and sk signs the empty message, with the empty context string and
 // rnd = 0 (M' = 0 || 0, Algorithm 2, line 10; Algorithm 7), and the signature must verify
 // under its public key (Algorithm 3). Signing reads tr from sk and verification computes it
 // from pk, so the test covers every part of the key pair. The status entries are set to
 // "invalid" before verification, so that a verification that does not run fails the test. The
 // pk and sk of every pair that fails are overwritten with zeros, and their number is added to
-// `failures`. Returns the largest number of slots signing used, for the zeroization after the
-// chunk. Waits (signing, and the copy of the count); a context that fails stops it.
+// `failures`. Unless the counts of failures and passes add up to n (discard_failed_pairs did not
+// run for every pair, or its counts could not be read back), no pair of the chunk counts as
+// tested: all n pairs are overwritten with zeros and counted as failures. Returns the largest
+// number of slots signing used, for the zeroization after the chunk. Waits (signing, the copy of
+// the counts, and the zeroization of a whole chunk); a context that fails stops it.
 template <class P>
 std::size_t keygen_pct(openpqc::gpu::ContextQueue& q, const Workspace& ws, const Schedule& schedule,
                        std::size_t max_slots, std::uint8_t* pk, std::uint8_t* sk, std::size_t n, std::size_t& failures) {
+    using S = Sizes<P>;
     // the empty messages: n + 1 offsets of 0 (pct_zero has 32 bytes per operation, at least 8 (n + 1))
     const Messages empty{ws.pct_zero, reinterpret_cast<const std::uint64_t*>(ws.pct_zero), 0};
     SignStats stats;
@@ -1325,10 +1368,17 @@ std::size_t keygen_pct(openpqc::gpu::ContextQueue& q, const Workspace& ws, const
     if (q.failed()) return slots;
     q.fill(ws.pct_status, std::int32_t{OPENPQC_ERR_INVALID_SIGNATURE}, n);
     verify<P, true>(q, ws, ws.pct_sig, empty, nullptr, pk, 1, ws.pct_status, n);
-    q.memset(ws.count, 0, sizeof(std::uint32_t));
+    q.memset(ws.count, 0, 2 * sizeof(std::uint32_t));
     discard_failed_pairs<P>(q, ws, pk, sk, n);
-    std::uint32_t failed = 0;
-    if (openpqc::gpu::copy(q, &failed, ws.count, sizeof failed, true) == 0) failures += failed;
+    std::uint32_t counts[2] = {0, 0};   // failures, passes
+    if (openpqc::gpu::copy(q, counts, ws.count, sizeof counts, true) != 0) counts[0] = counts[1] = 0;
+    if (static_cast<std::size_t>(counts[0]) + counts[1] == n) {
+        failures += counts[0];
+    } else {
+        q.memset(pk, 0, S::pk * n);
+        q.memset(sk, 0, S::sk * n).wait();
+        failures += n;
+    }
     return slots;
 }
 
@@ -1352,15 +1402,18 @@ constexpr std::array<std::size_t, SECTIONS> section_bytes() {
 }
 
 // The sections that each operation zeroizes when it is done (bit i = section i): KeyGen those that
-// hold secrets; signing those and mu, which is computed from the message (Algorithm 7, line 6) and
-// may reveal it, as the CPU library destroys it after Sign; verification every section it writes,
-// but A^ (FIPS 204, Section 3.6.3: its intermediate values may reveal its inputs, which some
-// applications must keep confidential, and A^, computed from the public key, may be kept). The
-// context string, which signing and verification also write, is zeroized by sign_any and
-// verify_any.
+// hold secrets; signing those, mu, which is computed from the message (Algorithm 7, line 6) and
+// may reveal it, as the CPU library destroys it after Sign, and the challenges c and the result
+// flags of its attempts: the kernels may branch on them (the rejection decisions and c~ are public
+// in the CPU code's leakage model), but they are intermediate values of Sign computed from mu and
+// the key, and c of an attempt that was rejected is published nowhere (Section 3.6.3); verification
+// every section it writes, but A^ (Section 3.6.3: its intermediate values may reveal its inputs,
+// which some applications must keep confidential, and A^, computed from the public key, may be
+// kept). The context string, which signing and verification also write, is zeroized by sign_any
+// and verify_any.
 constexpr unsigned bit(Section s) { return 1u << s; }
 constexpr unsigned SIGN_SECRETS = bit(SECRETS) | bit(RHO_PP) | bit(YBYTES) | bit(SCRATCH) | bit(W) | bit(W1) | bit(SIG);
-constexpr unsigned SIGN_SECTIONS = SIGN_SECRETS | bit(MU);
+constexpr unsigned SIGN_SECTIONS = SIGN_SECRETS | bit(MU) | bit(C) | bit(FLAGS);
 constexpr unsigned VERIFY_SECTIONS = bit(TR) | bit(MU) | bit(SCRATCH) | bit(W) | bit(W1) | bit(C) | bit(FLAGS);
 constexpr unsigned KEYGEN_SECRETS =   // with the test's signing and verification
         bit(SEEDS) | bit(SECRETS) | (KEYGEN_PCT ? SIGN_SECTIONS | VERIFY_SECTIONS | bit(PCT_SIG) : 0u);
@@ -1499,7 +1552,8 @@ int wipe_context(opqc_sycl_mldsa* ctx, std::size_t ctxlen) {
 // the figures are cleared before anything else, so that a call that is refused or launches
 // nothing reports 0 rounds and 0 attempts, not those of the call before it. What the call leaves
 // in the workspace is zeroized before it returns, on every way out (FIPS 204, Section 3.6.3):
-// each chunk's secret sections and mu behind the chunk (SIGN_SECTIONS), then the context string;
+// each chunk's secret sections, mu, and the challenges and flags of its attempts behind the chunk
+// (SIGN_SECTIONS), then the context string;
 // a refused call has queued nothing, and a context that fails zeroizes the whole workspace (check).
 int sign_any(opqc_sycl_mldsa* ctx, std::uint8_t* sig, gpu::Messages msgs, const std::uint8_t* ctxstr,
              const std::uint8_t* mu, const std::uint8_t* rnd, const std::uint8_t* sk, bool one_key,
@@ -1618,7 +1672,8 @@ int verify_any(opqc_sycl_mldsa* ctx, const std::uint8_t* sig, gpu::Messages msgs
     return rc;
 }
 
-// The self-test of create (openpqc_mldsa_sycl.h, Self-test), on the context's device, through
+#if OPQC_MLDSA_SYCL_SELF_TEST
+// The self-test of create (CREATE_SELF_TEST; openpqc_mldsa_sycl.h, Self-test), on the context's device, through
 // the C API below: KeyGen from the seed xi of mldsa_sycl_self_test.hpp (with the pair-wise
 // consistency test in a build that has it), the deterministic signature (rnd = 0) of its message
 // with its context string under that key, and, in one call, the verification of that signature
@@ -1730,10 +1785,12 @@ int self_test(opqc_sycl_mldsa* ctx) {
     ok = ok && s[0] == 0 && s[1] == 0 && s[2] == OPENPQC_ERR_INVALID_SIGNATURE;
     return ok ? 0 : OPQC_SYCL_MLDSA_SELF_TEST_FAIL;
 }
+#endif // OPQC_MLDSA_SYCL_SELF_TEST
 
 // The randomized calls: xi or rnd from opqc_randombytes (Core/opqc_platform.h: the source registered
 // with opqc_set_randombytes if there is one, else the application's opqc_external_randombytes in a
-// build with OPENPQC_EXTERNAL_RANDOMBYTES, else the operating system's generator, the default), 32
+// build with OPENPQC_EXTERNAL_RANDOMBYTES, else the operating system's generator, the default; in FIPS
+// 140-3 mode only the module's HMAC_DRBG, which refuses every registration), 32
 // bytes per operation, copied into the workspace and destroyed whatever happened
 // (Core/sycl/opqc_sycl_context.hpp, with_random_coins: xi is as secret as the key it expands to),
 // then the derandomized operation. A result `sticky` of a chunk (a signature at the signing limit;
@@ -1765,7 +1822,8 @@ int sign_random(opqc_sycl_mldsa* ctx, std::size_t n, F launch) {
 }
 
 // create, on the device with index `device` (opqc_sycl_mldsa_create) or on the device `given`, in the SYCL
-// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp)
+// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp), with the self-test in a
+// build with it (CREATE_SELF_TEST)
 // The workspace's extra bytes, after the 256-byte aligned sections: the context string, then the counters
 constexpr std::size_t EXTRA_BYTES = 256 + 256;
 
@@ -1809,15 +1867,17 @@ int create_context(opqc_sycl_mldsa** out, int level, std::size_t max_batch, int 
                             words(gpu::BAD_KEY),
                             at(gpu::PCT_ZERO),    at(gpu::PCT_SIG),  reinterpret_cast<std::int32_t*>(at(gpu::PCT_STATUS)),
                             extra,                reinterpret_cast<std::uint32_t*>(extra + 256)};
+#if OPQC_MLDSA_SYCL_SELF_TEST
         const int rc = self_test(ctx.get());
         if (rc != 0) return rc;
         // The self-test's values are public, but its calls leave some of them in the workspace (A^, the
         // challenges and results of its signing attempts, its lists and counters), in sections that hold the
         // caller's values later: a new context holds none of them. A context that fails here returns -2 (no
-        // context).
+        // context). Without the self-test the workspace is as allocate() left it: zero.
         ctx->wipe_workspace();
         if (ctx->check() != 0) return -2;
         ctx->stats = {};
+#endif
         *out = ctx.release();
         return 0;
     });
@@ -1886,8 +1946,8 @@ void zero_key_pairs(opqc_sycl_mldsa* ctx, std::uint8_t* pk, std::uint8_t* sk, st
 
 } // namespace
 
-// KeyGen from n seeds xi; in a build with OPENPQC_MLDSA_KEYGEN_PCT followed by the pair-wise
-// consistency test (keygen_pct): the call then returns OPENPQC_ERR_PCT if a key pair
+// KeyGen from n seeds xi; in a build with the pair-wise consistency test (KEYGEN_PCT) followed by
+// it (keygen_pct): the call then returns OPENPQC_ERR_PCT if a key pair
 // failed it, and that pair's pk and sk are zeros. Any other failure zeroes all of pk and sk.
 extern "C" int opqc_sycl_mldsa_keypair_derand(opqc_sycl_mldsa* ctx, std::uint8_t* pk, std::uint8_t* sk,
                                               const std::uint8_t* seeds, std::size_t n) {

@@ -118,8 +118,31 @@
 // of bytes in device memory that neighbouring values were ORed into); no shift by 64 (undefined; idx_tree
 // has 64 bits for SLH-DSA-*-256f).
 
+//
+// FIPS 140-3 mode (OPENPQC_FIPS140_3), as the other two backends and the CPU library do it: create runs a
+// known-answer self-test of the context's parameter set on the device (self_test: one KeyGen, one
+// deterministic signature, and the verification of it and of a tampered copy, against the CPU library's
+// answers), and fails with OPENPQC_ERR_SELF_TEST if the device computes a wrong result (FIPS 140-3 asks a
+// module to test an algorithm before it uses it, IG 10.3.A, and the compilers of device code have been seen
+// to miscompile code like this); and KeyGen tests every key pair it makes (keygen_pct: a signature of the
+// empty message that must verify), as the CPU library's OPENPQC_SLHDSA_KEYGEN_PCT does. Every pair must be
+// counted as passed: if one pair fails, or a part of the test does not run, the whole call fails, every key
+// of it is zeroized, and it returns OPENPQC_ERR_PCT. A build outside FIPS mode has neither: only test objects
+// compiled with OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST and OPENPQC_SLHDSA_KEYGEN_PCT have them.
+
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
+// Whether create runs the known-answer self-test (self_test): in FIPS 140-3 mode (a module tests every
+// algorithm it offers before it uses it, IG 10.3.A), and where the developer definition
+// OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST is given (the white-box test test_slhdsa_sycl_faults; no target of the
+// libraries defines it). Without it, the self-test and its answers are not compiled at all, so that no library of
+// an ordinary build holds them (test gpu_self_test).
+#if defined(OPENPQC_FIPS140_3) || defined(OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST)
+#define OPQC_SLHDSA_SYCL_SELF_TEST 1
+#else
+#define OPQC_SLHDSA_SYCL_SELF_TEST 0
+#endif
 
 #include "SLH/DSA/sycl/openpqc_slhdsa_sycl.h"
 
@@ -132,11 +155,14 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include "Core/opqc_platform.h"
+#include "Core/opqc_sha3.h"
 #include "Core/prehash.hpp"
 #include "Core/sycl/opqc_sycl_backends.hpp"
 #include "Core/sycl/opqc_sycl_context.hpp"
@@ -189,6 +215,19 @@ void for_each_item(sycl::queue& q, std::size_t n, F f) {
     core::for_each_item<HASH_GROUP>(q, n, f);
 }
 
+// Whether KeyGen tests the pair-wise consistency of every key pair it makes (keygen_pct): in FIPS 140-3 mode,
+// since a module must test every key pair it generates (FIPS 140-3 IG 10.3.A), and in a test object that defines
+// OPENPQC_SLHDSA_KEYGEN_PCT itself (the white-box test test_slhdsa_sycl_faults; outside FIPS mode the build gives
+// that definition to no library)
+#if defined(OPENPQC_SLHDSA_KEYGEN_PCT) || defined(OPENPQC_FIPS140_3)
+constexpr bool KEYGEN_PCT = true;
+#else
+constexpr bool KEYGEN_PCT = false;
+#endif
+// Whether create runs the known-answer self-test (self_test; OPQC_SLHDSA_SYCL_SELF_TEST, above), for the tests: the
+// code itself uses the preprocessor's answer
+[[maybe_unused]] constexpr bool CREATE_SELF_TEST = OPQC_SLHDSA_SYCL_SELF_TEST != 0;
+
 // ------------------------------------------------------------------ workspace
 
 // Device workspace: struct of arrays over the operations of one launch (sizes in section_bytes)
@@ -204,6 +243,10 @@ struct Workspace {
     std::uint8_t* nodes;     // the XMSS leaves (WOTS+ public keys) of all layers (Sign), of the top layer
                              // (KeyGen)                                                           secret
     std::uint64_t* offsets;  // the offsets of the pre-hashes PH(M) of a launch                     public
+    // KeyGen's pair-wise consistency test (keygen_pct; sections of 0 bytes without it)
+    std::uint8_t* pct_sig;   // |SIG| B per key: the test's signature                             secret
+    std::int32_t* pct_status;   // 4 B per key, twice: the verdicts, then (word max_batch) the count of
+                                // the pairs that passed                                           public
     std::uint8_t* ctx;       // MAX_HEAD_BYTES: ctx || OID of the call (put_context)               public
 };
 
@@ -1260,25 +1303,60 @@ void verify(sycl::queue& q, const Workspace& ws, const std::uint8_t* sig, Keys k
     probe("hypertree");
 }
 
+// The pair-wise consistency test of KeyGen (KEYGEN_PCT; FIPS 140-3 asks it of validated modules, as the CPU
+// library does in FIPS 140-3 mode, scheme/slh_dsa.hpp): each of the n key pairs at pk and sk signs
+// the empty message with the empty context string, the deterministic variant (M' = 0 || 0, Algorithm 22,
+// line 8; Algorithm 19 with opt_rand = PK.seed), into pct_sig, and that signature must verify under pk
+// (Algorithm 24 with Algorithm 20). Signing reads SK.seed, SK.prf, PK.seed and PK.root from sk, and
+// verification PK.seed and PK.root from pk, so that the test covers every part of the key pair. The verdicts
+// go to pct_status, set to "invalid" first, so that a verification that does not run fails the test, and the
+// number of pairs that PASSED is added to pct_status[max_batch], which the caller has zeroed and compares with
+// n: a count that does not run leaves no pass.
+template <class P>
+void keygen_pct(sycl::queue& q, const Workspace& ws, std::size_t max_batch, const std::uint8_t* pk,
+                const std::uint8_t* sk, std::size_t n) {
+    // no byte of msg is read (every message is empty); it only has to be device memory
+    const MessageForm empty{{ws.pct_sig, nullptr, 0, core::UNCHECKED_LENGTH, true, 0}, 0, 0, false};
+    sign<P>(q, ws, ws.pct_sig, secret_keys<P>(sk, false), empty, nullptr, n);
+    q.fill(ws.pct_status, std::int32_t{OPENPQC_ERR_INVALID_SIGNATURE}, n);
+    verify<P>(q, ws, ws.pct_sig, public_keys<P>(pk, false), empty, ws.pct_status, n);
+    const std::int32_t* verdicts = ws.pct_status;
+    auto* passes = reinterpret_cast<std::uint32_t*>(ws.pct_status + max_batch);
+    for_each_item(q, n, [=](std::size_t op) OPQC_KERNEL_INLINE {
+        if (verdicts[op] == 0) {   // the count: an atomic add in device memory
+            sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>(*passes)
+                    .fetch_add(1u);
+        }
+    });
+}
+
 // ------------------------------------------------------------------ workspace layout
 
-enum Section : unsigned { COINS, SEEDS, DIGEST, ROOTS, DIGITS, ENDS, SCRATCH, NODES, OFFSETS, SECTIONS };
+enum Section : unsigned { COINS, SEEDS, DIGEST, ROOTS, DIGITS, ENDS, SCRATCH, NODES, OFFSETS, PCT_SIG, PCT_STATUS,
+                          SECTIONS };
 template <class P>
 constexpr std::array<std::size_t, SECTIONS> section_bytes() {
     using Sp = Space<P>;
-    return {Sp::coins, Sp::seeds, Sp::digest, Sp::roots, Sp::digits, Sp::ends, Sp::scratch, Sp::nodes, Sp::offsets};
+    constexpr std::size_t pct = KEYGEN_PCT ? 1 : 0;
+    return {Sp::coins, Sp::seeds,   Sp::digest,  Sp::roots,           Sp::digits, Sp::ends,
+            Sp::scratch, Sp::nodes, Sp::offsets, pct * Sizes<P>::sig, pct * 8};
 }
 constexpr std::size_t HEAD_BYTES = round_up(core::MAX_HEAD_BYTES, 256);   // after the sections: ctx || OID
 
-// The operations, by the sections they use (and so zeroize)
-enum class Kind { keygen, sign, verify };
+// The operations, by the sections they use (and so zeroize); KeyGen's pair-wise consistency test signs and
+// verifies, and nothing of it is an output (FIPS 205, Section 3.1)
+enum class Kind { keygen, sign, verify, keygen_pct };
 template <class P>
 constexpr std::array<std::size_t, SECTIONS> used_bytes(Kind kind) {
     using Sp = Space<P>;
     switch (kind) {
-        case Kind::keygen: return {0, Sp::seeds, 0, Sp::roots, 0, 0, Sp::scratch_keygen, Sp::nodes_keygen, 0};
-        case Kind::sign: return {0, Sp::seeds, Sp::digest, Sp::roots, Sp::digits, 0, Sp::scratch, Sp::nodes, 0};
-        default: return {0, Sp::seeds, Sp::digest, Sp::roots, Sp::digits, Sp::ends, 0, 0, 0};
+        case Kind::keygen: return {0, Sp::seeds, 0, Sp::roots, 0, 0, Sp::scratch_keygen, Sp::nodes_keygen, 0, 0, 0};
+        case Kind::sign: return {0, Sp::seeds, Sp::digest, Sp::roots, Sp::digits, 0, Sp::scratch, Sp::nodes, 0, 0, 0};
+        case Kind::verify: return {0, Sp::seeds, Sp::digest, Sp::roots, Sp::digits, Sp::ends, 0, 0, 0, 0, 0};
+        default:
+            return {0,         Sp::seeds, Sp::digest, Sp::roots, Sp::digits, Sp::ends, Sp::scratch,
+                    Sp::nodes, 0,         section_bytes<P>()[PCT_SIG], section_bytes<P>()[PCT_STATUS]};
     }
 }
 
@@ -1306,6 +1384,153 @@ constexpr bool built(int id) {
         if (s == id) return true;
     return false;
 }
+
+#if OPQC_SLHDSA_SYCL_SELF_TEST
+// The inputs and known answers of the self-test of create (self_test, CREATE_SELF_TEST): KeyGen of the seeds
+// SK.seed || SK.prf || PK.seed (Algorithm 18), the deterministic signature (Algorithm 22 with Algorithm 19,
+// opt_rand = PK.seed) of the message M with the context string ctx under that key, and the verification
+// (Algorithm 24) of that signature and of a copy of it with bit 0 of byte n (the first after R) flipped. The
+// answers are the CPU library's (SLH/DSA/openpqc_slhdsa.h) for these inputs: the SHA3-256 hashes of pk, sk and
+// the signature, per parameter set (the C API's ids, FIPS 205, Table 2). tests/gpu/test_slhdsa_sycl_faults.cpp
+// computes them again with the CPU library and fails if they differ ("test_slhdsa_sycl_faults
+// self-test-values" prints them in this form, for a change of the inputs).
+namespace self_test {
+// byte i of each input: the seeds are bytes 0 .. 3n - 1, M 100 bytes, ctx 5 bytes
+constexpr std::size_t MESSAGE_BYTES = 100, CONTEXT_BYTES = 5;
+constexpr std::uint8_t seed(std::size_t i) { return static_cast<std::uint8_t>(i); }
+constexpr std::uint8_t message(std::size_t i) { return static_cast<std::uint8_t>(0x40 + i); }
+constexpr std::uint8_t context(std::size_t i) { return static_cast<std::uint8_t>(0xC0 + i); }
+
+struct Answers {
+    int set;
+    std::array<std::uint8_t, 32> pk;    // SHA3-256(pk)
+    std::array<std::uint8_t, 32> sk;    // SHA3-256(sk)
+    std::array<std::uint8_t, 32> sig;   // SHA3-256 of the signature
+};
+constexpr std::array<Answers, 12> answers = {{
+        {1,   // SLH-DSA-SHA2-128s
+         /* SHA3-256(pk ) */ {0x55, 0x12, 0x7b, 0x7b, 0x5f, 0xff, 0xb8, 0x8d, 0x3c, 0x7c, 0x4e, 0xf4,
+                    0x46, 0xf6, 0x68, 0x62, 0xcc, 0x67, 0x01, 0x1d, 0xd8, 0xc4, 0x55, 0xf0,
+                    0x4e, 0xdd, 0x47, 0x06, 0x3b, 0xfa, 0x0d, 0xd7},
+         /* SHA3-256(sk ) */ {0x8d, 0xcc, 0xee, 0x51, 0x1a, 0x4d, 0x80, 0x9d, 0x62, 0xc6, 0x84, 0xa2,
+                    0x45, 0x70, 0x26, 0xf1, 0x63, 0xd3, 0xc8, 0x33, 0x81, 0x1d, 0x6b, 0x20,
+                    0x77, 0xe5, 0x7c, 0xa6, 0x19, 0xde, 0xa5, 0xed},
+         /* SHA3-256(sig) */ {0xde, 0x3e, 0x94, 0xaa, 0xc0, 0x9b, 0x00, 0xbe, 0x5a, 0xc3, 0xca, 0x4f,
+                    0x90, 0xde, 0x3b, 0xf9, 0xd9, 0x75, 0xec, 0x07, 0xe4, 0x79, 0xea, 0x2a,
+                    0xe8, 0xda, 0xd1, 0x67, 0x14, 0x42, 0x7a, 0xb4}},
+        {2,   // SLH-DSA-SHAKE-128s
+         /* SHA3-256(pk ) */ {0x1e, 0xf7, 0x9c, 0xee, 0x42, 0xb7, 0xe9, 0xe2, 0xd8, 0x5b, 0xcb, 0x27,
+                    0x6e, 0x3a, 0x56, 0x9a, 0xd8, 0xd6, 0x2b, 0x7f, 0x3b, 0x12, 0x68, 0x39,
+                    0xa1, 0x88, 0x2e, 0x21, 0x4c, 0x82, 0x9a, 0xe0},
+         /* SHA3-256(sk ) */ {0xd8, 0xa7, 0xf1, 0xac, 0xd6, 0x51, 0xa1, 0x2d, 0xf3, 0x4b, 0xeb, 0x7d,
+                    0x9f, 0xe9, 0xf0, 0xbf, 0xea, 0xb5, 0x9b, 0x07, 0xf1, 0x68, 0x2a, 0x13,
+                    0xc1, 0x0a, 0x73, 0x45, 0xd9, 0x04, 0x8a, 0x7e},
+         /* SHA3-256(sig) */ {0x20, 0x11, 0x8f, 0xa5, 0xc9, 0x62, 0x76, 0xe5, 0x5e, 0xa8, 0x2c, 0xca,
+                    0x7b, 0x11, 0x52, 0x93, 0x73, 0x6d, 0x1b, 0x0c, 0xd2, 0x26, 0x55, 0x06,
+                    0xc8, 0xbe, 0x27, 0xb5, 0x8b, 0x05, 0x0d, 0x70}},
+        {3,   // SLH-DSA-SHA2-128f
+         /* SHA3-256(pk ) */ {0x4c, 0x06, 0xd9, 0xd1, 0x40, 0xed, 0x03, 0xb5, 0x55, 0xfa, 0x76, 0x29,
+                    0x27, 0xd7, 0xc3, 0x51, 0xf6, 0xcf, 0x20, 0x40, 0x19, 0x07, 0xb2, 0x5a,
+                    0x34, 0x5d, 0xc8, 0x32, 0xb1, 0x45, 0xa7, 0xdd},
+         /* SHA3-256(sk ) */ {0x72, 0xdd, 0xa1, 0x44, 0x8e, 0x43, 0x41, 0x35, 0x2c, 0xd4, 0x47, 0xa2,
+                    0xbf, 0xeb, 0x4a, 0x65, 0xb4, 0x2b, 0xa6, 0x90, 0xa3, 0xdd, 0x1a, 0xed,
+                    0xcf, 0xeb, 0x19, 0x92, 0x3c, 0x62, 0x93, 0xe2},
+         /* SHA3-256(sig) */ {0xb8, 0x44, 0x09, 0x6b, 0xfb, 0x3b, 0x6a, 0xcf, 0x0c, 0x41, 0xcb, 0x91,
+                    0xc3, 0xdf, 0x53, 0xf8, 0x5d, 0x92, 0xa8, 0x27, 0x5c, 0xa6, 0xc6, 0x09,
+                    0x1b, 0x37, 0xf5, 0x34, 0x0a, 0xe0, 0xcc, 0x97}},
+        {4,   // SLH-DSA-SHAKE-128f
+         /* SHA3-256(pk ) */ {0x84, 0xf2, 0x3d, 0x58, 0xab, 0xc7, 0xf4, 0xba, 0x57, 0xc4, 0xef, 0x38,
+                    0x42, 0xfa, 0x6e, 0x09, 0xa5, 0x7f, 0xff, 0x63, 0x2f, 0xab, 0x75, 0xdd,
+                    0xcf, 0x1e, 0x34, 0x58, 0xe6, 0xbf, 0xd8, 0xad},
+         /* SHA3-256(sk ) */ {0x3e, 0xe4, 0xdd, 0x09, 0x33, 0x69, 0xb8, 0x40, 0xdb, 0x1b, 0xc4, 0x8a,
+                    0xad, 0x38, 0xea, 0xee, 0xd2, 0x9e, 0x50, 0x75, 0xbd, 0x1a, 0x07, 0x5e,
+                    0x3a, 0xbe, 0xa1, 0x7e, 0x65, 0x5a, 0x55, 0xdf},
+         /* SHA3-256(sig) */ {0x61, 0x12, 0xca, 0x39, 0x8a, 0x93, 0x1e, 0x8c, 0x16, 0x13, 0x99, 0x0d,
+                    0x88, 0xcd, 0x11, 0x8e, 0x2a, 0xcc, 0x77, 0xbc, 0x2d, 0xab, 0xdd, 0xbf,
+                    0x08, 0xad, 0x99, 0xbf, 0x8a, 0xb1, 0xa2, 0xb7}},
+        {5,   // SLH-DSA-SHA2-192s
+         /* SHA3-256(pk ) */ {0x1e, 0x58, 0x89, 0x41, 0xee, 0x71, 0xad, 0xba, 0xdf, 0x75, 0x58, 0x6f,
+                    0x1d, 0x65, 0xae, 0x0c, 0x48, 0x48, 0x86, 0xdb, 0x72, 0xd2, 0x58, 0x52,
+                    0xe5, 0xc3, 0x3d, 0x56, 0x1a, 0xf8, 0x87, 0x55},
+         /* SHA3-256(sk ) */ {0x99, 0xc9, 0x31, 0xe9, 0x9e, 0x7c, 0x5c, 0xa2, 0x0b, 0xfd, 0xb7, 0x83,
+                    0xb7, 0xc3, 0x1d, 0x1c, 0x3d, 0xfb, 0x10, 0xe0, 0x9a, 0x23, 0x7f, 0x55,
+                    0xbf, 0xef, 0x51, 0x61, 0xcf, 0x0e, 0x97, 0x57},
+         /* SHA3-256(sig) */ {0x46, 0x26, 0x85, 0xb6, 0xb4, 0xbd, 0xbe, 0x9e, 0xa1, 0xe6, 0xc2, 0x8d,
+                    0xcd, 0xfa, 0x89, 0x94, 0x69, 0x99, 0xd0, 0x56, 0x36, 0xb2, 0xf7, 0x65,
+                    0xf5, 0xbb, 0xeb, 0x49, 0x57, 0x90, 0x28, 0xe9}},
+        {6,   // SLH-DSA-SHAKE-192s
+         /* SHA3-256(pk ) */ {0x2a, 0x28, 0x7f, 0x5f, 0x3b, 0x08, 0x7e, 0x86, 0x49, 0x33, 0x60, 0xb9,
+                    0x2c, 0xcf, 0xcb, 0xbb, 0xba, 0x55, 0xa7, 0xc0, 0x85, 0xfb, 0x0f, 0xa1,
+                    0x34, 0xa9, 0x60, 0xfd, 0x4e, 0x93, 0x7a, 0xef},
+         /* SHA3-256(sk ) */ {0x7f, 0x76, 0x13, 0x62, 0x1a, 0x64, 0x17, 0xe9, 0x56, 0x83, 0x7b, 0x58,
+                    0xf0, 0x75, 0x48, 0xeb, 0x39, 0x3c, 0x73, 0x02, 0x36, 0x6f, 0x5d, 0x54,
+                    0xb1, 0x4d, 0xe7, 0xe4, 0x6f, 0x8f, 0x15, 0xf5},
+         /* SHA3-256(sig) */ {0x6e, 0x5d, 0xc8, 0x96, 0x44, 0x2d, 0x62, 0x33, 0x9d, 0xde, 0xa1, 0x31,
+                    0x77, 0x90, 0xf8, 0x4b, 0x13, 0xe4, 0x9e, 0x3b, 0x86, 0x4e, 0xa2, 0x10,
+                    0x41, 0xf8, 0x6c, 0x12, 0x09, 0xba, 0x4f, 0xc6}},
+        {7,   // SLH-DSA-SHA2-192f
+         /* SHA3-256(pk ) */ {0xc0, 0xdc, 0xd5, 0xb8, 0xad, 0x21, 0x6e, 0x32, 0x88, 0xf9, 0x13, 0x3e,
+                    0x6d, 0x80, 0xa7, 0x41, 0x2b, 0xaa, 0x5f, 0x0d, 0xbd, 0x72, 0xb9, 0xca,
+                    0x8b, 0xa7, 0x1c, 0xe3, 0x88, 0x8f, 0x2c, 0x76},
+         /* SHA3-256(sk ) */ {0xd0, 0x4b, 0x32, 0x92, 0xe9, 0x99, 0x0f, 0x55, 0x26, 0x49, 0x52, 0x62,
+                    0x61, 0x6f, 0x82, 0x84, 0xea, 0x24, 0xa2, 0x0b, 0x6b, 0x54, 0x4c, 0x36,
+                    0xf8, 0x81, 0xac, 0x44, 0x9f, 0xaa, 0x8a, 0x4e},
+         /* SHA3-256(sig) */ {0xba, 0x59, 0x23, 0xb2, 0x3a, 0x77, 0xf7, 0x5a, 0x6c, 0xa1, 0xab, 0x2b,
+                    0xf1, 0x74, 0xc1, 0xd8, 0x70, 0x75, 0x23, 0x19, 0x94, 0x7e, 0xb5, 0xee,
+                    0x6f, 0xe0, 0xa7, 0xf6, 0xae, 0x9b, 0x70, 0x5a}},
+        {8,   // SLH-DSA-SHAKE-192f
+         /* SHA3-256(pk ) */ {0xc6, 0x90, 0x89, 0xe6, 0x5f, 0x7f, 0xbf, 0xef, 0xab, 0xb6, 0xcf, 0xc1,
+                    0x10, 0x85, 0xb9, 0xe4, 0x6f, 0xa5, 0xf4, 0x2c, 0x4e, 0x5a, 0x3f, 0xf6,
+                    0x5b, 0xe4, 0x42, 0x41, 0xb6, 0x03, 0x54, 0x65},
+         /* SHA3-256(sk ) */ {0xd8, 0x88, 0x52, 0x63, 0x51, 0x16, 0x25, 0xda, 0x73, 0x2e, 0x4b, 0x98,
+                    0x03, 0xc8, 0x26, 0xe1, 0x38, 0xa7, 0x11, 0x23, 0xc4, 0x44, 0x81, 0x6d,
+                    0xc0, 0x5c, 0x7a, 0xb8, 0xbd, 0xf3, 0x9b, 0x7b},
+         /* SHA3-256(sig) */ {0x42, 0x73, 0x5c, 0xe5, 0xa5, 0xbc, 0x62, 0xa7, 0xa0, 0xf0, 0xce, 0xac,
+                    0x53, 0x6e, 0x7b, 0xd9, 0x67, 0x71, 0x35, 0xa5, 0x80, 0xb9, 0xc1, 0x61,
+                    0x98, 0x34, 0x54, 0x01, 0xcd, 0xa7, 0x84, 0xd9}},
+        {9,   // SLH-DSA-SHA2-256s
+         /* SHA3-256(pk ) */ {0x19, 0xaf, 0x8e, 0x84, 0xee, 0x62, 0x4c, 0x18, 0xba, 0xee, 0xd9, 0x0d,
+                    0xe5, 0xde, 0x04, 0x01, 0x54, 0x11, 0x77, 0xf3, 0x26, 0xa3, 0x60, 0xa6,
+                    0xe4, 0x01, 0x63, 0xf0, 0x44, 0x64, 0x8a, 0xd2},
+         /* SHA3-256(sk ) */ {0xdc, 0x7a, 0x19, 0x19, 0xb7, 0x86, 0xd8, 0xa1, 0xd5, 0x8e, 0x66, 0xab,
+                    0xed, 0x7e, 0x22, 0x18, 0xa8, 0x9e, 0x1a, 0x56, 0xec, 0x8c, 0x93, 0x61,
+                    0x2f, 0x30, 0xa9, 0x7c, 0x56, 0x2d, 0x7c, 0x0b},
+         /* SHA3-256(sig) */ {0x3d, 0x68, 0xbd, 0xbc, 0x19, 0xab, 0xeb, 0x6c, 0xb7, 0x5a, 0xee, 0x27,
+                    0x14, 0x42, 0x5a, 0x86, 0x3f, 0x04, 0x6a, 0xb8, 0x38, 0x08, 0xd7, 0xf8,
+                    0x11, 0xae, 0x2c, 0x06, 0x37, 0xe4, 0xf4, 0xe9}},
+        {10,   // SLH-DSA-SHAKE-256s
+         /* SHA3-256(pk ) */ {0x5d, 0xe5, 0xf2, 0x6d, 0x35, 0x46, 0xb2, 0xac, 0x67, 0x85, 0xf3, 0xa2,
+                    0x2d, 0x55, 0xbf, 0xe0, 0xed, 0x8a, 0x8a, 0x7e, 0x43, 0xb6, 0xa0, 0xb0,
+                    0x5f, 0x5a, 0xfc, 0x75, 0xa6, 0xf5, 0x92, 0x18},
+         /* SHA3-256(sk ) */ {0x69, 0x54, 0x4a, 0x00, 0x67, 0xa4, 0x1f, 0x62, 0xf4, 0x66, 0x23, 0x9a,
+                    0x21, 0x30, 0x8a, 0x7c, 0x6a, 0x00, 0xb0, 0x3a, 0x1c, 0x1d, 0x2b, 0xac,
+                    0xde, 0x3c, 0x7a, 0xc2, 0x94, 0xe6, 0x9c, 0x5f},
+         /* SHA3-256(sig) */ {0x24, 0xf9, 0x48, 0x1e, 0x83, 0xb0, 0xad, 0x42, 0x06, 0xb5, 0xf2, 0x58,
+                    0xec, 0x33, 0x86, 0x6a, 0xe1, 0x86, 0x67, 0x04, 0x4e, 0x61, 0x59, 0xf0,
+                    0xec, 0xd0, 0xa7, 0xf4, 0xae, 0xcf, 0xd8, 0x3c}},
+        {11,   // SLH-DSA-SHA2-256f
+         /* SHA3-256(pk ) */ {0xc7, 0x46, 0xab, 0xfc, 0xf6, 0x9c, 0x95, 0x6d, 0xad, 0xaa, 0xc6, 0xc5,
+                    0x4e, 0x39, 0xf6, 0xa3, 0xe9, 0x77, 0x55, 0xfb, 0x1b, 0x62, 0x16, 0x99,
+                    0x0f, 0x5a, 0x9e, 0x74, 0xc2, 0x31, 0xb9, 0xe3},
+         /* SHA3-256(sk ) */ {0x0d, 0x1c, 0x73, 0xaf, 0xe3, 0x54, 0x70, 0x8c, 0x44, 0x1b, 0x01, 0x47,
+                    0xc9, 0x0c, 0x4d, 0x85, 0x85, 0x31, 0xaa, 0x89, 0x39, 0x84, 0x72, 0x28,
+                    0x3d, 0x45, 0x0c, 0x54, 0x11, 0xe3, 0x15, 0xad},
+         /* SHA3-256(sig) */ {0x04, 0xd3, 0x57, 0x38, 0xfd, 0x28, 0xfe, 0x8a, 0x6d, 0x6e, 0xbf, 0x3b,
+                    0xfa, 0xcc, 0x3b, 0x2c, 0x0b, 0x98, 0xdf, 0xf2, 0x0f, 0x14, 0x24, 0x77,
+                    0xcd, 0xd8, 0xd2, 0x8e, 0x2e, 0x3a, 0x0c, 0x61}},
+        {12,   // SLH-DSA-SHAKE-256f
+         /* SHA3-256(pk ) */ {0xdf, 0x08, 0x66, 0x41, 0xc9, 0x53, 0xbc, 0xfd, 0x54, 0x2b, 0xfd, 0x4d,
+                    0x86, 0xa5, 0x9c, 0x56, 0xc4, 0xad, 0xd4, 0xce, 0x32, 0xf1, 0xc6, 0x67,
+                    0x2c, 0x41, 0x94, 0x7b, 0xf5, 0x14, 0x23, 0x49},
+         /* SHA3-256(sk ) */ {0x39, 0xf2, 0x2b, 0x19, 0xb8, 0x9f, 0xb2, 0x1d, 0x7e, 0x16, 0xaa, 0x9e,
+                    0x12, 0x9b, 0x99, 0xb4, 0xc2, 0x24, 0xc6, 0x0e, 0xb1, 0x9a, 0xf4, 0x11,
+                    0xf6, 0x4f, 0x3f, 0x6d, 0x4d, 0x4a, 0xdb, 0x84},
+         /* SHA3-256(sig) */ {0x1f, 0xc3, 0x92, 0x9c, 0x8a, 0x80, 0xa6, 0xcc, 0xf7, 0xa1, 0x35, 0x81,
+                    0x22, 0x1f, 0xcf, 0xe8, 0x38, 0xdc, 0x3c, 0x35, 0x7f, 0xab, 0xaa, 0x02,
+                    0x14, 0x3d, 0xed, 0xb7, 0xc3, 0xbb, 0x00, 0x54}},
+}};
+} // namespace self_test
+#endif // OPQC_SLHDSA_SYCL_SELF_TEST
 
 } // namespace
 } // namespace openpqc::slhdsa::gpu
@@ -1430,16 +1655,75 @@ int usable(opqc_sycl_slhdsa* ctx, std::initializer_list<const void*> buffers) {
     return 0;
 }
 
-// KeyGen (Algorithm 18) of n key pairs from their seeds SK.seed || SK.prf || PK.seed, the arguments checked
-// (keypair_derand; keypair, whose seeds are its coins in the workspace)
-int keygen_checked(opqc_sycl_slhdsa* ctx, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* seeds,
-                   std::size_t n) {
-    const Lock lock(ctx->mutex);
+// KeyGen (Algorithm 18) of n key pairs from their seeds SK.seed || SK.prf || PK.seed (the self-test's, and
+// keygen_checked's)
+int keygen_chunks(opqc_sycl_slhdsa* ctx, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* seeds,
+                  std::size_t n) {
     return chunked(ctx, gpu::Kind::keygen, n, [&](auto p, std::size_t off, std::size_t m) {
         using P = decltype(p);
         using S = Sizes<P>;
         gpu::keygen<P>(ctx->queue, ctx->ws, pk + off * S::pk, sk + off * S::sk, seeds + off * S::seed, m);
     });
+}
+
+// The sizes of the context's parameter set: n, |pk|, |sk|, |SIG|
+struct SetSizes {
+    std::size_t n = 0, pk = 0, sk = 0, sig = 0;
+};
+SetSizes sizes_of(const opqc_sycl_slhdsa* ctx) {
+    SetSizes s;
+    if (ctx) {
+        with_set(ctx->param_set, [&](auto p) {
+            using S = Sizes<decltype(p)>;
+            s = {S::n, S::pk, S::sk, S::sig};
+        });
+    }
+    return s;
+}
+
+// Overwrites the n key pairs at pk and sk with zeros and waits, as far as the device still accepts work
+void zero_keys(opqc_sycl_slhdsa* ctx, std::uint8_t* pk, std::uint8_t* sk, std::size_t n) {
+    const SetSizes s = sizes_of(ctx);
+    ctx->guard([&] {
+        ctx->queue.memset(pk, 0, s.pk * n);
+        ctx->queue.memset(sk, 0, s.sk * n);
+        ctx->queue.wait();
+        return 0;
+    });
+    ctx->check();
+}
+
+// KeyGen of n key pairs from their seeds, the arguments checked (keypair_derand; keypair, whose seeds are its
+// coins in the workspace), then, in a build with it (KEYGEN_PCT), the pair-wise consistency test of every pair,
+// in chunks, each followed by the zeroization of what it used and by the copy of its count of passes (which
+// waits for it); a count that cannot be read back counts as no pass. Unless every chunk's count is its number of
+// pairs, the whole call fails: all n pairs are zeroized, and it returns OPENPQC_ERR_PCT. Returns 0, -2 or
+// OPENPQC_ERR_PCT.
+int keygen_checked(opqc_sycl_slhdsa* ctx, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* seeds,
+                   std::size_t n) {
+    const Lock lock(ctx->mutex);
+    int rc = keygen_chunks(ctx, pk, sk, seeds, n);
+    if (gpu::KEYGEN_PCT) {
+        bool all_passed = true;
+        if (rc == 0) {
+            const SetSizes s = sizes_of(ctx);
+            rc = chunked(ctx, gpu::Kind::keygen_pct, n, [&]([[maybe_unused]] auto p, std::size_t off, std::size_t m) {
+                auto* passes = reinterpret_cast<std::uint32_t*>(ctx->ws.pct_status + ctx->max_batch);
+                ctx->queue.memset(passes, 0, sizeof(std::uint32_t));
+                const std::uint8_t* pk_chunk = pk + off * s.pk;
+                const std::uint8_t* sk_chunk = sk + off * s.sk;
+                if constexpr (gpu::KEYGEN_PCT)   // no device code of the test in a build without it
+                    gpu::keygen_pct<decltype(p)>(ctx->queue, ctx->ws, ctx->max_batch, pk_chunk, sk_chunk, m);
+                std::uint32_t passed = 0;
+                if (openpqc::gpu::copy(ctx, &passed, passes, sizeof passed, true) != 0) passed = 0;
+                if (passed != m) all_passed = false;
+                ctx->queue.memset(passes, 0, sizeof(std::uint32_t));
+            });
+        }
+        if (rc == 0 && !all_passed) rc = OPENPQC_ERR_PCT;
+        if (rc == OPENPQC_ERR_PCT) zero_keys(ctx, pk, sk, n);
+    }
+    return rc;
 }
 
 // The workspace that create allocates for param_set and max_batch (Core's workspace_bytes, the layout of
@@ -1464,8 +1748,14 @@ extern "C" std::size_t opqc_sycl_slhdsa_workspace_bytes(int param_set, std::size
 
 namespace {
 
+#if OPQC_SLHDSA_SYCL_SELF_TEST
+int self_test(opqc_sycl_slhdsa* ctx);   // below
+#endif
+
 // create, on the device with index `device` (opqc_sycl_slhdsa_create) or on the device `given`, in the SYCL
-// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp)
+// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp), with the self-test in a
+// build with it (CREATE_SELF_TEST): the context is destroyed on every way out but the last (an exception
+// included)
 int create_context(opqc_sycl_slhdsa** out, int param_set, std::size_t max_batch, int device, const sycl::device* given,
            const sycl::context* app) {
     if (!out) return -1;
@@ -1487,24 +1777,22 @@ int create_context(opqc_sycl_slhdsa** out, int param_set, std::size_t max_batch,
         else if (!openpqc::gpu::select_device(device, dev)) return -1;
         const auto local_mem = static_cast<std::size_t>(dev.get_info<sycl::info::device::local_mem_size>());
         if (local_mem < local) return -1;   // the tree stages' local memory per work-group
-        auto* ctx = new opqc_sycl_slhdsa(dev, param_set, max_batch, app);
+        std::unique_ptr<opqc_sycl_slhdsa, void (*)(opqc_sycl_slhdsa*)> ctx(
+                new opqc_sycl_slhdsa(dev, param_set, max_batch, app),
+                [](opqc_sycl_slhdsa* c) { openpqc::gpu::destroy(c); });
         ctx->local_mem_bytes = local_mem;
-        std::uint8_t* head = nullptr;
-        try {
-            head = ctx->allocate(per_op, gpu::HEAD_BYTES);   // 256-byte aligned sections; ctx || OID
-        } catch (...) {
-            delete ctx;
-            throw;
-        }
-        if (!head) {
-            delete ctx;
-            return -1;
-        }
+        std::uint8_t* head = ctx->allocate(per_op, gpu::HEAD_BYTES);   // 256-byte aligned sections; ctx || OID
+        if (!head) return -1;
         const auto at = [&](Section s) { return ctx->section(s); };
         ctx->ws = Workspace{at(gpu::COINS),   at(gpu::SEEDS), at(gpu::DIGEST), at(gpu::ROOTS),
                             at(gpu::DIGITS),  at(gpu::ENDS),  at(gpu::SCRATCH), at(gpu::NODES),
-                            reinterpret_cast<std::uint64_t*>(at(gpu::OFFSETS)), head};
-        *out = ctx;
+                            reinterpret_cast<std::uint64_t*>(at(gpu::OFFSETS)), at(gpu::PCT_SIG),
+                            reinterpret_cast<std::int32_t*>(at(gpu::PCT_STATUS)), head};
+#if OPQC_SLHDSA_SYCL_SELF_TEST
+        const int rc = self_test(ctx.get());
+        if (rc != 0) return rc;
+#endif
+        *out = ctx.release();
         return 0;
     });
 }
@@ -1710,6 +1998,108 @@ CallMessages internal_messages(const std::uint8_t* mprime, const std::uint64_t* 
     return {Form::internal, mprime, offsets, 0, nullptr, 0};
 }
 
+#if OPQC_SLHDSA_SYCL_SELF_TEST
+// The self-test of create (CREATE_SELF_TEST; self_test's inputs and answers above), on the context's device,
+// through the calls' own paths: KeyGen (without the pair-wise consistency test), the deterministic signature,
+// and, in one call, the verification of the signature and of its tampered copy. The hashes of pk, sk and the
+// signature must be the CPU library's answers, and the verdicts 0 and OPENPQC_ERR_INVALID_SIGNATURE. Its
+// device memory holds the inputs and, everywhere else, a pattern (0xA5: no answer and no verdict), so that only
+// what the kernels write can pass (device memory is not cleared when it is allocated, and an earlier
+// self-test's can come back at the same address); it is zeroed before it is freed, and freed on every way out,
+// an exception included. Afterwards the whole workspace is zeroized, so that the new context holds no value of
+// the test. Returns 0, OPENPQC_ERR_SELF_TEST, -1 (no device memory) or -2.
+int self_test(opqc_sycl_slhdsa* ctx) {
+    namespace st = gpu::self_test;
+    const st::Answers* answers = nullptr;
+    for (const st::Answers& a : st::answers) {
+        if (a.set == ctx->param_set) answers = &a;
+    }
+    if (!answers) return OPENPQC_ERR_SELF_TEST;
+    const SetSizes z = sizes_of(ctx);
+    constexpr std::size_t M = st::MESSAGE_BYTES;
+    // device memory: the seeds | M twice | pk | sk | the signature and its tampered copy | 2 verdicts (every
+    // part 8-byte aligned: n, |pk|, |sk| and |SIG| are multiples of 8)
+    const std::size_t o_msg = 128, o_pk = o_msg + 2 * M, o_sk = o_pk + z.pk, o_sig = o_sk + z.sk,
+                      o_st = o_sig + 2 * z.sig, total = o_st + 2 * sizeof(std::int32_t);
+    static_assert((128 + 2 * st::MESSAGE_BYTES) % 8 == 0);
+    // the device memory's host copy: the inputs, then the pattern (may throw: before the device memory exists)
+    std::vector<std::uint8_t> h(total, std::uint8_t{0xA5});
+    for (std::size_t i = 0; i < 3 * z.n; i++) h[i] = st::seed(i);
+    for (std::size_t i = 0; i < M; i++) h[o_msg + i] = h[o_msg + M + i] = st::message(i);
+    std::uint8_t ctxstr[st::CONTEXT_BYTES];
+    for (std::size_t i = 0; i < st::CONTEXT_BYTES; i++) ctxstr[i] = st::context(i);
+
+    // The device memory, zeroized and freed when the self-test returns or throws. The zeroization is queued
+    // behind the work that uses the memory (the queue is in order) and waited for, so that the free, which does
+    // not wait (sycl::free), comes after that work. wipe() runs it once: 0, or -2 if it failed.
+    struct Memory {
+        opqc_sycl_slhdsa* owner;
+        std::uint8_t* p;
+        std::size_t size;
+        bool wiped = false;
+        int wipe() noexcept {
+            if (!p || wiped) return 0;
+            wiped = true;
+            return owner->guard([&] {
+                owner->queue.memset(p, 0, size).wait();
+                return 0;
+            });
+        }
+        ~Memory() {
+            wipe();
+            openpqc::gpu::device_free(owner->queue, p);
+        }
+    } memory{ctx, static_cast<std::uint8_t*>(openpqc::gpu::device_malloc(ctx->queue, total)), total};
+    std::uint8_t* const d = memory.p;
+    if (!d) return -1;
+    auto* status = reinterpret_cast<std::int32_t*>(d + o_st);
+    CallMessages m = pure_messages(d + o_msg, nullptr, ctxstr, st::CONTEXT_BYTES);   // M, twice, at stride M
+    m.strided = true;
+    m.stride = M;
+    m.len = 2 * M;
+    const auto put = [&](std::size_t off, std::size_t bytes) {
+        return openpqc::gpu::copy(ctx, d + off, h.data() + off, bytes, true);
+    };
+    const auto get = [&](std::size_t off, std::size_t bytes) {
+        return openpqc::gpu::copy(ctx, h.data() + off, d + off, bytes, true);
+    };
+    int rc = 0;
+    {
+        const Lock lock(ctx->mutex);
+        rc = put(0, total);   // the inputs, and the pattern everywhere else
+        if (rc == 0) rc = keygen_chunks(ctx, d + o_pk, d + o_sk, d, 1);
+        if (rc == 0) rc = sign_any(ctx, d + o_sig, m, nullptr, d + o_sk, false, 1);
+        if (rc == 0) rc = get(o_sig, z.sig);
+        if (rc == 0) {
+            std::memcpy(&h[o_sig + z.sig], &h[o_sig], z.sig);
+            h[o_sig + z.sig + z.n] ^= 1;   // the tampered signature
+            rc = put(o_sig + z.sig, z.sig);
+        }
+        if (rc == 0) rc = verify_any(ctx, d + o_sig, m, d + o_pk, true, status, 2);
+        if (rc == 0) rc = get(o_pk, z.pk + z.sk);
+        if (rc == 0) rc = get(o_st, 2 * sizeof(std::int32_t));
+        const int wiped = memory.wipe();
+        if (rc == 0) rc = wiped;
+        ctx->wipe_workspace();
+        if (rc == 0 && ctx->failed()) rc = -2;
+    }
+    if (rc == -2) return -2;
+    if (rc != 0) return OPENPQC_ERR_SELF_TEST;   // a refusal or a failed pair-wise consistency test
+    std::uint8_t hash[32];
+    bool ok = true;
+    opqc_sha3_256(hash, &h[o_pk], z.pk);
+    ok = ok && std::memcmp(hash, answers->pk.data(), 32) == 0;
+    opqc_sha3_256(hash, &h[o_sk], z.sk);
+    ok = ok && std::memcmp(hash, answers->sk.data(), 32) == 0;
+    opqc_sha3_256(hash, &h[o_sig], z.sig);
+    ok = ok && std::memcmp(hash, answers->sig.data(), 32) == 0;
+    std::int32_t verdicts[2];
+    std::memcpy(verdicts, &h[o_st], sizeof verdicts);
+    ok = ok && verdicts[0] == 0 && verdicts[1] == OPENPQC_ERR_INVALID_SIGNATURE;
+    return ok ? 0 : OPENPQC_ERR_SELF_TEST;
+}
+#endif // OPQC_SLHDSA_SYCL_SELF_TEST
+
 } // namespace
 
 extern "C" int opqc_sycl_slhdsa_sign_derand(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const std::uint8_t* msg,
@@ -1795,7 +2185,8 @@ extern "C" int opqc_sycl_slhdsa_verify_internal_one_key(opqc_sycl_slhdsa* ctx, c
 
 // Randomized calls: the seeds (3n bytes) or addrnd (n bytes) from opqc_randombytes (Core/opqc_platform.h: the
 // source registered with opqc_set_randombytes if there is one, else the application's opqc_external_randombytes
-// in a build with OPENPQC_EXTERNAL_RANDOMBYTES, else the operating system's generator, the default), copied into
+// in a build with OPENPQC_EXTERNAL_RANDOMBYTES, else the operating system's generator, the default; in FIPS 140-3
+// mode only the module's HMAC_DRBG, which refuses every registration), copied into
 // the workspace (and wiped there and on the host whatever happens, Core/sycl/opqc_sycl_context.hpp), then the
 // derandomized operation on them
 namespace {
@@ -1805,21 +2196,6 @@ int with_random_coins(opqc_sycl_slhdsa* ctx, std::size_t coin_bytes, std::size_t
     if (!ctx) return -1;
     return openpqc::gpu::with_random_coins(ctx, n, coin_bytes, ctx->ws.coins, OPENPQC_ERR_RNG, 0, f,
                                            [&](std::size_t m) { ctx->queue.memset(ctx->ws.coins, 0, coin_bytes * m); });
-}
-
-// The sizes of the context's parameter set: n, |pk|, |sk|, |SIG|
-struct SetSizes {
-    std::size_t n = 0, pk = 0, sk = 0, sig = 0;
-};
-SetSizes sizes_of(const opqc_sycl_slhdsa* ctx) {
-    SetSizes s;
-    if (ctx) {
-        with_set(ctx->param_set, [&](auto p) {
-            using S = Sizes<decltype(p)>;
-            s = {S::n, S::pk, S::sk, S::sig};
-        });
-    }
-    return s;
 }
 
 // Hedged signing in every form: the arguments are checked once, for the whole call, and every chunk of
@@ -1847,9 +2223,12 @@ extern "C" int opqc_sycl_slhdsa_keypair(opqc_sycl_slhdsa* ctx, std::uint8_t* pk,
     const int rc = usable(ctx, {pk, sk});
     if (rc != 0) return rc;
     const SetSizes s = sizes_of(ctx);
-    return with_random_coins(ctx, 3 * s.n, n, [&](std::size_t off, std::size_t m, const std::uint8_t* seeds) {
-        return keygen_checked(ctx, pk + off * s.pk, sk + off * s.sk, seeds, m);
-    });
+    const int result =
+            with_random_coins(ctx, 3 * s.n, n, [&](std::size_t off, std::size_t m, const std::uint8_t* seeds) {
+                return keygen_checked(ctx, pk + off * s.pk, sk + off * s.sk, seeds, m);
+            });
+    if (result == OPENPQC_ERR_PCT) zero_keys(ctx, pk, sk, n);   // the earlier chunks' pairs too
+    return result;
 }
 
 extern "C" int opqc_sycl_slhdsa_sign(opqc_sycl_slhdsa* ctx, std::uint8_t* sig, const std::uint8_t* msg,

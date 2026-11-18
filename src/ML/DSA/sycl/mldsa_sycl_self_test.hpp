@@ -1,7 +1,8 @@
 // Copyright (c) The OpenPQC project authors
 // SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 //
-// mldsa_sycl_self_test.hpp  --  the inputs and known answers of the self-test that opqc_sycl_mldsa_create runs
+// mldsa_sycl_self_test.hpp  --  the inputs and known answers of the self-test that opqc_sycl_mldsa_create runs in
+// FIPS 140-3 mode, or where the developer definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST is given (mldsa_sycl.cpp)
 //
 // The self-test (mldsa_sycl.cpp, self_test; openpqc_mldsa_sycl.h, Self-test) runs, on the new context's device,
 // ML-DSA.KeyGen_internal of the seed xi (FIPS 204, Algorithm 6), the deterministic signature (rnd = 0^32;

@@ -40,6 +40,15 @@
 // The macros are fixed by the first inclusion of this header in a translation unit, so one translation unit
 // never mixes the two: a test that includes the scheme headers and then a library source gets the ordinary
 // names throughout.
+//
+// FIPS 140-3 mode (the CMake option OPENPQC_FIPS140_3 gives every object of the libraries
+// OPENPQC_FIPS140_3=1) is part of the name: library_fips_v<version>, library_sycl_fips_v<version>. The module's
+// copies of the templates are compiled with what that mode adds (the pair-wise consistency tests, the checks of
+// the module's state); objects of the ordinary library define other names, so a link that mixes objects compiled
+// with and without the mode can never let the linker keep the ordinary copy of a template for the module's code
+// (and the C API functions of both define the same symbols, which the linker refuses). tests/abi_symbols.cmake
+// checks the names of a FIPS build with this prefix, and tests/fips_abi.cmake that the prefix follows the
+// definition.
 #pragma once
 
 #define OPENPQC_ABI_VERSION v0_3_0
@@ -47,11 +56,19 @@
 #define OPENPQC_ABI_PASTE_(prefix, version) prefix##_##version
 #define OPENPQC_ABI_PASTE(prefix, version) OPENPQC_ABI_PASTE_(prefix, version)
 
+#if defined(OPENPQC_FIPS140_3)
+#define OPENPQC_ABI_LIBRARY library_fips
+#define OPENPQC_ABI_LIBRARY_SYCL library_sycl_fips
+#else
+#define OPENPQC_ABI_LIBRARY library
+#define OPENPQC_ABI_LIBRARY_SYCL library_sycl
+#endif
+
 #if defined(OPENPQC_LIBRARY_TRANSLATION_UNIT)
 #if defined(SYCL_LANGUAGE_VERSION) || defined(__SYCL_DEVICE_ONLY__) || defined(__CUDACC__)
-#define OPENPQC_ABI_BEGIN inline namespace OPENPQC_ABI_PASTE(library_sycl, OPENPQC_ABI_VERSION) {
+#define OPENPQC_ABI_BEGIN inline namespace OPENPQC_ABI_PASTE(OPENPQC_ABI_LIBRARY_SYCL, OPENPQC_ABI_VERSION) {
 #else
-#define OPENPQC_ABI_BEGIN inline namespace OPENPQC_ABI_PASTE(library, OPENPQC_ABI_VERSION) {
+#define OPENPQC_ABI_BEGIN inline namespace OPENPQC_ABI_PASTE(OPENPQC_ABI_LIBRARY, OPENPQC_ABI_VERSION) {
 #endif
 #define OPENPQC_ABI_END }
 #else

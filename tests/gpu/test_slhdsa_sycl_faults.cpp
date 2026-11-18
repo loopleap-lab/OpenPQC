@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 //
 // test_slhdsa_sycl_faults.cpp  --  the SLH-DSA SYCL backend when its device work fails: fail-closed
-// verification and the failed state of a context, by fault injection
+// verification and the failed state of a context, KeyGen's pair-wise consistency test and the self-test of create,
+// by fault injection
 //
 // A white-box test: this translation unit compiles the backend itself (src/SLH/DSA/sycl/slhdsa_sycl.cpp),
 // with its kernel launches -- its for_each_item and Core's for_each_team, through which every stage kernel is
 // queued -- renamed to versions that count them and can leave them out (kernels that never run, as when the
-// device faults part way through a call) or throw instead (a launch that the SYCL runtime refuses). An
+// device faults part way through a call), run them over all but the last of their operations (a kernel that
+// computes every key pair of a chunk but one) or throw instead (a launch that the SYCL runtime refuses). An
 // asynchronous error is injected into the context's queue the way the runtimes report a device fault: DPC++
 // hands the exception of a host task to the queue's async handler; AdaptiveCpp's runtime registers the errors of
 // failed kernels and copies in a list, as here. The CPU library makes the keys and signatures. Two parameter sets,
@@ -34,14 +36,46 @@
 //   throw      the first launch of chunk 2 throws: the call returns -2, every entry reads "invalid", the whole
 //              workspace is zero, and the next call returns -2 without launching a kernel
 //
+// test_slhdsa_sycl_faults compiles the backend with KeyGen's pair-wise consistency test
+// (OPENPQC_SLHDSA_KEYGEN_PCT) and the known-answer self-test of create (OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST),
+// which FIPS 140-3 mode builds into the library, so that every context of the cases above has passed the
+// self-test, and adds (so does test_slhdsa_sycl_faults_nopct in FIPS 140-3 mode, below):
+//   answers    the self-test's known answers (self_test::answers) are the CPU library's for all twelve sets
+//   self-test  the workspace of a new context is zero (nothing of the self-test is left); create with any one
+//              launch of its self-test left out (each of KeyGen's, the signature's and the verification's in turn)
+//              returns OPENPQC_ERR_SELF_TEST and no context
+//   pct        keypair_derand of 5 pairs (chunks of 2, 2 and 1): the CPU's keys, nothing of the test left in the
+//              workspace; then keypair_derand and keypair of 5 pairs (pk and sk holding 0xA5 bytes) with KeyGen or
+//              the test broken: the last pair's keys never written (keygen_finish of chunk 3 left out); every
+//              launch from that keygen_finish on left out (the test never runs: no pass may be assumed); chunk
+//              1's keys never written (chunks 2 and 3 pass); chunk 1's last verification launch of the test left
+//              out (its verdicts stay "invalid"); chunk 1's count of passes left out; and one bad pair beside a
+//              good one of its chunk, the case the test exists for: chunk 1's keygen_finish run for its first
+//              pair only (the second is never written), and the same in chunk 2, a middle chunk. Each:
+//              OPENPQC_ERR_PCT, pk and sk of all 5 pairs zero, nothing of the test left in the workspace, and the
+//              context has not failed (the next call gives the CPU's keys)
+// test_slhdsa_sycl_faults_nopct compiles the backend without a definition of the test's own, as the library is
+// built: in an ordinary build with neither test, and it runs the cases above them and says by name that the
+// others do not apply (create there launches no kernel, and leaves the workspace zero); in FIPS 140-3 mode with
+// OPENPQC_FIPS140_3 alone, which must turn both tests on (the test fails if it does not), and it runs every case
+// above, so that the self-test of create and KeyGen's test are seen to run in the backend as FIPS 140-3 mode
+// builds it.
+//
 // "test_slhdsa_sycl_faults sticky [device]" makes a real device fault instead, on an NVIDIA device (CUDA reports
 // an invalid address and then refuses all work of the process on that device, hence a mode, and a test, of its
 // own): verification of a message at offset 2^40, which no allocation reaches. The process is not terminated,
 // memcpy and sync return -2 (a caller who checks either never takes a verdict for valid; no entry that a copy
 // brings back reads 0), later calls return -2, and destroy returns.
 //
-// Usage: test_slhdsa_sycl_faults [devices: all (default) or indices, e.g. 2 or 0,3]
+// Usage: test_slhdsa_sycl_faults[_nopct] [devices: all (default) or indices, e.g. 2 or 0,3]
 //        test_slhdsa_sycl_faults sticky [device: the first NVIDIA device (default) or an index]
+//        test_slhdsa_sycl_faults self-test-values: the self-test's answers from the CPU library, in the form of
+//        slhdsa_sycl.cpp (for a change of its inputs)
+//        test_slhdsa_sycl_faults[_nopct] layout: the workspace bytes of this build of the backend, for all twelve
+//        sets and the max_batch values of test_gpu_layout.c (no device; test gpu_layout compares them with the
+//        GPU library's); in FIPS 140-3 mode it fails if the backend lacks either test
+//        test_slhdsa_sycl_faults answers present|absent <file>...: whether the files (the GPU libraries) hold the
+//        self-test's answers (no device; test gpu_self_test, tests/gpu/self_test_answers.hpp)
 // Exit code 0 if every check passed, 1 if one failed, 2 for malformed arguments, 77 (CTest: skipped) if there is
 // no SYCL device (sticky: if the device is not an NVIDIA GPU).
 #include <sycl/sycl.hpp>
@@ -75,27 +109,35 @@
 namespace openpqc::gpu {
 
 // The backend's kernel launches since reset(). skip_from > 0: that launch and every later one is left out (the
-// kernel never runs); throw_at > 0: that launch throws instead, as the SYCL runtime does when it refuses one.
+// kernel never runs); skip_at > 0: that launch only; shrink_at > 0: that launch runs over all but the last of its
+// n work-items or teams (in KeyGen's keygen_finish one per key pair, so that the chunk's last pair is never
+// written and the others are); throw_at > 0: that launch throws instead, as the SYCL runtime does when it refuses
+// one. admit(n) says whether the launch runs, and sets n to the work-items or teams it runs over.
 struct Launches {
     static inline long count = 0;
     static inline long skip_from = 0;
+    static inline long skip_at = 0;
+    static inline long shrink_at = 0;
     static inline long throw_at = 0;
-    static void reset() { count = skip_from = throw_at = 0; }
-    static bool admit() {
+    static void reset() { count = skip_from = skip_at = shrink_at = throw_at = 0; }
+    static bool admit(std::size_t& n) {
         ++count;
         if (throw_at > 0 && count == throw_at) throw std::runtime_error("injected: the runtime refuses a launch");
-        return skip_from <= 0 || count < skip_from;
+        if (skip_at > 0 && count == skip_at) return false;
+        if (skip_from > 0 && count >= skip_from) return false;
+        if (shrink_at > 0 && count == shrink_at && n > 1) n--;
+        return true;
     }
 };
 
 template <unsigned GroupSize = 128, class F>
 void counted_for_each_item(sycl::queue& q, std::size_t n, F f) {
-    if (Launches::admit()) for_each_item<GroupSize>(q, n, f);
+    if (Launches::admit(n)) for_each_item<GroupSize>(q, n, f);
 }
 
 template <class Word, unsigned TeamSize, unsigned TeamsPerGroup, class F>
 void counted_for_each_team(sycl::queue& q, std::size_t n, std::size_t local_words, F f) {
-    if (Launches::admit()) for_each_team<Word, TeamSize, TeamsPerGroup>(q, n, local_words, f);
+    if (Launches::admit(n)) for_each_team<Word, TeamSize, TeamsPerGroup>(q, n, local_words, f);
 }
 
 } // namespace openpqc::gpu
@@ -104,6 +146,54 @@ void counted_for_each_team(sycl::queue& q, std::size_t n, std::size_t local_word
 // SLH-DSA-SHA2-128f and SLH-DSA-SHAKE-128f, whatever the build's development filter is
 #undef OPENPQC_SLHDSA_SYCL_SETS
 #define OPENPQC_SLHDSA_SYCL_SETS 3, 4
+// Whether the build gives every object the developer definition OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST (the
+// library's too), before this test defines it itself
+#if defined(OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST)
+#define TEST_BUILD_SELF_TEST 1
+#else
+#define TEST_BUILD_SELF_TEST 0
+#endif
+// Whether the build's GPU libraries must have the self-test of create: in FIPS 140-3 mode, and with the developer
+// definition given to every object (test gpu_self_test, "answers expected")
+#if TEST_BUILD_SELF_TEST || defined(OPENPQC_FIPS140_3)
+#define BUILD_HAS_SELF_TEST true
+#else
+#define BUILD_HAS_SELF_TEST false
+#endif
+// The variant that compiles the backend as the library is built, in an ordinary build: the backend must have
+// neither of the tests that only FIPS 140-3 mode turns on (KeyGen's pair-wise consistency test, and create's
+// self-test unless the build gives every object its developer definition); "layout" fails otherwise (test
+// gpu_layout), and so does the test
+#if !defined(OPENPQC_FIPS140_3) && defined(OPENPQC_TEST_FAULTS_NO_PCT)
+#define TEST_ORDINARY_AS_BUILT 1
+#else
+#define TEST_ORDINARY_AS_BUILT 0
+#endif
+// How this test names a FIPS-only test that the backend as compiled here lacks: not applicable where that is what
+// the build promises (TEST_ORDINARY_AS_BUILT), MISSING elsewhere, where FIPS 140-3 mode or the test's own
+// definitions turn it on (a failure, which main checks, and so does the self-test case where create has none)
+#if TEST_ORDINARY_AS_BUILT
+#define TEST_ABSENT "not applicable"
+#define TEST_NO_SELF_TEST                                                                \
+    "not applicable, the backend has no self-test of create (an ordinary build without " \
+    "OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST)"
+#elif defined(OPENPQC_FIPS140_3)
+#define TEST_ABSENT "MISSING in FIPS 140-3 mode (a failure)"
+#define TEST_NO_SELF_TEST "MISSING, the backend has no self-test of create in FIPS 140-3 mode (a failure)"
+#else
+#define TEST_ABSENT "MISSING although this test defines it (a failure)"
+#define TEST_NO_SELF_TEST                                                           \
+    "MISSING, the backend has no self-test of create although this test defines " \
+    "OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST (a failure)"
+#endif
+// KeyGen's pair-wise consistency test and create's self-test, as in FIPS 140-3 mode; _nopct: as the library is
+// built (the ordinary one has neither; in FIPS 140-3 mode OPENPQC_FIPS140_3 alone must turn both on)
+#if !defined(OPENPQC_TEST_FAULTS_NO_PCT)
+#define OPENPQC_SLHDSA_KEYGEN_PCT 1
+#if !defined(OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST)
+#define OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST 1
+#endif
+#endif
 #define for_each_item counted_for_each_item
 #define for_each_team counted_for_each_team
 #include "SLH/DSA/sycl/slhdsa_sycl.cpp"
@@ -112,6 +202,7 @@ void counted_for_each_team(sycl::queue& q, std::size_t n, std::size_t local_word
 
 #include "SLH/DSA/openpqc_slhdsa.h"
 #include "openpqc/testing.h"
+#include "self_test_answers.hpp"
 
 namespace faults_test {
 
@@ -150,6 +241,14 @@ struct Cpu {
                 openpqc_testing_slhdsa_##S##_sign_derand, openpqc_slhdsa_##S##_verify                             \
     }
 const Cpu sets[] = {SLH_CPU_LIBRARY(sha2_128f, SHA2_128F), SLH_CPU_LIBRARY(shake_128f, SHAKE_128F)};
+// every set, for the self-test's answers (a build of the backend without its self-test has none to check)
+[[maybe_unused]] const Cpu all_sets[] = {
+        SLH_CPU_LIBRARY(sha2_128s, SHA2_128S), SLH_CPU_LIBRARY(shake_128s, SHAKE_128S),
+        SLH_CPU_LIBRARY(sha2_128f, SHA2_128F), SLH_CPU_LIBRARY(shake_128f, SHAKE_128F),
+        SLH_CPU_LIBRARY(sha2_192s, SHA2_192S), SLH_CPU_LIBRARY(shake_192s, SHAKE_192S),
+        SLH_CPU_LIBRARY(sha2_192f, SHA2_192F), SLH_CPU_LIBRARY(shake_192f, SHAKE_192F),
+        SLH_CPU_LIBRARY(sha2_256s, SHA2_256S), SLH_CPU_LIBRARY(shake_256s, SHAKE_256S),
+        SLH_CPU_LIBRARY(sha2_256f, SHA2_256F), SLH_CPU_LIBRARY(shake_256f, SHAKE_256F)};
 
 // The batch of one set: OPS signatures of one message under one key, operations 0 and 1 valid, 2-4 forged, and
 // the CPU's verdicts on them
@@ -549,6 +648,216 @@ int sticky(int device) {
     return failures ? 1 : 0;
 }
 
+// The kernel launches of KeyGen per chunk: (SHA2: seed_states,) wots_chains, wots_leaves, xmss_trees, keygen_finish
+long keygen_launches(const Cpu& c) { return std::strncmp(c.name, "sha2", 4) == 0 ? 5 : 4; }
+
+#if OPQC_SLHDSA_SYCL_SELF_TEST
+// The self-test's answers for one set from the CPU library (slhdsa_sycl.cpp, self_test): the SHA3-256 hashes of
+// pk, sk and the deterministic signature; false if the CPU library refuses, or if the tampered copy verifies
+using Hash = std::array<std::uint8_t, 32>;
+bool cpu_answers(const Cpu& c, Hash& pk_hash, Hash& sk_hash, Hash& sig_hash) {
+    namespace st = openpqc::slhdsa::gpu::self_test;
+    Bytes seeds(c.seed), msg(st::MESSAGE_BYTES), ctxstr(st::CONTEXT_BYTES), pk(c.pk), sk(c.sk), sig(c.sig);
+    for (std::size_t i = 0; i < seeds.size(); i++) seeds[i] = st::seed(i);
+    for (std::size_t i = 0; i < msg.size(); i++) msg[i] = st::message(i);
+    for (std::size_t i = 0; i < ctxstr.size(); i++) ctxstr[i] = st::context(i);
+    bool ok = c.keypair_derand(pk.data(), sk.data(), seeds.data()) == 0 &&
+              c.sign_derand(sig.data(), msg.data(), msg.size(), ctxstr.data(), ctxstr.size(), sk.data() + 2 * c.n,
+                            sk.data()) == 0 &&   // addrnd = PK.seed: the deterministic variant
+              c.verify(sig.data(), sig.size(), msg.data(), msg.size(), ctxstr.data(), ctxstr.size(), pk.data()) == 0;
+    sig[c.n] ^= 1;
+    ok = ok && c.verify(sig.data(), sig.size(), msg.data(), msg.size(), ctxstr.data(), ctxstr.size(), pk.data()) != 0;
+    sig[c.n] ^= 1;
+    opqc_sha3_256(pk_hash.data(), pk.data(), pk.size());
+    opqc_sha3_256(sk_hash.data(), sk.data(), sk.size());
+    opqc_sha3_256(sig_hash.data(), sig.data(), sig.size());
+    return ok;
+}
+
+// The self-test's answers in slhdsa_sycl.cpp against the CPU library's, for all twelve sets
+void answers() {
+    const int before = failures;
+    std::size_t same = 0;
+    for (const Cpu& c : all_sets) {
+        Hash pk{}, sk{}, sig{};
+        CHECK(cpu_answers(c, pk, sk, sig));
+        for (const auto& a : openpqc::slhdsa::gpu::self_test::answers) {
+            if (a.set == c.id) same += a.pk == pk && a.sk == sk && a.sig == sig;
+        }
+    }
+    CHECK(same == 12);
+    std::printf("answers %s: %zu of 12 sets equal to the CPU library's\n", failures == before ? "ok" : "FAILED", same);
+}
+
+// "self-test-values": the answers in the form of slhdsa_sycl.cpp
+int self_test_values() {
+    const auto row = [](const char* label, const Hash& h) {
+        std::printf("         /* SHA3-256(%s) */ {", label);
+        for (std::size_t i = 0; i < 32; i++)
+            std::printf("0x%02x%s", h[i], i == 31 ? "}" : i % 12 == 11 ? ",\n                    " : ", ");
+    };
+    std::printf("constexpr std::array<Answers, 12> answers = {{\n");
+    for (const Cpu& c : all_sets) {
+        Hash pk{}, sk{}, sig{};
+        if (!cpu_answers(c, pk, sk, sig)) return 1;
+        std::printf("        {%d,   // SLH-DSA %s\n", c.id, c.name);
+        row("pk ", pk);
+        std::printf(",\n");
+        row("sk ", sk);
+        std::printf(",\n");
+        row("sig", sig);
+        std::printf("},\n");
+    }
+    std::printf("}};\n");
+    return 0;
+}
+
+// create: the self-test runs (launches), and leaves nothing in the workspace; with any one launch of the self-test
+// left out (KeyGen's, the deterministic signature's, the verification's: the device memory keeps its pattern where
+// that launch writes, or a later launch reads what it did not write), create fails with OPENPQC_ERR_SELF_TEST and
+// gives no context
+void create_self_test(int device, const Oracle& o) {
+    const int before = failures;
+    const Cpu& c = *o.cpu;
+    opqc_sycl_slhdsa* ctx = nullptr;
+    Launches::reset();
+    const int rc = opqc_sycl_slhdsa_create(&ctx, c.id, BATCH, device);
+    const long launched = Launches::count;
+    bool zero = false;
+    if (ctx) {
+        Bytes w(ctx->mem_bytes, 0xEE);
+        CHECK(raw_copy(ctx, w.data(), ctx->mem, ctx->mem_bytes));
+        zero = all_zero(w);
+    }
+    opqc_sycl_slhdsa_destroy(ctx);
+    CHECK(rc == 0 && launched > keygen_launches(c) && zero);
+    // each launch of the self-test left out in turn: KeyGen's (1 .. K), then the signature's and the verification's
+    std::string other;   // the launches whose create did not give OPENPQC_ERR_SELF_TEST and no context
+    long refused = 0;
+    for (long i = 1; i <= launched; i++) {
+        opqc_sycl_slhdsa* bad = nullptr;
+        Launches::reset();
+        Launches::skip_at = i;
+        const int rc_bad = opqc_sycl_slhdsa_create(&bad, c.id, BATCH, device);
+        Launches::reset();
+        if (rc_bad == OPENPQC_ERR_SELF_TEST && bad == nullptr) refused++;
+        else other += " " + std::to_string(i) + ":" + std::to_string(rc_bad) + (bad ? "+context" : "");
+        opqc_sycl_slhdsa_destroy(bad);
+    }
+    CHECK(refused == launched && other.empty());
+    report(device, o, "self-test",
+           before,
+           "create " + std::to_string(rc) + " after " + std::to_string(launched) + " launches, workspace " +
+                   (zero ? "zero" : "NOT zero") + "; with one launch left out: OPENPQC_ERR_SELF_TEST and no context " +
+                   std::to_string(refused) + " of " + std::to_string(launched) + " times" +
+                   (other.empty() ? "" : " (otherwise:" + other + ")"));
+}
+#endif // OPQC_SLHDSA_SYCL_SELF_TEST
+
+// create of the backend as an ordinary build compiles it (no self-test): no kernel launch, the workspace zero
+void create_without_self_test(int device, const Oracle& o) {
+    const int before = failures;
+    opqc_sycl_slhdsa* ctx = nullptr;
+    Launches::reset();
+    const int rc = opqc_sycl_slhdsa_create(&ctx, o.cpu->id, BATCH, device);
+    const long launched = Launches::count;
+    Launches::reset();
+    bool zero = false;
+    if (ctx) {
+        Bytes w(ctx->mem_bytes, 0xEE);
+        CHECK(raw_copy(ctx, w.data(), ctx->mem, ctx->mem_bytes));
+        zero = all_zero(w);
+    }
+    opqc_sycl_slhdsa_destroy(ctx);
+    CHECK(rc == 0 && launched == 0 && zero);
+    // A backend without create's self-test is what the build promises only in the variant that compiles it as an
+    // ordinary build does (TEST_NO_SELF_TEST: not applicable); elsewhere it is MISSING, a failed check here too (main
+    // checks it as well), so that this line reads FAILED
+    CHECK(TEST_ORDINARY_AS_BUILT);
+    report(device, o, "self-test", before,
+           "create " + std::to_string(rc) + " after " + std::to_string(launched) + " launches (no self-test in "
+                   "this build), workspace " + (zero ? "zero" : "NOT zero") + "; create with a launch of its "
+                   "self-test left out: " TEST_NO_SELF_TEST);
+}
+
+// KeyGen's pair-wise consistency test: the CPU's keys; then KeyGen or the test broken in seven ways, derandomized and
+// randomized: OPENPQC_ERR_PCT and every key zero
+void pct(int device, const Oracle& o) {
+    const int before = failures;
+    const Cpu& c = *o.cpu;
+    Fixture f(device, o);
+    if (!f.usable()) return report(device, o, "pct", before, "no context");
+    Bytes seeds(OPS * c.seed), pk(OPS * c.pk), sk(OPS * c.sk);
+    for (std::size_t i = 0; i < seeds.size(); i++) seeds[i] = static_cast<std::uint8_t>(i * 7 + 3);
+    for (std::size_t i = 0; i < OPS; i++)
+        CHECK(c.keypair_derand(&pk[i * c.pk], &sk[i * c.sk], &seeds[i * c.seed]) == 0);
+    CHECK(opqc_sycl_slhdsa_memcpy(f.ctx, f.seeds, seeds.data(), seeds.size()) == 0);
+    const auto get = [&](const void* p, std::size_t bytes) {
+        Bytes b(bytes, 0xEE);
+        CHECK(raw_copy(f.ctx, b.data(), p, bytes));
+        return b;
+    };
+    Launches::reset();
+    const int rc_ok = opqc_sycl_slhdsa_keypair_derand(f.ctx, f.out_pk, f.out_sk, f.seeds, OPS);
+    const long launched = Launches::count;
+    const bool keys = get(f.out_pk, OPS * c.pk) == pk && get(f.out_sk, OPS * c.sk) == sk;
+    const bool left_ok = all_zero(f.workspace());
+    const long K = keygen_launches(c), Q = launched / static_cast<long>(CHUNKS) - K;   // Q: the test's, per chunk
+    CHECK(rc_ok == 0 && keys && left_ok && launched % static_cast<long>(CHUNKS) == 0 && Q > 0);
+    std::string detail = "keypair_derand " + std::to_string(rc_ok) + (keys ? " = CPU" : " WRONG") + ", " +
+                         std::to_string(Q) + " launches of the test per chunk, workspace " +
+                         (left_ok ? "zero" : "NOT zero");
+    // The launches: derandomized, KeyGen's pass over the three chunks (K each), then the test's (Q each: the
+    // signature's, the verification's, of which verify_ht writes the verdicts, and the count of passes last);
+    // randomized, KeyGen and the test per chunk (one draw of seeds each). keygen_finish is KeyGen's last launch.
+    // The last two cases leave one pair of a chunk of two unwritten and write the other: a chunk passes only if
+    // every one of its pairs passes, not if some do.
+    struct Case {
+        const char* what;
+        long chunk;      // 1, 2 or 3
+        bool test;       // the launch is the test's (else KeyGen's)
+        long launch;     // its place among KeyGen's (1 .. K) or the test's (1 .. Q) launches of that chunk
+        enum { only, and_later, all_but_last } how;   // left out, also every later launch, or run over all but
+                                                      // the chunk's last pair
+    };
+    const Case cases[] = {
+            {"the last pair's keys never written (chunk 3's keygen_finish)", 3, false, K, Case::only},
+            {"every launch from chunk 3's keygen_finish on left out", 3, false, K, Case::and_later},
+            {"chunk 1's keys never written (chunks 2 and 3 good)", 1, false, K, Case::only},
+            {"chunk 1's last verification launch of the test left out", 1, true, Q - 1, Case::only},
+            {"chunk 1's count of passes left out", 1, true, Q, Case::only},
+            {"chunk 1's second pair never written, its first good", 1, false, K, Case::all_but_last},
+            {"chunk 2's second pair never written, its first good", 2, false, K, Case::all_but_last},
+    };
+    for (const bool random : {false, true}) {
+        for (const Case& cs : cases) {
+            const long first = random ? (cs.chunk - 1) * (K + Q) + (cs.test ? K : 0)
+                                      : (cs.test ? static_cast<long>(CHUNKS) * K + (cs.chunk - 1) * Q
+                                                 : (cs.chunk - 1) * K);
+            const long at = first + cs.launch;
+            CHECK(raw_copy(f.ctx, f.out_pk, Bytes(OPS * c.pk, 0xA5).data(), OPS * c.pk));
+            CHECK(raw_copy(f.ctx, f.out_sk, Bytes(OPS * c.sk, 0xA5).data(), OPS * c.sk));
+            Launches::reset();
+            (cs.how == Case::and_later      ? Launches::skip_from
+             : cs.how == Case::all_but_last ? Launches::shrink_at
+                                            : Launches::skip_at) = at;
+            const int rc = random ? opqc_sycl_slhdsa_keypair(f.ctx, f.out_pk, f.out_sk, OPS)
+                                  : opqc_sycl_slhdsa_keypair_derand(f.ctx, f.out_pk, f.out_sk, f.seeds, OPS);
+            Launches::reset();
+            const bool zero = all_zero(get(f.out_pk, OPS * c.pk)) && all_zero(get(f.out_sk, OPS * c.sk));
+            const bool left = all_zero(f.workspace());
+            CHECK(rc == OPENPQC_ERR_PCT && zero && left);
+            detail += std::string("; ") + (random ? "keypair" : "keypair_derand") + ", " + cs.what + ": " +
+                      std::to_string(rc) + ", pk and sk of all " + std::to_string(OPS) +
+                      (zero ? " zero" : " NOT zero") + ", workspace " + (left ? "zero" : "NOT zero");
+        }
+    }
+    const int rc_next = opqc_sycl_slhdsa_keypair_derand(f.ctx, f.out_pk, f.out_sk, f.seeds, OPS);
+    const bool next = rc_next == 0 && get(f.out_pk, OPS * c.pk) == pk;
+    CHECK(next);
+    report(device, o, "pct", before, detail + "; next keypair_derand " + (next ? "= CPU" : "WRONG"));
+}
+
 bool nvidia(int device) {
     const std::string name = opqc_sycl_device_name(device), platform = opqc_sycl_device_platform(device);
     return name.find("NVIDIA") != std::string::npos || platform.find("CUDA") != std::string::npos;
@@ -570,6 +879,68 @@ bool parse_list(const char* s, long lo, long hi, std::vector<int>& out) {
     }
 }
 
+// "layout": the workspace that create allocates in this build of the backend (its sections, so that KeyGen's
+// pair-wise consistency test shows as the sections of its own), for all twelve sets and the max_batch values of
+// test_gpu_layout.c, in that program's form; test gpu_layout (tests/gpu/gpu_layout.cmake) requires the GPU
+// library's to be the same for the sets it has. The sets that this test does not build (OPENPQC_SLHDSA_SYCL_SETS
+// above) come from the backend's own layout functions, which create uses (workspace_size); for the two it builds,
+// they must give what the backend reports (opqc_sycl_slhdsa_workspace_bytes). In FIPS 140-3 mode the backend must
+// have the pair-wise consistency test and create's self-test: exit code 1 otherwise.
+template <class P>
+std::size_t workspace_of(std::size_t max_batch) {
+    namespace backend = openpqc::slhdsa::gpu;
+    return openpqc::gpu::workspace_bytes(backend::section_bytes<P>(), max_batch, backend::HEAD_BYTES);
+}
+
+int layout() {
+    namespace sp = openpqc::slhdsa::params;
+    namespace backend = openpqc::slhdsa::gpu;
+    const struct {
+        int id;
+        std::size_t (*bytes)(std::size_t);
+    } all[] = {{OPENPQC_SLHDSA_SHA2_128S, workspace_of<sp::SLH_DSA_SHA2_128s>},
+               {OPENPQC_SLHDSA_SHAKE_128S, workspace_of<sp::SLH_DSA_SHAKE_128s>},
+               {OPENPQC_SLHDSA_SHA2_128F, workspace_of<sp::SLH_DSA_SHA2_128f>},
+               {OPENPQC_SLHDSA_SHAKE_128F, workspace_of<sp::SLH_DSA_SHAKE_128f>},
+               {OPENPQC_SLHDSA_SHA2_192S, workspace_of<sp::SLH_DSA_SHA2_192s>},
+               {OPENPQC_SLHDSA_SHAKE_192S, workspace_of<sp::SLH_DSA_SHAKE_192s>},
+               {OPENPQC_SLHDSA_SHA2_192F, workspace_of<sp::SLH_DSA_SHA2_192f>},
+               {OPENPQC_SLHDSA_SHAKE_192F, workspace_of<sp::SLH_DSA_SHAKE_192f>},
+               {OPENPQC_SLHDSA_SHA2_256S, workspace_of<sp::SLH_DSA_SHA2_256s>},
+               {OPENPQC_SLHDSA_SHAKE_256S, workspace_of<sp::SLH_DSA_SHAKE_256s>},
+               {OPENPQC_SLHDSA_SHA2_256F, workspace_of<sp::SLH_DSA_SHA2_256f>},
+               {OPENPQC_SLHDSA_SHAKE_256F, workspace_of<sp::SLH_DSA_SHAKE_256f>}};
+    int rc = 0;
+    for (const auto& a : all) {
+        for (const std::size_t b : {std::size_t{1}, std::size_t{3}, std::size_t{64}}) {
+            const std::size_t bytes = a.bytes(b), own = opqc_sycl_slhdsa_workspace_bytes(a.id, b);
+            if (own != 0 && own != bytes) {
+                std::fprintf(stderr, "set %d, max_batch %zu: %zu bytes here, %zu by the backend\n", a.id, b, bytes,
+                             own);
+                rc = 1;
+            }
+            std::printf("alg 0x%04x max_batch %zu workspace %zu\n", 0x0300u | static_cast<unsigned>(a.id), b, bytes);
+        }
+    }
+    std::printf("SLH-DSA backend: KeyGen's pair-wise consistency test %s, create's self-test %s\n",
+                backend::KEYGEN_PCT ? "on" : "off", backend::CREATE_SELF_TEST ? "on" : "off");
+#if defined(OPENPQC_FIPS140_3)
+    if (!backend::KEYGEN_PCT || !backend::CREATE_SELF_TEST) {
+        std::fprintf(stderr, "FIPS 140-3 mode: the backend lacks KeyGen's pair-wise consistency test or create's "
+                             "self-test\n");
+        rc = 1;
+    }
+#endif
+#if TEST_ORDINARY_AS_BUILT
+    if (backend::KEYGEN_PCT || (backend::CREATE_SELF_TEST && !TEST_BUILD_SELF_TEST)) {
+        std::fprintf(stderr, "an ordinary build: the backend as the library is built has a test that only FIPS 140-3 "
+                             "mode turns on\n");
+        return 1;
+    }
+#endif
+    return rc;
+}
+
 int usage(const char* why) {
     std::fprintf(stderr,
                  "test_slhdsa_sycl_faults: %s\n"
@@ -583,6 +954,24 @@ int usage(const char* why) {
 
 int main(int argc, char** argv) {
     using namespace faults_test;
+#if OPQC_SLHDSA_SYCL_SELF_TEST
+    if (argc == 2 && std::strcmp(argv[1], "self-test-values") == 0) return self_test_values();
+    if (argc > 1 && std::strcmp(argv[1], "answers") == 0) {
+        // "answers present|absent <file>...": whether the files hold the 36 answers of the self-test of create
+        // (three per set, all twelve sets), with the expectation that the caller gives (test gpu_self_test)
+        std::vector<self_test_answers::Answer> all;
+        for (const auto& a : openpqc::slhdsa::gpu::self_test::answers)
+            for (const auto* v : {&a.pk, &a.sk, &a.sig}) all.push_back(*v);
+        return self_test_answers::check("SLH-DSA", BUILD_HAS_SELF_TEST, argc - 2, argv + 2, all);
+    }
+#else
+    if (argc > 1 && (std::strcmp(argv[1], "self-test-values") == 0 || std::strcmp(argv[1], "answers") == 0)) {
+        std::fprintf(stderr, "%s: this build of the backend has no self-test of create (use test_slhdsa_sycl_faults)\n",
+                     argv[1]);
+        return 2;
+    }
+#endif
+    if (argc == 2 && std::strcmp(argv[1], "layout") == 0) return layout();
     const int count = opqc_sycl_device_count();
     const bool sticky_mode = argc > 1 && std::strcmp(argv[1], "sticky") == 0;
     const int first_list = sticky_mode ? 2 : 1;
@@ -613,6 +1002,31 @@ int main(int argc, char** argv) {
     }
     if (devices.empty())
         for (int d = 0; d < count; d++) devices.push_back(d);
+    namespace backend = openpqc::slhdsa::gpu;
+#if defined(OPENPQC_FIPS140_3)
+    // FIPS 140-3 mode turns both tests on, whatever else the build passes: in _nopct the backend has
+    // OPENPQC_FIPS140_3 alone, as the library's objects have
+    CHECK(backend::CREATE_SELF_TEST && backend::KEYGEN_PCT);
+    std::printf("FIPS 140-3 mode: create's self-test %s, KeyGen's pair-wise consistency test %s\n",
+                backend::CREATE_SELF_TEST ? "on" : "OFF (FAILED)", backend::KEYGEN_PCT ? "on" : "OFF (FAILED)");
+#endif
+    std::printf("the backend as compiled here: KeyGen's pair-wise consistency test %s, create's self-test %s%s\n",
+                backend::KEYGEN_PCT ? "on" : "off (the pct case: " TEST_ABSENT ")",
+                backend::CREATE_SELF_TEST ? "on"
+                                          : "off (the answers and the self-test's failure cases: " TEST_ABSENT ")",
+                TEST_BUILD_SELF_TEST ? "; the build gives every object OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST" : "");
+#if TEST_ORDINARY_AS_BUILT
+    // an ordinary build: the backend as the library is built has neither FIPS-only test
+    CHECK(!backend::KEYGEN_PCT && (!backend::CREATE_SELF_TEST || TEST_BUILD_SELF_TEST));
+#elif !defined(OPENPQC_FIPS140_3)
+    // the variant with the test's own definitions: they turn both on
+    CHECK(backend::KEYGEN_PCT && backend::CREATE_SELF_TEST);
+#endif
+#if OPQC_SLHDSA_SYCL_SELF_TEST
+    answers();
+#else
+    std::printf("answers: " TEST_ABSENT ": this build of the backend has no self-test of create\n");
+#endif
     for (const Cpu& c : sets) {
         const Oracle o = make_oracle(c);
         for (const int d : devices) {
@@ -622,9 +1036,19 @@ int main(int argc, char** argv) {
             never_run(d, o);
             fault(d, o, per_chunk);
             thrown(d, o, per_chunk);
+#if OPQC_SLHDSA_SYCL_SELF_TEST
+            create_self_test(d, o);
+#else
+            create_without_self_test(d, o);
+#endif
+            if (backend::KEYGEN_PCT) pct(d, o);
+            else report(d, o, "pct", failures, TEST_ABSENT ": this build of the backend has no pair-wise "
+                                               "consistency test");
         }
     }
-    std::printf("result: %s, %zu set(s) on %zu device(s), %d failed check(s)\n", failures ? "FAIL" : "PASS",
-                sizeof sets / sizeof sets[0], devices.size(), failures);
+    std::printf("result: %s, %zu set(s) on %zu device(s), %d failed check(s); the backend %s create's self-test, "
+                "%s KeyGen's pair-wise consistency test\n",
+                failures ? "FAIL" : "PASS", sizeof sets / sizeof sets[0], devices.size(), failures,
+                backend::CREATE_SELF_TEST ? "with" : "without", backend::KEYGEN_PCT ? "with" : "without");
     return failures ? 1 : 0;
 }

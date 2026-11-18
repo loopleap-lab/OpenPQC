@@ -554,36 +554,49 @@ This section describes OpenPQC as it is now (November 2026), not the vendored ml
    it with `opqc_set_randombytes(fn, ctx)` at run time, or by building the libraries with the CMake option
    `OPENPQC_EXTERNAL_RANDOMBYTES` and defining `int opqc_external_randombytes(uint8_t *out, size_t len)`
    (`Core/opqc_platform.h`); the GPU backend's coins come through the same function. The `*_testrng` targets are built
-   as with that option, for the tests.
+   as with that option, for the tests. In FIPS 140-3 mode (`OPENPQC_FIPS140_3`) the module's own HMAC_DRBG (SP 800-90A
+   Rev. 1, SHA-512, 256 bits) is the source, seeded from `getrandom`, and `opqc_set_randombytes` refuses every
+   registration (`OPENPQC_ERR_NOT_APPROVED`); the operating system's entropy source must have an ESV certificate where
+   the module is used, without which the module cannot be validated there, and no function that the module imports
+   from the C library and the dynamic loader may be replaced or interposed in the process, by any mechanism
+   ([FIPS-140-3-security-policy.md](FIPS-140-3-security-policy.md), Sections 2.8 and 6.2).
 2. **Type checks.** The FIPS 203 type (length) checks of §7.2 and §7.3 are met by the API's fixed-size arrays.
    Callers must pass buffers of exactly the declared sizes and refuse keys or ciphertexts of other lengths themselves
    (`openpqc_mlkem.h`, Sizes).
 3. **Internal functions.** Applications call `openpqc_mlkemNNN_keygen`, `encaps` and `decaps`, and
-   `keygen_from_seed` to expand a stored seed d ‖ z (item 7). Encapsulation with m given
+   `keygen_from_seed` to expand a stored seed d ‖ z (item 7; NIST's PQC FAQ also allows importing a seed that
+   another cryptographic module generated, and in FIPS 140-3 mode `keygen_from_seed` is an approved service, the
+   import of a key pair in its seed format). Encapsulation with m given
    (`openpqc_testing_mlkemNNN_encaps_derand`) is for testing only (§3.3, "controlled access to internal functions"):
    it is not in the library `openpqc` but in `OpenPQC::testing` (`openpqc/testing.h`), which is built only with the
    tests, benchmarks or examples and never installed, and the test `production_symbols` checks that `openpqc` exports
    no testing interface.
-4. **PCT.** For FIPS 140-3 validation, compile `ML/KEM/mlkem.cpp` with `OPENPQC_MLKEM_KEYGEN_PCT` (the CMake option
-   of that name), so that every generated key pair passes the pair-wise consistency test (§7.1, FIPS 140-3 IG 10.3.A);
-   it is off by default and tested by `mlkem_pct`, `mlkem_pct_fail` and `mlkem_pct_odr`, and with the option by
-   `mlkem_pct_library` against the library as built (the presets `gcc-release-pct` and `clang-release-pct`). The GPU
-   KeyGen has none.
+4. **PCT.** FIPS 140-3 mode (`OPENPQC_FIPS140_3`) compiles `ML/KEM/mlkem.cpp` and the GPU backend
+   `sycl/mlkem_sycl.cpp` with `OPENPQC_MLKEM_KEYGEN_PCT`, so that every generated key pair passes the pair-wise
+   consistency test (§7.1, FIPS 140-3 IG 10.3.A): a failure puts the module into its error state, and the GPU KeyGen
+   tests every key pair on the device and fails the whole call if one fails. No ordinary library, CPU or GPU, has the
+   test: the CMake option `OPENPQC_MLKEM_KEYGEN_PCT` and the presets `pct`, `gcc-release-pct` and `clang-release-pct`
+   no longer exist, and configuring stops when the option is given. The tests `mlkem_pct`, `mlkem_pct_fail` and
+   `mlkem_pct_odr` compile their own copies with the definition and run in every build; `mlkem_pct_library` checks
+   the library as built, in FIPS 140-3 mode only.
 5. **K-PKE.** Do not use K-PKE (`kpke::` in `ML/KEM/scheme/kpke.hpp`) as a public-key encryption scheme (§3.3): it
    is reachable only through the header-only scheme templates, which applications should not call.
 6. **The GPU backend.** It meets the destruction rule for its workspace (the secret sections are zeroized after every
    launch, the whole workspace after a failure and by `destroy`; local memory is cleared before a kernel ends) and
    draws its coins inside the library; its `_derand` functions take the coins from the caller as the CPU's
    `keygen_from_seed` and testing interface do (`keypair_derand` for testing and a stored seed, `enc_derand` for
-   testing only), but are still in the GPU library `openpqc_sycl`. What it cannot
+   testing only), but are still in the GPU library `openpqc_sycl`: the shared one keeps them local and only
+   `OpenPQC::sycl_testing` exports them, while a static one, which FIPS 140-3 mode refuses, holds them. What it cannot
    reach: copies of the coin transfers that NVIDIA's driver keeps, and memory after a sticky device fault (after
    which only a new process can use the device). Its buffer check asks the SYCL runtime, which does not tell a freed
    buffer from a live one under DPC++'s Level Zero and on AdaptiveCpp's OpenMP host device; that host device also
    takes any pointer (another GPU's device memory there ends the process), and DPC++ and AdaptiveCpp report the device
    memory of the other platform of the same Intel GPU as the context's (AdaptiveCpp seen with SLH-DSA's backend). It
-   has no pair-wise consistency test and is not meant to be an approved service.
+   has a pair-wise consistency test in FIPS 140-3 mode only (item 4), and it is not an approved service: in FIPS 140-3
+   mode each of its calls that runs an algorithm (create, KeyGen, Encaps, Decaps) reports the indicator 0, and in the
+   module's error state returns `OPENPQC_ERR_ERROR_STATE`.
 7. **Stored values.** FIPS 203 explicitly allows two values to be kept after an operation (§3.3):
    - the seed (d, z), which must be protected like a decapsulation key;
    - the public matrix Â.
 
-   The second is what makes the same-key caching on the roadmap compliant.
+   The second is what lets the same-key caching on the roadmap keep to FIPS 203.

@@ -18,7 +18,9 @@
 //     OPENPQC_ERR_INVALID_ARGUMENT and zeroes its signature (review finding F073);
 //   - after a failure, the zeroing of all outputs and the fill of status, waited for;
 //   - openpqc_status codes for the backends' -1 and -2;
-//   - buffers that are wiped when they are freed, for every scheme.
+//   - buffers that are wiped when they are freed, for every scheme;
+//   - in FIPS 140-3 mode (OPENPQC_FIPS140_3), the module's error state, checked when a call begins and again once
+//     its work is done, and the approved-service indicator (service and settle, below).
 //
 // The library openpqc_sycl exports openpqc_gpu_* only (cmake/openpqc_sycl.map); the library openpqc_sycl_testing
 // compiles this file again with the testing interfaces and exports everything of the C APIs (the backends'
@@ -46,6 +48,10 @@
 #include <vector>
 
 #include "Core/openpqc_version.h" // OPENPQC_HAVE_*
+#if defined(OPENPQC_FIPS140_3)
+#include "Core/openpqc_core.h" // opqc_fips_mark_non_approved
+#include "openpqc/fips.h"      // openpqc_fips_status
+#endif
 #include "Core/prehash.hpp"
 #include "Core/sycl/openpqc_sycl.h"
 #include "Core/sycl/opqc_sycl_backends.hpp"
@@ -92,11 +98,33 @@ openpqc_status to_status(int rc) {
         case OPENPQC_ERR_PCT: return OPENPQC_ERR_PCT;
         case OPENPQC_ERR_SELF_TEST: return OPENPQC_ERR_SELF_TEST;
         case OPENPQC_ERR_SIGNING_LIMIT: return OPENPQC_ERR_SIGNING_LIMIT;
+#if defined(OPENPQC_FIPS140_3)
+        case OPENPQC_ERR_ERROR_STATE: return OPENPQC_ERR_ERROR_STATE;   // the second check (settle, below)
+#endif
         default: return OPENPQC_ERR_DEVICE;
     }
 }
 
 bool failed(const openpqc_gpu* g) { return g->h.queue->failed(); }
+
+// A service of the GPU API: f() runs it. In FIPS 140-3 mode (OPENPQC_FIPS140_3) the module is the CPU library
+// (libopenpqc), and the GPU library is outside its boundary: its services are not approved ones (openpqc/sycl.h,
+// FIPS 140-3 mode). So each marks the calling thread's indicator "not approved" when it returns
+// (opqc_fips_mark_non_approved; after f, since the randomness that f draws from the module through
+// opqc_randombytes sets the indicator to 1), and none runs while the module is in its error state
+// (openpqc_fips_status): it returns OPENPQC_ERR_ERROR_STATE before any other check, and queues and writes
+// nothing. A call that does run checks the state again once its work is done (settle, below), as the module's
+// own services do. In the ordinary build this is f() alone.
+template <class F>
+openpqc_status service(F f) {
+#if defined(OPENPQC_FIPS140_3)
+    struct MarkOnReturn {
+        ~MarkOnReturn() { opqc_fips_mark_non_approved(); }
+    } mark;
+    if (openpqc_fips_status() == OPENPQC_ERR_ERROR_STATE) return OPENPQC_ERR_ERROR_STATE;
+#endif
+    return f();
+}
 
 // The backend's sync: waits, and zeroizes the workspace the first time it finds the context failed
 int backend_sync(openpqc_gpu* g) {
@@ -112,6 +140,24 @@ int backend_sync(openpqc_gpu* g) {
 #endif
         default: return -2;
     }
+}
+
+// The second check of the module's state, in FIPS 140-3 mode, for a call that has queued its work (rc: its result
+// so far): the call first waits for that work (the backend's sync, which gives -2 if the context fails
+// meanwhile), so that the check comes after every kernel of the call, and then returns OPENPQC_ERR_ERROR_STATE if
+// the module is in its error state, whatever rc was; its caller then zeroizes the outputs (finish). So a call
+// whose work was running when the module entered its error state, or whose own draw from the module's DRBG put it
+// there, releases no result: what it returns with OPENPQC_OK was computed while the module was operational at
+// this check. The cost is that every such call waits for its work in this mode (the GPU calls are asynchronous
+// otherwise). In the ordinary build: rc, unchanged.
+int settle(openpqc_gpu* g, int rc) {
+#if defined(OPENPQC_FIPS140_3)
+    if (rc == 0) rc = backend_sync(g);
+    if (openpqc_fips_status() == OPENPQC_ERR_ERROR_STATE) return OPENPQC_ERR_ERROR_STATE;
+#else
+    (void)g;
+#endif
+    return rc;
 }
 
 // Whether p can be a buffer of a call (openpqc/sycl.h, Buffers): not NULL, aligned, and USM memory of the
@@ -170,12 +216,16 @@ bool admit(openpqc_gpu* g, std::int32_t* status, std::size_t n, bool arguments_o
     return false;
 }
 
-// The end of a call that was admitted: for rc != 0 (the backend's result, or this layer's -2), the outputs of all
-// n operations are zeroed and the status entries set to OPENPQC_ERR_NOT_COMPUTED, as far as the device still
-// accepts work, and waited for, so that the call leaves no write into the caller's buffers behind it
+// The end of a call that was admitted: after the second check of the module's state in FIPS 140-3 mode (settle),
+// for rc != 0 (the backend's result, this layer's -2, or the error state), the outputs of all n operations are
+// zeroed and the status entries set to OPENPQC_ERR_NOT_COMPUTED, as far as the device still accepts work, and
+// waited for, so that the call leaves no write into the caller's buffers behind it. `partial`: the call's
+// results are those of the operations that passed, its status entries say which (ML-DSA KeyGen whose pair-wise
+// consistency test failed for some pairs), and it returns OPENPQC_ERR_PCT where it would return OPENPQC_OK.
 openpqc_status finish(openpqc_gpu* g, int rc, std::initializer_list<Output> outputs, std::int32_t* status,
-                      std::size_t n) {
-    if (rc == 0) return OPENPQC_OK;
+                      std::size_t n, bool partial = false) {
+    rc = settle(g, rc);
+    if (rc == 0) return partial ? OPENPQC_ERR_PCT : OPENPQC_OK;
     ContextQueue& q = *g->h.queue;
     for (const Output& o : outputs) {
         q.guard([&] {
@@ -307,6 +357,25 @@ std::size_t backend_workspace(openpqc_alg alg, std::size_t max_batch) {
     }
 }
 
+// Destroys the backend context of g: waits, zeroizes its whole workspace and frees it (the backends' destroy)
+void destroy_backend(openpqc_gpu* g) {
+    switch (g->scheme) {
+#if OPENPQC_HAVE_MLKEM
+        case KEM: opqc_sycl_mlkem_destroy(g->mlkem); break;
+#endif
+#if OPENPQC_HAVE_MLDSA
+        case MLDSA: opqc_sycl_mldsa_destroy(g->mldsa); break;
+#endif
+#if OPENPQC_HAVE_SLHDSA
+        case SLHDSA: opqc_sycl_slhdsa_destroy(g->slhdsa); break;
+#endif
+        default: break;
+    }
+    g->mlkem = nullptr;
+    g->mldsa = nullptr;
+    g->slhdsa = nullptr;
+}
+
 openpqc_status create(openpqc_gpu** out, openpqc_alg alg, std::size_t max_batch, const sycl::device& dev,
                       const sycl::context* app) {
     const openpqc_alg_info* info = openpqc_alg_info_get(alg);
@@ -339,6 +408,14 @@ openpqc_status create(openpqc_gpu** out, openpqc_alg alg, std::size_t max_batch,
             break;
 #endif
         default: return OPENPQC_ERR_UNSUPPORTED;
+    }
+    // the second check of the module's state (settle): a context made while the module entered its error state is
+    // destroyed again, which zeroizes its workspace, and none is returned
+    if (rc == 0) {
+        rc = settle(g.get(), 0);
+        if (rc != 0) destroy_backend(g.get());
+    } else {
+        rc = settle(g.get(), rc);
     }
     if (rc != 0) return to_status(rc);
     *out = g.release();
@@ -399,13 +476,32 @@ openpqc_status sig_keygen(openpqc_gpu* g, std::uint8_t* pk, std::uint8_t* sk, co
 #endif
         }
     }
-    if (rc == OPENPQC_ERR_PCT) {   // the pairs that failed are zeros, the others are results
-        const int marked = mark_failed_pairs(g, pk, g->info->public_key_bytes, status, n);
-        if (marked == 0) return OPENPQC_ERR_PCT;
-        rc = marked;
+    // ML-DSA: the pairs that failed the pair-wise consistency test are zeros, the others are results, released
+    // as every call's are (finish: in FIPS 140-3 mode, once the second check of the module's state has passed).
+    // SLH-DSA's test fails the whole call (every key zeroized: finish, below).
+    bool partial = false;
+    if (rc == OPENPQC_ERR_PCT && g->scheme == MLDSA) {
+        rc = mark_failed_pairs(g, pk, g->info->public_key_bytes, status, n);
+        partial = rc == 0;
+    } else if (rc == 0) {
+        rc = fill(g, status, OPENPQC_OK, n, false);
     }
-    if (rc == 0) rc = fill(g, status, OPENPQC_OK, n, false);
-    return finish(g, rc, {{pk, g->info->public_key_bytes}, {sk, g->info->secret_key_bytes}}, status, n);
+    return finish(g, rc, {{pk, g->info->public_key_bytes}, {sk, g->info->secret_key_bytes}}, status, n, partial);
+}
+
+openpqc_status kem_decaps(openpqc_gpu* g, std::uint8_t* ss, const std::uint8_t* ct, const std::uint8_t* sk,
+                          std::int32_t* status, std::size_t n) {
+    if (!g) return OPENPQC_ERR_INVALID_ARGUMENT;
+    if (g->scheme != KEM) return OPENPQC_ERR_UNSUPPORTED;
+    const Lock lock(*g->h.mutex);
+    if (n == 0) return failed(g) ? OPENPQC_ERR_DEVICE : OPENPQC_OK;
+    openpqc_status result{};
+    if (!admit(g, status, n, true, {{ss, 8}, {ct, 8}, {sk, 8}}, result)) return result;
+    int rc = fill(g, status, OPENPQC_ERR_NOT_COMPUTED, n, false);
+#if OPENPQC_HAVE_MLKEM
+    if (rc == 0) rc = opqc_sycl_mlkem_dec(g->mlkem, ss, ct, sk, status, n);
+#endif
+    return finish(g, rc, {{ss, g->info->shared_secret_bytes}}, status, n);
 }
 
 // Signing of messages (mu == nullptr) or of external mu (ML-DSA); rnd: the testing interfaces' randomness
@@ -536,36 +632,39 @@ extern "C" const char* openpqc_gpu_implementation(void) { return opqc_sycl_imple
 // ------------------------------------------------------------------ contexts
 
 extern "C" openpqc_status openpqc_gpu_create(openpqc_gpu** gpu, openpqc_alg alg, const openpqc_gpu_config* cfg) {
-    if (!gpu) return OPENPQC_ERR_INVALID_ARGUMENT;
-    *gpu = nullptr;
-    if (!openpqc_alg_info_get(alg)) return OPENPQC_ERR_UNSUPPORTED;
-    const int device = cfg ? cfg->device : -1;
-    const std::size_t max_batch = cfg ? cfg->max_batch : 0;
-    openpqc_status result = OPENPQC_ERR_DEVICE;
-    (void)openpqc::gpu::guarded([&] {
-        sycl::device dev;
-        result = openpqc::gpu::select_device(device, dev) ? create(gpu, alg, max_batch, dev, nullptr)
-                                                          : OPENPQC_ERR_INVALID_ARGUMENT;
-        return 0;
+    if (gpu) *gpu = nullptr;
+    return service([&] {
+        if (!gpu) return OPENPQC_ERR_INVALID_ARGUMENT;
+        if (!openpqc_alg_info_get(alg)) return OPENPQC_ERR_UNSUPPORTED;
+        const int device = cfg ? cfg->device : -1;
+        const std::size_t max_batch = cfg ? cfg->max_batch : 0;
+        openpqc_status result = OPENPQC_ERR_DEVICE;
+        (void)openpqc::gpu::guarded([&] {
+            sycl::device dev;
+            result = openpqc::gpu::select_device(device, dev) ? create(gpu, alg, max_batch, dev, nullptr)
+                                                              : OPENPQC_ERR_INVALID_ARGUMENT;
+            return 0;
+        });
+        return result;
     });
-    return result;
 }
 
 extern "C" openpqc_status openpqc_gpu_create_on(openpqc_gpu** gpu, openpqc_alg alg, std::size_t max_batch,
                                                const ::sycl::context* context, const ::sycl::device* device) {
-    if (!gpu) return OPENPQC_ERR_INVALID_ARGUMENT;
-    *gpu = nullptr;
-    if (!context || !device) return OPENPQC_ERR_INVALID_ARGUMENT;
-    if (!openpqc_alg_info_get(alg)) return OPENPQC_ERR_UNSUPPORTED;
-    openpqc_status result = OPENPQC_ERR_DEVICE;
-    (void)openpqc::gpu::guarded([&] {
-        const std::vector<sycl::device> devices = context->get_devices();
-        result = std::find(devices.begin(), devices.end(), *device) != devices.end()
-                         ? create(gpu, alg, max_batch, *device, context)
-                         : OPENPQC_ERR_INVALID_ARGUMENT;
-        return 0;
+    if (gpu) *gpu = nullptr;
+    return service([&] {
+        if (!gpu || !context || !device) return OPENPQC_ERR_INVALID_ARGUMENT;
+        if (!openpqc_alg_info_get(alg)) return OPENPQC_ERR_UNSUPPORTED;
+        openpqc_status result = OPENPQC_ERR_DEVICE;
+        (void)openpqc::gpu::guarded([&] {
+            const std::vector<sycl::device> devices = context->get_devices();
+            result = std::find(devices.begin(), devices.end(), *device) != devices.end()
+                             ? create(gpu, alg, max_batch, *device, context)
+                             : OPENPQC_ERR_INVALID_ARGUMENT;
+            return 0;
+        });
+        return result;
     });
-    return result;
 }
 
 extern "C" void openpqc_gpu_destroy(openpqc_gpu* gpu) {
@@ -575,18 +674,7 @@ extern "C" void openpqc_gpu_destroy(openpqc_gpu* gpu) {
         for (const auto& [p, bytes] : gpu->allocations) (void)wipe_and_free(gpu, p, bytes);
         gpu->allocations.clear();
     }
-    switch (gpu->scheme) {
-#if OPENPQC_HAVE_MLKEM
-        case KEM: opqc_sycl_mlkem_destroy(gpu->mlkem); break;
-#endif
-#if OPENPQC_HAVE_MLDSA
-        case MLDSA: opqc_sycl_mldsa_destroy(gpu->mldsa); break;
-#endif
-#if OPENPQC_HAVE_SLHDSA
-        case SLHDSA: opqc_sycl_slhdsa_destroy(gpu->slhdsa); break;
-#endif
-        default: break;
-    }
+    destroy_backend(gpu);
     delete gpu;
 }
 
@@ -640,79 +728,73 @@ extern "C" openpqc_status openpqc_gpu_memcpy_async(openpqc_gpu* gpu, void* dst, 
 
 extern "C" openpqc_status openpqc_gpu_kem_keygen(openpqc_gpu* gpu, uint8_t* pk, uint8_t* sk, int32_t* status,
                                                 size_t n) {
-    return kem_keygen(gpu, pk, sk, nullptr, status, n);
+    return service([&] { return kem_keygen(gpu, pk, sk, nullptr, status, n); });
 }
 
 extern "C" openpqc_status openpqc_gpu_kem_keygen_from_seed(openpqc_gpu* gpu, uint8_t* pk, uint8_t* sk,
                                                           const uint8_t* seeds, int32_t* status, size_t n) {
-    if (gpu && gpu->scheme == KEM && n > 0 && !seeds) {   // NULL seeds: refused, not the randomized KeyGen
-        const Lock lock(*gpu->h.mutex);
-        openpqc_status result{};
-        return admit(gpu, status, n, false, {}, result) ? OPENPQC_ERR_INVALID_ARGUMENT : result;
-    }
-    return kem_keygen(gpu, pk, sk, seeds, status, n);
+    return service([&] {
+        if (gpu && gpu->scheme == KEM && n > 0 && !seeds) {   // NULL seeds: refused, not the randomized KeyGen
+            const Lock lock(*gpu->h.mutex);
+            openpqc_status result{};
+            return admit(gpu, status, n, false, {}, result) ? OPENPQC_ERR_INVALID_ARGUMENT : result;
+        }
+        return kem_keygen(gpu, pk, sk, seeds, status, n);
+    });
 }
 
 extern "C" openpqc_status openpqc_gpu_kem_encaps(openpqc_gpu* gpu, uint8_t* ct, uint8_t* ss, const uint8_t* pk,
                                                 int32_t* status, size_t n) {
-    return kem_encaps(gpu, ct, ss, pk, nullptr, false, status, n);
+    return service([&] { return kem_encaps(gpu, ct, ss, pk, nullptr, false, status, n); });
 }
 
 extern "C" openpqc_status openpqc_gpu_kem_decaps(openpqc_gpu* gpu, uint8_t* ss, const uint8_t* ct, const uint8_t* sk,
                                                 int32_t* status, size_t n) {
-    if (!gpu) return OPENPQC_ERR_INVALID_ARGUMENT;
-    if (gpu->scheme != KEM) return OPENPQC_ERR_UNSUPPORTED;
-    const Lock lock(*gpu->h.mutex);
-    if (n == 0) return failed(gpu) ? OPENPQC_ERR_DEVICE : OPENPQC_OK;
-    openpqc_status result{};
-    if (!admit(gpu, status, n, true, {{ss, 8}, {ct, 8}, {sk, 8}}, result)) return result;
-    int rc = fill(gpu, status, OPENPQC_ERR_NOT_COMPUTED, n, false);
-#if OPENPQC_HAVE_MLKEM
-    if (rc == 0) rc = opqc_sycl_mlkem_dec(gpu->mlkem, ss, ct, sk, status, n);
-#endif
-    return finish(gpu, rc, {{ss, gpu->info->shared_secret_bytes}}, status, n);
+    return service([&] { return kem_decaps(gpu, ss, ct, sk, status, n); });
 }
 
 // ------------------------------------------------------------------ ML-DSA and SLH-DSA
 
 extern "C" openpqc_status openpqc_gpu_sig_keygen(openpqc_gpu* gpu, uint8_t* pk, uint8_t* sk, int32_t* status,
                                                 size_t n) {
-    return sig_keygen(gpu, pk, sk, nullptr, false, status, n);
+    return service([&] { return sig_keygen(gpu, pk, sk, nullptr, false, status, n); });
 }
 
 extern "C" openpqc_status openpqc_gpu_sig_keygen_from_seed(openpqc_gpu* gpu, uint8_t* pk, uint8_t* sk,
                                                           const uint8_t* seeds, int32_t* status, size_t n) {
-    if (gpu && gpu->scheme == SLHDSA) return OPENPQC_ERR_UNSUPPORTED;
-    if (gpu && gpu->scheme == MLDSA && n > 0 && !seeds) {
-        const Lock lock(*gpu->h.mutex);
-        openpqc_status result{};
-        return admit(gpu, status, n, false, {}, result) ? OPENPQC_ERR_INVALID_ARGUMENT : result;
-    }
-    return sig_keygen(gpu, pk, sk, seeds, false, status, n);
+    return service([&] {
+        if (gpu && gpu->scheme == SLHDSA) return OPENPQC_ERR_UNSUPPORTED;
+        if (gpu && gpu->scheme == MLDSA && n > 0 && !seeds) {
+            const Lock lock(*gpu->h.mutex);
+            openpqc_status result{};
+            return admit(gpu, status, n, false, {}, result) ? OPENPQC_ERR_INVALID_ARGUMENT : result;
+        }
+        return sig_keygen(gpu, pk, sk, seeds, false, status, n);
+    });
 }
 
 extern "C" openpqc_status openpqc_gpu_sig_sign(openpqc_gpu* gpu, uint8_t* sig, openpqc_gpu_messages msgs,
                                               const openpqc_sign_opts* opts, const uint8_t* sk, int32_t* status,
                                               size_t n) {
-    return sig_sign(gpu, sig, &msgs, nullptr, opts, nullptr, false, sk, status, n);
+    return service([&] { return sig_sign(gpu, sig, &msgs, nullptr, opts, nullptr, false, sk, status, n); });
 }
 
 extern "C" openpqc_status openpqc_gpu_sig_verify(openpqc_gpu* gpu, const uint8_t* sig, openpqc_gpu_messages msgs,
                                                 const openpqc_sign_opts* opts, const uint8_t* pk, int32_t* status,
                                                 size_t n) {
-    return sig_verify(gpu, sig, &msgs, nullptr, opts, pk, status, n);
+    return service([&] { return sig_verify(gpu, sig, &msgs, nullptr, opts, pk, status, n); });
 }
 
 extern "C" openpqc_status openpqc_gpu_sig_sign_mu(openpqc_gpu* gpu, uint8_t* sig, const uint8_t* mu,
                                                  const openpqc_sign_opts* opts, const uint8_t* sk, int32_t* status,
                                                  size_t n) {
-    return sig_sign(gpu, sig, nullptr, mu, opts, nullptr, false, sk, status, n);
+    return service([&] { return sig_sign(gpu, sig, nullptr, mu, opts, nullptr, false, sk, status, n); });
 }
 
 extern "C" openpqc_status openpqc_gpu_sig_verify_mu(openpqc_gpu* gpu, const uint8_t* sig, const uint8_t* mu,
                                                    const openpqc_sign_opts* opts, const uint8_t* pk, int32_t* status,
                                                    size_t n) {
-    return sig_verify(gpu, sig, nullptr, mu, opts, pk, status, n);
+    return service([&] { return sig_verify(gpu, sig, nullptr, mu, opts, pk, status, n); });
 }
 
 // ------------------------------------------------------------------ experimental (openpqc/sycl_experimental.h)
@@ -750,25 +832,25 @@ extern "C" openpqc_status openpqc_gpu_experimental_sign_stats(const openpqc_gpu*
 extern "C" openpqc_status openpqc_testing_gpu_kem_encaps_derand(openpqc_gpu* gpu, uint8_t* ct, uint8_t* ss,
                                                                const uint8_t* pk, const uint8_t* m, int32_t* status,
                                                                size_t n) {
-    return kem_encaps(gpu, ct, ss, pk, m, true, status, n);
+    return service([&] { return kem_encaps(gpu, ct, ss, pk, m, true, status, n); });
 }
 
 extern "C" openpqc_status openpqc_testing_gpu_sig_keygen_derand(openpqc_gpu* gpu, uint8_t* pk, uint8_t* sk,
                                                                const uint8_t* seeds, int32_t* status, size_t n) {
-    return sig_keygen(gpu, pk, sk, seeds, true, status, n);
+    return service([&] { return sig_keygen(gpu, pk, sk, seeds, true, status, n); });
 }
 
 extern "C" openpqc_status openpqc_testing_gpu_sig_sign_derand(openpqc_gpu* gpu, uint8_t* sig,
                                                              openpqc_gpu_messages msgs, const openpqc_sign_opts* opts,
                                                              const uint8_t* rnd, const uint8_t* sk, int32_t* status,
                                                              size_t n) {
-    return sig_sign(gpu, sig, &msgs, nullptr, opts, rnd, true, sk, status, n);
+    return service([&] { return sig_sign(gpu, sig, &msgs, nullptr, opts, rnd, true, sk, status, n); });
 }
 
 extern "C" openpqc_status openpqc_testing_gpu_sig_sign_mu_derand(openpqc_gpu* gpu, uint8_t* sig, const uint8_t* mu,
                                                                 const openpqc_sign_opts* opts, const uint8_t* rnd,
                                                                 const uint8_t* sk, int32_t* status, size_t n) {
-    return sig_sign(gpu, sig, nullptr, mu, opts, rnd, true, sk, status, n);
+    return service([&] { return sig_sign(gpu, sig, nullptr, mu, opts, rnd, true, sk, status, n); });
 }
 
 extern "C" openpqc_status openpqc_testing_gpu_workspace_allocated(const openpqc_gpu* gpu, size_t* bytes) {

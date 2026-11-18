@@ -8,6 +8,8 @@
  * describe
  *
  *   openpqc_status                  the result of every function: OPENPQC_OK (0) or a negative OPENPQC_ERR_*
+ *                                   (OPENPQC_ERR_ERROR_STATE and OPENPQC_ERR_NOT_APPROVED: FIPS 140-3 mode,
+ *                                   openpqc/fips.h)
  *   openpqc_alg                     one id per parameter set: OPENPQC_ML_KEM_768, OPENPQC_ML_DSA_65,
  *                                   OPENPQC_SLH_DSA_SHA2_128F, ...
  *   openpqc_alg_info_get(alg)       its name (as FIPS 203, 204 and 205 and NIST's ACVP write it) and sizes
@@ -56,8 +58,13 @@ typedef enum openpqc_status {
                                             as corrected in NIST's errata) */
     OPENPQC_ERR_DEVICE = -9,             /* reserved for the GPU APIs: the device or its runtime failed */
     OPENPQC_ERR_NOT_COMPUTED = -10,      /* reserved for the GPU APIs: an operation of a batch has no result */
-    OPENPQC_ERR_UNSUPPORTED = -11        /* an algorithm this build does not contain, or that the function does
+    OPENPQC_ERR_UNSUPPORTED = -11,       /* an algorithm this build does not contain, or that the function does
                                             not take (a seed for SLH-DSA, a KEM to a signature function, ...) */
+    OPENPQC_ERR_ERROR_STATE = -12,       /* FIPS 140-3 mode: the module is in its error state after a failed
+                                            self-test, pair-wise consistency test, entropy source or DRBG, and
+                                            refuses every service until it is loaded again (openpqc/fips.h) */
+    OPENPQC_ERR_NOT_APPROVED = -13       /* FIPS 140-3 mode: the service is not an approved one and is refused
+                                            (opqc_set_randombytes); openpqc_fips_status() outside FIPS mode */
 } openpqc_status;
 
 /* One id per parameter set. The high byte is the scheme, the low byte the parameter set in the order of its

@@ -20,6 +20,8 @@
  *     SLH-DSA, sign_mu_derand for SLH-DSA: OPENPQC_ERR_UNSUPPORTED, and nothing written
  *   - an unknown flag in openpqc_sign_opts, a NULL seed or randomness: OPENPQC_ERR_INVALID_ARGUMENT, nothing
  *     written; openpqc_status_string names every status
+ *   - openpqc/fips.h: openpqc_fips_status() is 0 in a FIPS 140-3 build (the module is operational) and
+ *     OPENPQC_ERR_NOT_APPROVED in any other, where openpqc_fips_service_approved() is 0
  * The SLH-DSA s sets, whose signatures take about a second, sign once each (deterministically, against the
  * per-set function); the f sets go through every function.
  *
@@ -150,16 +152,25 @@ static void test_table(void) {
                                          OPENPQC_ERR_SIGNING_LIMIT,
                                          OPENPQC_ERR_DEVICE,
                                          OPENPQC_ERR_NOT_COMPUTED,
-                                         OPENPQC_ERR_UNSUPPORTED};
+                                         OPENPQC_ERR_UNSUPPORTED,
+                                         OPENPQC_ERR_ERROR_STATE,
+                                         OPENPQC_ERR_NOT_APPROVED};
     const size_t n = sizeof all_status / sizeof all_status[0];
     for (size_t i = 0; i < n; i++) {
-        check((int)all_status[i] == -(int)i, "-", "the values of openpqc_status are 0, -1, ..., -11");
+        check((int)all_status[i] == -(int)i, "-", "the values of openpqc_status are 0, -1, ..., -13");
         for (size_t j = 0; j < i; j++)
             check(strcmp(openpqc_status_string(all_status[i]), openpqc_status_string(all_status[j])) != 0, "-",
                   "openpqc_status_string: distinct names");
         check(strcmp(openpqc_status_string(all_status[i]), "unknown status") != 0, "-", "a name for each status");
     }
     check(strcmp(openpqc_status_string((openpqc_status)-99), "unknown status") == 0, "-", "an unknown status");
+    /* openpqc/fips.h: a FIPS 140-3 build is operational here; any other build is not a module */
+#if defined(OPENPQC_FIPS140_3)
+    check(openpqc_fips_status() == OPENPQC_OK, "-", "openpqc_fips_status: the FIPS module is operational");
+#else
+    check(openpqc_fips_status() == OPENPQC_ERR_NOT_APPROVED && openpqc_fips_service_approved() == 0, "-",
+          "openpqc_fips_status, openpqc_fips_service_approved: not a FIPS module (-13, 0)");
+#endif
 }
 
 /* ---- KEMs -------------------------------------------------------------------------------------------------- */

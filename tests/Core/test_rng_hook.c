@@ -39,6 +39,34 @@
  *      schedules the threads (within a time limit that only a machine that does not run them at
  *      all reaches).
  *
+ * In FIPS 140-3 mode (OPENPQC_FIPS140_3) opqc_set_randombytes refuses every registration, NULL
+ * included, with OPENPQC_ERR_NOT_APPROVED (OPENPQC_ERR_ERROR_STATE in the error state), and calls
+ * nothing it is given (Core/opqc_platform.h); the default source stays: the module's HMAC_DRBG in
+ * core_rng_hook, the program's opqc_external_randombytes in core_rng_hook_external (the test
+ * variants are not the module). The checks then become:
+ *   1. the default source as above; a draw from the module's DRBG reports the approved-service
+ *      indicator 1, a draw from the test variants' opqc_external_randombytes 0;
+ *   2. registering the counter, and NULL, is refused with OPENPQC_ERR_NOT_APPROVED and reports
+ *      the indicator 0; the counter is never called, and the draws are not its bytes;
+ *   3. with the counter refused, the schemes draw from the default source: the counter is never
+ *      called, and the keys and signatures are not those of its bytes; against the test variants,
+ *      ML-KEM's keypair equals keypair_derand on the first 64 bytes that opqc_external_randombytes
+ *      gave it, ML-DSA's keypair and hedged sign their _derand forms on its 32 bytes;
+ *   4. the failing source is refused too, and never called: the draws and the schemes succeed.
+ *      Against the test variants, opqc_external_randombytes is made to fail instead: the draw
+ *      returns nonzero with the buffer zero and the module stays operational (a failure of the
+ *      test generator is the draw's, not the module's), and ML-KEM's keypair and enc and ML-DSA's
+ *      keypair and sign return their RNG failure code with the outputs unchanged;
+ *   5. (no registration to undo);
+ *   6. with OPENPQC_TEST_THREADS, against the module's DRBG only: threads draw while the main
+ *      thread tries to register the two sources and NULL in turn; every registration is refused,
+ *      every draw succeeds, and neither source is ever called (the test variants' generator is
+ *      not made for concurrent calls);
+ *   7. last, the error state (entered through opqc_fips_fail, as a failed self-test would enter
+ *      it; the static libraries of the tests contain the module's state): a registration, and
+ *      NULL, return OPENPQC_ERR_ERROR_STATE and call nothing, and a draw returns
+ *      OPENPQC_ERR_ERROR_STATE with its buffer zero and the indicator 0.
+ *
  * Exit status: 0 if every check holds.
  */
 
@@ -57,6 +85,12 @@
 #include "ML/DSA/openpqc_mldsa.h"
 #include "openpqc/testing.h"
 #include "ML/KEM/openpqc_mlkem.h"
+
+#if defined(OPENPQC_FIPS140_3)
+#include "Core/opqc_fips.h" /* opqc_fips_fail, in the module's state that the tests' libraries contain */
+#include "openpqc/common.h" /* OPENPQC_ERR_NOT_APPROVED, OPENPQC_ERR_ERROR_STATE */
+#include "openpqc/fips.h"   /* openpqc_fips_status, openpqc_fips_service_approved */
+#endif
 
 static int failures = 0, checks = 0;
 
@@ -128,16 +162,40 @@ static int failing_source(void *ctx, uint8_t *out, size_t len)
 /* The application's source of the test variants: a generator of its own (xorshift64*), counted */
 static unsigned long external_calls = 0;
 
+#if defined(OPENPQC_FIPS140_3)
+/* FIPS 140-3 mode: the generator can be made to fail (it then writes 0xEE first, as garbage), and it logs the
+ * bytes it gives from the last external_log_reset() on */
+static int external_fails = 0;
+static uint8_t external_log[256];
+static size_t external_logged = 0;
+
+static void external_log_reset(void)
+{
+    external_logged = 0;
+}
+#endif
+
 int opqc_external_randombytes(uint8_t *out, size_t len)
 {
     static uint64_t state = UINT64_C(0x9E3779B97F4A7C15);
     external_calls++;
+#if defined(OPENPQC_FIPS140_3)
+    if (external_fails) {
+        memset(out, 0xEE, len);
+        return -1;
+    }
+#endif
     for (size_t i = 0; i < len; i++) {
         state ^= state >> 12;
         state ^= state << 25;
         state ^= state >> 27;
         out[i] = (uint8_t)((state * UINT64_C(2685821657736338717)) >> 56);
     }
+#if defined(OPENPQC_FIPS140_3)
+    for (size_t i = 0; i < len && external_logged < sizeof external_log; i++) {
+        external_log[external_logged++] = out[i];
+    }
+#endif
     return 0;
 }
 #endif
@@ -165,8 +223,17 @@ static void check_default(const char *when)
     snprintf(what, sizeof what, "%s: the draws come from opqc_external_randombytes", when);
     check(what, external_calls == before + 2);
 #endif
+#if defined(OPENPQC_FIPS140_3) && defined(OPENPQC_TEST_EXTERNAL)
+    snprintf(what, sizeof what,
+             "%s: a draw from the test variants' generator is not an approved service (indicator 0)", when);
+    check(what, openpqc_fips_service_approved() == 0);
+#elif defined(OPENPQC_FIPS140_3)
+    snprintf(what, sizeof what, "%s: a draw from the module's DRBG is an approved service (indicator 1)", when);
+    check(what, openpqc_fips_service_approved() == 1);
+#endif
 }
 
+#if !defined(OPENPQC_FIPS140_3)
 /* ---- 2: a registered source --------------------------------------------------------------------- */
 
 static void check_registered(void)
@@ -311,10 +378,11 @@ static void check_failure(void)
     MLDSA_FAIL_CASE(65);
     MLDSA_FAIL_CASE(87);
 }
+#endif /* !OPENPQC_FIPS140_3 */
 
 /* ---- 6: draws while the registration changes ---------------------------------------------------- */
 
-#if defined(OPENPQC_TEST_THREADS)
+#if defined(OPENPQC_TEST_THREADS) && !(defined(OPENPQC_FIPS140_3) && defined(OPENPQC_TEST_EXTERNAL))
 #define DRAWERS 3
 #define SWITCHES 200000UL  /* at least this many registrations while the threads draw, */
 #define MIN_CALLS 1000UL   /* and until each source was called at least this often meanwhile */
@@ -344,6 +412,7 @@ static atomic_int drawers_running;
 static atomic_int stop_drawing;
 static unsigned long draw_failures[DRAWERS];
 
+#if !defined(OPENPQC_FIPS140_3)
 static void *drawer(void *arg)
 {
     unsigned long *fails = (unsigned long *)arg;
@@ -423,10 +492,340 @@ static void check_threads(void)
     check("after the threads, neither source is called",
           atomic_load(&pair_a.calls) == a_end && atomic_load(&pair_b.calls) == b_end);
 }
+#else  /* OPENPQC_FIPS140_3 */
+
+/* 6 in FIPS 140-3 mode: the threads draw from the module's DRBG while the main thread tries to register the two
+ * sources and NULL in turn */
+static atomic_ulong fips_draws;
+
+static void *fips_drawer(void *arg)
+{
+    unsigned long *fails = (unsigned long *)arg;
+    uint8_t buf[16];
+    atomic_fetch_add(&drawers_running, 1);
+    while (!atomic_load(&stop_drawing)) {
+        if (opqc_randombytes(buf, sizeof buf) != 0) {
+            (*fails)++;
+        } else {
+            atomic_fetch_add(&fips_draws, 1);
+        }
+    }
+    return NULL;
+}
+
+static void fips_check_threads(void)
+{
+    pthread_t t[DRAWERS];
+    int started = 0, timed_out = 0;
+    unsigned long not_refused = 0;
+    for (int i = 0; i < DRAWERS; i++) {
+        if (pthread_create(&t[i], NULL, fips_drawer, &draw_failures[i]) == 0) started++;
+    }
+    check("the drawing threads start", started == DRAWERS);
+    const time_t begin = time(NULL);
+    while (atomic_load(&drawers_running) < started) {
+        if (difftime(time(NULL), begin) >= TIME_LIMIT) {
+            timed_out = 1;
+            break;
+        }
+    }
+    const unsigned long d0 = atomic_load(&fips_draws);
+    unsigned long switches = 0, d = d0;
+    while (!timed_out) {
+        const unsigned long k = switches % 3;
+        const int r = k == 0   ? opqc_set_randombytes(source_a, &pair_a)
+                      : k == 1 ? opqc_set_randombytes(source_b, &pair_b)
+                               : opqc_set_randombytes(NULL, NULL);
+        if (r != OPENPQC_ERR_NOT_APPROVED) not_refused++;
+        switches++;
+        if (switches % 1024 == 0) {
+            d = atomic_load(&fips_draws);
+            if (switches >= SWITCHES && d - d0 >= MIN_CALLS) break;
+            if (difftime(time(NULL), begin) >= TIME_LIMIT) timed_out = 1;
+        }
+    }
+    atomic_store(&stop_drawing, 1);
+    for (int i = 0; i < started; i++) pthread_join(t[i], NULL);
+    unsigned long fails = 0;
+    for (int i = 0; i < DRAWERS; i++) fails += draw_failures[i];
+    printf("threads: %d drawers, %lu registrations tried, %lu draws meanwhile\n", started, switches, d - d0);
+    if (timed_out) {
+        fprintf(stderr,
+                "in %.0f s, %d of %d drawers ran and made %lu draws while the registrations were tried (at least %lu "
+                "expected): the threads did not run\n",
+                TIME_LIMIT, atomic_load(&drawers_running), started, d - d0, MIN_CALLS);
+    }
+    check("every registration while threads draw is refused with OPENPQC_ERR_NOT_APPROVED", not_refused == 0);
+    check("every draw while the registrations are tried succeeds", fails == 0);
+    check("neither source is ever called", atomic_load(&pair_a.calls) == 0 && atomic_load(&pair_b.calls) == 0);
+    check("the threads drew while the registrations were tried", !timed_out);
+    check_default("after the threads");
+}
+#endif /* OPENPQC_FIPS140_3 */
 #endif
+
+#if defined(OPENPQC_FIPS140_3)
+/* ---- FIPS 140-3 mode: 2, 3, 4 and 7 ------------------------------------------------------------- */
+
+/* 2: the registrations are refused */
+static void fips_check_refused(void)
+{
+    uint8_t got[100], counted[100];
+    counter_reset(0x10);
+    check("registering the counter is refused with OPENPQC_ERR_NOT_APPROVED",
+          opqc_set_randombytes(counter_source, &counter) == OPENPQC_ERR_NOT_APPROVED);
+    check("the refused registration reports the indicator 0", openpqc_fips_service_approved() == 0);
+#if defined(OPENPQC_TEST_EXTERNAL)
+    const unsigned long before = external_calls;
+#endif
+    check("a draw after the refusal returns 0", opqc_randombytes(got, 37) == 0);
+    check("a second draw returns 0", opqc_randombytes(got + 37, 63) == 0);
+    counter_bytes(counted, sizeof counted, 0x10);
+    check("the counter is never called, and the draws are not its bytes",
+          counter.calls == 0 && counter.bad_ctx == 0 && memcmp(got, counted, sizeof got) != 0);
+#if defined(OPENPQC_TEST_EXTERNAL)
+    check("the draws come from opqc_external_randombytes", external_calls == before + 2);
+#endif
+    check("registering NULL is refused with OPENPQC_ERR_NOT_APPROVED",
+          opqc_set_randombytes(NULL, NULL) == OPENPQC_ERR_NOT_APPROVED);
+    check("a draw of 0 bytes returns 0", opqc_randombytes(got, 0) == 0);
+}
+
+/* 3: the schemes draw from the default source */
+#if defined(OPENPQC_TEST_EXTERNAL)
+#define FIPS_MLKEM_DRAWN(N, pk1, sk1)                                                                          \
+    do {                                                                                                       \
+        static uint8_t drawn_pk[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], drawn_sk[OPENPQC_MLKEM##N##_SECRETKEYBYTES]; \
+        uint8_t drawn[2 * OPENPQC_MLKEM_SYMBYTES];                                                             \
+        check("ML-KEM-" #N " keypair draws d || z (64 bytes) first from opqc_external_randombytes",           \
+              external_logged >= sizeof drawn);                                                                \
+        memcpy(drawn, external_log, sizeof drawn);                                                             \
+        const int drawn_r = openpqc_mlkem##N##_keygen_from_seed(drawn_pk, drawn_sk, drawn);                    \
+        check("ML-KEM-" #N " keypair equals keypair_derand on the bytes opqc_external_randombytes gave it",   \
+              drawn_r == 0 && memcmp(pk1, drawn_pk, sizeof drawn_pk) == 0 &&                                   \
+                      memcmp(sk1, drawn_sk, sizeof drawn_sk) == 0);                                            \
+    } while (0)
+#define FIPS_MLDSA_DRAWN(N, what, result, derand_call)                                                         \
+    do {                                                                                                       \
+        check("ML-DSA-" #N " " what " draws its 32 bytes from opqc_external_randombytes",                      \
+              external_logged == 32);                                                                          \
+        check("ML-DSA-" #N " " what " equals its _derand form on those bytes", (result) == 0 && (derand_call));\
+    } while (0)
+#endif
+
+#define FIPS_MLKEM_CASE(N)                                                                                     \
+    do {                                                                                                       \
+        static uint8_t pk1[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], sk1[OPENPQC_MLKEM##N##_SECRETKEYBYTES];         \
+        static uint8_t pk2[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], sk2[OPENPQC_MLKEM##N##_SECRETKEYBYTES];         \
+        uint8_t coins[2 * OPENPQC_MLKEM_SYMBYTES];                                                             \
+        counter_reset(0x40);                                                                                   \
+        FIPS_EXTERNAL_LOG_RESET();                                                                             \
+        const int r1 = openpqc_mlkem##N##_keygen(pk1, sk1);                                                    \
+        check("ML-KEM-" #N " keypair with the counter refused returns 0, without calling the counter",        \
+              r1 == 0 && counter.calls == 0);                                                                  \
+        FIPS_MLKEM_EXTERNAL(N, pk1, sk1);                                                                      \
+        counter_bytes(coins, sizeof coins, 0x40);                                                              \
+        const int r2 = openpqc_mlkem##N##_keygen_from_seed(pk2, sk2, coins);                                   \
+        check("ML-KEM-" #N " keypair is not keypair_derand on the counter's bytes",                           \
+              r2 == 0 && memcmp(pk1, pk2, sizeof pk1) != 0 && memcmp(sk1, sk2, sizeof sk1) != 0);              \
+    } while (0)
+
+#define FIPS_MLDSA_CASE(N)                                                                                     \
+    do {                                                                                                       \
+        static uint8_t pk1[OPENPQC_MLDSA##N##_PUBLICKEYBYTES], sk1[OPENPQC_MLDSA##N##_SECRETKEYBYTES];         \
+        static uint8_t pk2[OPENPQC_MLDSA##N##_PUBLICKEYBYTES], sk2[OPENPQC_MLDSA##N##_SECRETKEYBYTES];         \
+        static uint8_t sig1[OPENPQC_MLDSA##N##_BYTES], sig2[OPENPQC_MLDSA##N##_BYTES];                         \
+        uint8_t seed[OPENPQC_MLDSA_SEEDBYTES], rnd[OPENPQC_MLDSA_RNDBYTES];                                    \
+        static const uint8_t msg[3] = {'a', 'b', 'c'};                                                         \
+        counter_reset(0x80);                                                                                   \
+        FIPS_EXTERNAL_LOG_RESET();                                                                             \
+        int r1 = openpqc_mldsa##N##_keygen(pk1, sk1);                                                          \
+        check("ML-DSA-" #N " keypair with the counter refused returns 0, without calling the counter",        \
+              r1 == 0 && counter.calls == 0);                                                                  \
+        FIPS_MLDSA_EXTERNAL(N, "keypair", r1,                                                                  \
+                            openpqc_mldsa##N##_keygen_from_seed(pk2, sk2, external_log) == 0 &&                \
+                                    memcmp(pk1, pk2, sizeof pk1) == 0 && memcmp(sk1, sk2, sizeof sk1) == 0);   \
+        counter_bytes(seed, sizeof seed, 0x80);                                                                \
+        int r2 = openpqc_mldsa##N##_keygen_from_seed(pk2, sk2, seed);                                          \
+        check("ML-DSA-" #N " keypair is not keypair_derand on the counter's bytes",                           \
+              r2 == 0 && memcmp(pk1, pk2, sizeof pk1) != 0 && memcmp(sk1, sk2, sizeof sk1) != 0);              \
+        counter_reset(0xC0);                                                                                   \
+        FIPS_EXTERNAL_LOG_RESET();                                                                             \
+        r1 = openpqc_mldsa##N##_sign(sig1, msg, sizeof msg, NULL, 0, sk1);                                     \
+        check("ML-DSA-" #N " hedged sign with the counter refused returns 0, without calling the counter",    \
+              r1 == 0 && counter.calls == 0);                                                                  \
+        FIPS_MLDSA_EXTERNAL(N, "hedged sign", r1,                                                              \
+                            openpqc_testing_mldsa##N##_sign_derand(sig2, msg, sizeof msg, NULL, 0,             \
+                                                                   external_log, sk1) == 0 &&                  \
+                                    memcmp(sig1, sig2, sizeof sig1) == 0);                                     \
+        counter_bytes(rnd, sizeof rnd, 0xC0);                                                                  \
+        r2 = openpqc_testing_mldsa##N##_sign_derand(sig2, msg, sizeof msg, NULL, 0, rnd, sk1);                 \
+        check("ML-DSA-" #N " hedged sign is not sign_derand on the counter's bytes",                          \
+              r2 == 0 && memcmp(sig1, sig2, sizeof sig1) != 0);                                                \
+    } while (0)
+
+#if defined(OPENPQC_TEST_EXTERNAL)
+#define FIPS_EXTERNAL_LOG_RESET() external_log_reset()
+#define FIPS_MLKEM_EXTERNAL(N, pk1, sk1) FIPS_MLKEM_DRAWN(N, pk1, sk1)
+#define FIPS_MLDSA_EXTERNAL(N, what, result, derand_call) FIPS_MLDSA_DRAWN(N, what, result, derand_call)
+#else
+#define FIPS_EXTERNAL_LOG_RESET() ((void)0)
+#define FIPS_MLKEM_EXTERNAL(N, pk1, sk1) ((void)0)
+#define FIPS_MLDSA_EXTERNAL(N, what, result, derand_call) ((void)0)
+#endif
+
+static void fips_check_schemes(void)
+{
+    counter_reset(0x40);
+    check("registering the counter is refused with OPENPQC_ERR_NOT_APPROVED",
+          opqc_set_randombytes(counter_source, &counter) == OPENPQC_ERR_NOT_APPROVED);
+    FIPS_MLKEM_CASE(512);
+    FIPS_MLKEM_CASE(768);
+    FIPS_MLKEM_CASE(1024);
+    FIPS_MLDSA_CASE(44);
+    FIPS_MLDSA_CASE(65);
+    FIPS_MLDSA_CASE(87);
+}
+
+/* 4: a source that fails cannot be registered; against the test variants, their generator fails instead */
+#if defined(OPENPQC_TEST_EXTERNAL)
+#define FIPS_MLKEM_FAIL_CASE(N)                                                                                \
+    do {                                                                                                       \
+        static uint8_t pk[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], sk[OPENPQC_MLKEM##N##_SECRETKEYBYTES];           \
+        static uint8_t ct[OPENPQC_MLKEM##N##_CIPHERTEXTBYTES];                                                 \
+        static uint8_t good_pk[OPENPQC_MLKEM##N##_PUBLICKEYBYTES], good_sk[OPENPQC_MLKEM##N##_SECRETKEYBYTES]; \
+        uint8_t ss[OPENPQC_MLKEM_BYTES], coins[2 * OPENPQC_MLKEM_SYMBYTES];                                    \
+        memset(coins, 7, sizeof coins);                                                                        \
+        const int r0 = openpqc_mlkem##N##_keygen_from_seed(good_pk, good_sk, coins);                           \
+        check("ML-KEM-" #N " keypair_derand for the enc case returns 0", r0 == 0);                             \
+        external_fails = 1;                                                                                    \
+        memset(pk, 0xAA, sizeof pk);                                                                           \
+        memset(sk, 0xAA, sizeof sk);                                                                           \
+        const int r1 = openpqc_mlkem##N##_keygen(pk, sk);                                                      \
+        check("ML-KEM-" #N " keypair with a failing generator: OPENPQC_ERR_RNG, pk and sk unchanged",         \
+              r1 == OPENPQC_ERR_RNG && all_bytes(pk, sizeof pk, 0xAA) && all_bytes(sk, sizeof sk, 0xAA));      \
+        memset(ct, 0xAA, sizeof ct);                                                                           \
+        memset(ss, 0xAA, sizeof ss);                                                                           \
+        const int r2 = openpqc_mlkem##N##_encaps(ct, ss, good_pk);                                             \
+        check("ML-KEM-" #N " enc with a failing generator: OPENPQC_ERR_RNG, ct and ss unchanged",             \
+              r2 == OPENPQC_ERR_RNG && all_bytes(ct, sizeof ct, 0xAA) && all_bytes(ss, sizeof ss, 0xAA));      \
+        external_fails = 0;                                                                                    \
+    } while (0)
+
+#define FIPS_MLDSA_FAIL_CASE(N)                                                                                \
+    do {                                                                                                       \
+        static uint8_t pk[OPENPQC_MLDSA##N##_PUBLICKEYBYTES], sk[OPENPQC_MLDSA##N##_SECRETKEYBYTES];           \
+        static uint8_t good_pk[OPENPQC_MLDSA##N##_PUBLICKEYBYTES], good_sk[OPENPQC_MLDSA##N##_SECRETKEYBYTES]; \
+        static uint8_t sig[OPENPQC_MLDSA##N##_BYTES];                                                          \
+        uint8_t seed[OPENPQC_MLDSA_SEEDBYTES];                                                                 \
+        static const uint8_t msg[3] = {'a', 'b', 'c'};                                                         \
+        memset(seed, 9, sizeof seed);                                                                          \
+        const int r0 = openpqc_mldsa##N##_keygen_from_seed(good_pk, good_sk, seed);                            \
+        check("ML-DSA-" #N " keypair_derand for the sign case returns 0", r0 == 0);                            \
+        external_fails = 1;                                                                                    \
+        memset(pk, 0xAA, sizeof pk);                                                                           \
+        memset(sk, 0xAA, sizeof sk);                                                                           \
+        const int r1 = openpqc_mldsa##N##_keygen(pk, sk);                                                      \
+        check("ML-DSA-" #N " keypair with a failing generator: OPENPQC_ERR_RNG, pk and sk unchanged",         \
+              r1 == OPENPQC_ERR_RNG && all_bytes(pk, sizeof pk, 0xAA) && all_bytes(sk, sizeof sk, 0xAA));      \
+        memset(sig, 0xAA, sizeof sig);                                                                         \
+        const int r2 = openpqc_mldsa##N##_sign(sig, msg, sizeof msg, NULL, 0, good_sk);                        \
+        check("ML-DSA-" #N " sign with a failing generator: OPENPQC_ERR_RNG, sig unchanged",                  \
+              r2 == OPENPQC_ERR_RNG && all_bytes(sig, sizeof sig, 0xAA));                                      \
+        external_fails = 0;                                                                                    \
+    } while (0)
+#endif
+
+static void fips_check_failure(void)
+{
+    uint8_t buf[48];
+    const unsigned long before = failing_calls;
+    check("registering the failing source is refused with OPENPQC_ERR_NOT_APPROVED",
+          opqc_set_randombytes(failing_source, NULL) == OPENPQC_ERR_NOT_APPROVED);
+    memset(buf, 0, sizeof buf);
+    check("a draw after the refusal returns 0 and fills the buffer, without calling the failing source",
+          opqc_randombytes(buf, sizeof buf) == 0 && !all_bytes(buf, sizeof buf, 0) && failing_calls == before);
+#if defined(OPENPQC_TEST_EXTERNAL)
+    external_fails = 1;
+    memset(buf, 0x33, sizeof buf);
+    const int r = opqc_randombytes(buf, sizeof buf);
+    external_fails = 0;
+    check("a failing opqc_external_randombytes: the draw returns nonzero and zeroizes what it wrote",
+          r != 0 && all_bytes(buf, sizeof buf, 0));
+    check("the test variants are not the module: a failure of their generator leaves it operational",
+          openpqc_fips_status() == 0);
+    FIPS_MLKEM_FAIL_CASE(512);
+    FIPS_MLKEM_FAIL_CASE(768);
+    FIPS_MLKEM_FAIL_CASE(1024);
+    FIPS_MLDSA_FAIL_CASE(44);
+    FIPS_MLDSA_FAIL_CASE(65);
+    FIPS_MLDSA_FAIL_CASE(87);
+#else
+    {
+        static uint8_t pk[OPENPQC_MLKEM768_PUBLICKEYBYTES], sk[OPENPQC_MLKEM768_SECRETKEYBYTES];
+        static uint8_t ct[OPENPQC_MLKEM768_CIPHERTEXTBYTES];
+        static uint8_t dpk[OPENPQC_MLDSA65_PUBLICKEYBYTES], dsk[OPENPQC_MLDSA65_SECRETKEYBYTES];
+        static uint8_t sig[OPENPQC_MLDSA65_BYTES];
+        static const uint8_t msg[3] = {'a', 'b', 'c'};
+        uint8_t ss[OPENPQC_MLKEM_BYTES];
+        memset(pk, 0xAA, sizeof pk);
+        memset(ct, 0xAA, sizeof ct);
+        memset(dpk, 0xAA, sizeof dpk);
+        memset(sig, 0xAA, sizeof sig);
+        check("ML-KEM-768 keypair and enc, ML-DSA-65 keypair and sign succeed with the failing source refused, "
+              "which they never call",
+              openpqc_mlkem768_keygen(pk, sk) == 0 && openpqc_mlkem768_encaps(ct, ss, pk) == 0 &&
+                      openpqc_mldsa65_keygen(dpk, dsk) == 0 &&
+                      openpqc_mldsa65_sign(sig, msg, sizeof msg, NULL, 0, dsk) == 0 &&
+                      !all_bytes(pk, sizeof pk, 0xAA) && !all_bytes(ct, sizeof ct, 0xAA) &&
+                      !all_bytes(dpk, sizeof dpk, 0xAA) && !all_bytes(sig, sizeof sig, 0xAA) &&
+                      failing_calls == before);
+    }
+#endif
+}
+
+/* 7: the error state */
+static void fips_check_error_state(void)
+{
+    uint8_t buf[32];
+#if defined(OPENPQC_TEST_EXTERNAL)
+    const unsigned long before = external_calls;
+#endif
+    check("before: the module is operational", openpqc_fips_status() == 0);
+    opqc_fips_fail(); /* as a failed self-test, pair-wise consistency test or DRBG would */
+    check("after opqc_fips_fail: the error state", openpqc_fips_status() == OPENPQC_ERR_ERROR_STATE);
+    counter_reset(0x10);
+    check("in the error state, registering the counter returns OPENPQC_ERR_ERROR_STATE and calls nothing",
+          opqc_set_randombytes(counter_source, &counter) == OPENPQC_ERR_ERROR_STATE && counter.calls == 0);
+    check("in the error state, registering NULL returns OPENPQC_ERR_ERROR_STATE",
+          opqc_set_randombytes(NULL, NULL) == OPENPQC_ERR_ERROR_STATE);
+    memset(buf, 0x33, sizeof buf);
+    check("in the error state, a draw returns OPENPQC_ERR_ERROR_STATE with its buffer zero and the indicator 0",
+          opqc_randombytes(buf, sizeof buf) == OPENPQC_ERR_ERROR_STATE && all_bytes(buf, sizeof buf, 0) &&
+                  openpqc_fips_service_approved() == 0 && counter.calls == 0);
+#if defined(OPENPQC_TEST_EXTERNAL)
+    check("in the error state, opqc_external_randombytes is not called", external_calls == before);
+#endif
+}
+#endif /* OPENPQC_FIPS140_3 */
 
 int main(void)
 {
+#if defined(OPENPQC_FIPS140_3)
+    check_default("before any registration");                  /* 1 */
+    fips_check_refused();                                      /* 2 */
+    fips_check_schemes();                                      /* 3 */
+    check_default("after the refused registrations");          /* 1 again */
+    fips_check_failure();                                      /* 4 */
+    check_default("after the failing source");
+#if defined(OPENPQC_TEST_THREADS) && !defined(OPENPQC_TEST_EXTERNAL)
+    fips_check_threads();                                      /* 6 */
+#elif defined(OPENPQC_TEST_THREADS)
+    printf("threads: not run against the test variants, whose generator is not made for concurrent calls "
+           "(core_rng_hook runs them against the module's DRBG)\n");
+#endif
+    fips_check_error_state();                                  /* 7, last: final for the process */
+#else
     check_default("before any registration");                  /* 1 */
     check_registered();                                        /* 2 */
     check_schemes();                                           /* 3 */
@@ -439,11 +838,18 @@ int main(void)
 #if defined(OPENPQC_TEST_THREADS)
     check_threads();                                           /* 6 */
 #endif
+#endif
     if (failures) {
         fprintf(stderr, "%d of %d check(s) failed\n", failures, checks);
         return 1;
     }
-#if defined(OPENPQC_TEST_EXTERNAL)
+#if defined(OPENPQC_FIPS140_3) && defined(OPENPQC_TEST_EXTERNAL)
+    printf("source of randomness (FIPS 140-3 mode, test variants: opqc_external_randombytes; registrations refused): "
+           "all %d checks passed\n", checks);
+#elif defined(OPENPQC_FIPS140_3)
+    printf("source of randomness (FIPS 140-3 mode: the module's HMAC_DRBG; registrations refused): all %d checks "
+           "passed\n", checks);
+#elif defined(OPENPQC_TEST_EXTERNAL)
     printf("source of randomness (default: opqc_external_randombytes): all %d checks passed\n", checks);
 #else
     printf("source of randomness (default: the operating system): all %d checks passed\n", checks);

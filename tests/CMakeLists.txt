@@ -47,14 +47,20 @@ if(CMAKE_C_FLAGS MATCHES "-fsanitize" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize")
 else()
     set(_openpqc_sanitizer_build OFF)
 endif()
+# AddressSanitizer among the sanitizers: the stack tests cannot run as they do without it (below, and
+# tests/Core/CMakeLists.txt)
+set(_openpqc_asan OFF)
+if(CMAKE_C_FLAGS MATCHES "-fsanitize=([^ ]*,)?address" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize=([^ ]*,)?address")
+    set(_openpqc_asan ON)
+endif()
 
 # openpqc_expect_tests(TESTS <names>... NEEDS <requirements>... [LABELS <labels>...]): declares that the
 # tests <names> are registered when all of <requirements> are met (the keys of the _openpqc_unmet_<key>
 # variables near the end of this file: python, openssl, valgrind, nosan, threads, linux, gnu, wrap, clang,
-# avx2, m32), with the labels <labels>. Every test that a directory registers only on such a condition is
-# declared, in the list near the end of this file or by its directory next to the condition (this function
-# exists before the directories are added); where its directory did not register it, the end of this file
-# registers it as a test that reports itself skipped and lists it with the reason.
+# avx2, m32, binutils, elfutils, fipsplatform), with the labels <labels>. Every test that a directory registers
+# only on such a condition is declared, in the list near the end of this file or by its directory next to the
+# condition (this function exists before the directories are added); where its directory did not register it, the
+# end of this file registers it as a test that reports itself skipped and lists it with the reason.
 function(openpqc_expect_tests)
     cmake_parse_arguments(PARSE_ARGV 0 _openpqc_e "" "" "TESTS;NEEDS;LABELS")
     if(NOT _openpqc_e_TESTS OR NOT _openpqc_e_NEEDS OR _openpqc_e_UNPARSED_ARGUMENTS)
@@ -128,6 +134,9 @@ if(OPENPQC_C_HAS_M32 AND OPENPQC_CXX_HAS_M32)
     target_include_directories(test_hash_m32 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_compile_features(test_hash_m32 PRIVATE cxx_std_20)
     target_compile_options(test_hash_m32 PRIVATE -m32 $<$<COMPILE_LANGUAGE:CXX>:-UNDEBUG>)
+    if(OPENPQC_FIPS140_3)   # the hashes only: Core's platform code as the ordinary build has it (no module code)
+        target_compile_options(test_hash_m32 PRIVATE -UOPENPQC_FIPS140_3)
+    endif()
     target_link_options(test_hash_m32 PRIVATE -m32)
     target_link_libraries(test_hash_m32 PRIVATE openpqc_warnings)
     set_target_properties(test_hash_m32 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
@@ -197,11 +206,18 @@ set(_openpqc_must_check_archives --archive $<TARGET_FILE:openpqc> --archive $<TA
 if(OPENPQC_HAVE_SYCL)   # the GPU API, its testing interfaces and the backends' functions (openpqc/sycl.h, ...)
     list(APPEND _openpqc_must_check_archives --archive $<TARGET_FILE:openpqc_sycl_testing>)
 endif()
+set(_openpqc_must_check_defines "")
+if(OPENPQC_FIPS140_3)   # the headers as the objects of a FIPS build see them (Core/openpqc_core.h)
+    set(_openpqc_must_check_defines --define OPENPQC_FIPS140_3=1)
+endif()
+if(CMAKE_READELF)   # the symbols' visibility: a hidden function of a static archive is not exported
+    list(APPEND _openpqc_must_check_defines --readelf ${CMAKE_READELF})
+endif()
 if(Python3_Interpreter_FOUND)
     add_test(NAME c_api_must_check
              COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_must_check.py
                      --include-root ${PROJECT_SOURCE_DIR}/include --include-root ${PROJECT_SOURCE_DIR}/src
-                     ${CMAKE_CURRENT_BINARY_DIR}/must_check
+                     ${_openpqc_must_check_defines} ${CMAKE_CURRENT_BINARY_DIR}/must_check
                      ${_openpqc_must_check_archives})
     set_tests_properties(c_api_must_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
 endif()
@@ -212,9 +228,14 @@ endif()
 #                           one-shot functions (acvp_hash_driver.c), from 14 vector files of the ACVP server pinned
 #                           by SHA-256 and number of cases and downloaded on first use into the build directory
 #                           (label "network"); a driver run that fails, crashes or writes to stderr, and a count of
-#                           results other than the pinned one, fail it. Not run: the messages that are not a whole
-#                           number of bytes (Core's functions take bytes) and the large-data tests (1 to 8 GiB per
-#                           message)
+#                           results other than the pinned one, fail it. It also checks the driver's large-data form
+#                           against Python's hashlib on messages of up to 3 MiB. The 40 large-data tests (1 to 8 GiB
+#                           per message, 150 GiB in all; about 9 minutes on the development laptop, an indicative
+#                           figure) run in core_hash_acvp_ldt (tests/Core/CMakeLists.txt, labels slow and network).
+#                           Not run: the 7,980 cases whose message is not a whole number of bytes. They come from
+#                           registrations of every bit length; a module whose functions take byte strings registers
+#                           byte-oriented message lengths (increment 8), for which the ACVP server generates none
+#                           (tests/Core/acvp_hash.py)
 #   core_hash_acvp_control  positive controls of those rules: a changed vector file, a driver run that writes to
 #                           stderr or is killed by a signal, a result left out and a changed digest must each be
 #                           reported
@@ -233,13 +254,23 @@ endif()
 # abi_symbols: every C++ symbol of the header-only layers in the archives is in the library's inline
 # namespace (library_<version>, library_sycl_<version>; src/Core/abi.hpp; review finding F039), so that an application's
 # copies of the templates, built with other macros or flags, cannot take the place of the library's
+# In FIPS 140-3 mode the namespaces are library_fips_<version> and library_sycl_fips_<version> (src/Core/abi.hpp), and
+# the library openpqc is shared, so its C++ symbols are local and nm's list of external symbols has none: the test
+# reads the static libraries of the schemes too, which hold the same objects (openpqc_<scheme>_objects). fips_abi
+# (below) reads the shared library's local symbols.
 set(_openpqc_abi_archives $<TARGET_FILE:openpqc>)
+set(_openpqc_abi_version ${OPENPQC_ABI_VERSION})
+if(OPENPQC_FIPS140_3)
+    list(APPEND _openpqc_abi_archives $<TARGET_FILE:openpqc_mlkem> $<TARGET_FILE:openpqc_mldsa>
+                                      $<TARGET_FILE:openpqc_slhdsa>)
+    set(_openpqc_abi_version fips_${OPENPQC_ABI_VERSION})
+endif()
 if(OPENPQC_HAVE_SYCL)
     list(APPEND _openpqc_abi_archives $<TARGET_FILE:openpqc_sycl>)
 endif()
 add_test(NAME abi_symbols
          COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} "-DARCHIVES=${_openpqc_abi_archives}"
-                 -DABI_VERSION=${OPENPQC_ABI_VERSION}
+                 -DABI_VERSION=${_openpqc_abi_version}
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/abi_symbols.cmake)
 
 # c_link: a C program links the library with the C compiler alone, without the C++ runtime (review finding
@@ -309,11 +340,335 @@ add_subdirectory(Core)
 # GPU backends: bit-exactness against the CPU library
 add_subdirectory(gpu)
 
+# --- FIPS 140-3 mode (OPENPQC_FIPS140_3; src/Core/opqc_fips.h) -------------------------------------------------
+#   fips_exports          the boundary: the module libopenpqc exports exactly the functions of its interface (the
+#                         per-set C APIs and opqc_randombytes, its services, approved or indicated as not approved;
+#                         opqc_zeroize, opqc_set_randombytes, the version, the runtime-selected API and the algorithm
+#                         table, the FIPS API), is linked -Bsymbolic, is sealed, and contains no test-only build; the
+#                         test library openpqc_fips_break is the control
+#   fips_abi              the module's C++ symbols are in the namespace library_fips_<version>; the tag follows the
+#                         definition OPENPQC_FIPS140_3 (a probe compiled with and without it, the control)
+#   fips_integrity        the integrity test: a copy of the module with a byte of .text, .rodata, .data.rel.ro,
+#                         .dynamic, GOT[0..2] or a page end of a segment changed, or with its seal's flag cleared,
+#                         loads into the error state and stays there (every service -12, several threads), through
+#                         dlopen with RTLD_NOW and with RTLD_LAZY; the copy as built is operational, and so are
+#                         stripped copies and one with a debug link; the module is linked with immediate binding, so
+#                         a changed JUMP_SLOT slot (getrandom's) changes nothing: with getrandom() failing, the draw
+#                         fails with -12, loaded either way or by a linked program (test_fips_load_linked); a library
+#                         linked without -z now (openpqc_fips_lazy) is refused by the seal tool and, sealed by other
+#                         means, by the integrity test; with glibc's LD_PROFILE naming the module, which makes the
+#                         loader bind it lazily anyway, the module loads into the error state; the stored value
+#                         recomputed with Python; the module imports nothing that reads or locates its image; a copy
+#                         whose program header table lies past the segments, and one whose table lies past the header's
+#                         page where the loader and the integrity test read the same table (sealed by Python: only the
+#                         run-time requirement refuses it), are refused, and so are copies with DT_FLAGS, DT_FLAGS_1 or
+#                         both a second time
+#                         It needs Python and the packaging tools (strip, objcopy, eu-strip); without one of them
+#                         fips_integrity is reported as skipped, with OPENPQC_REQUIRE_FULL_TESTS configuring fails, and
+#                         fips_integrity_partial runs the checks that the tools found allow. A case with nothing to
+#                         check in this module (the linker's layout: lld's has no page-end bytes) is named as not
+#                         applicable; one that lacks a tool or an argument as NOT CHECKED, which
+#                         OPENPQC_REQUIRE_FULL_TESTS makes a failure (tests/fips_integrity.cmake)
+#   fips_integrity_aslr   the case aslr of tests/fips_integrity.cmake alone: with address-space randomization turned off
+#                         (setarch -R), copies whose DT_FINI or DT_FINI_ARRAY has the load base added load into the
+#                         error state. Where it cannot run (no setarch, a system that does not let it turn randomization
+#                         off), reported as skipped; with OPENPQC_REQUIRE_FULL_TESTS a failure
+#   fips_preinit          a service called from a program's DT_PREINIT_ARRAY, before the module's constructor: the
+#                         once-guard runs the self-tests first (the module as built: operational; a copy that fails
+#                         its integrity test: -12 from the first call on)
+#   fips_break_<self-test> each power-on self-test made to fail in the test library openpqc_fips_break (the module
+#                         built with OPQC_FIPS_TEST_BREAK, the self-test chosen by OPENPQC_FIPS_TEST_BREAK): the module
+#                         loads into the error state and stays there; fips_break_none (nothing broken) is operational
+#   fips_break_integrity_hmac
+#                         the integrity test's own known-answer test of its HMAC-SHA-256 made to fail (the test
+#                         library's build of opqc_fips_integrity.c): the module loads into the error state
+#   fips_break_drbg_cast, fips_break_drbg_cast_null
+#                         the DRBG's CAST made to fail in its first case (additional input of 256 bits) and in its
+#                         second (no additional input, as the module's own requests): opqc_drbg.c with
+#                         OPQC_HMAC_DRBG_TEST_CORRUPT_CAST=17 and =456, in the test libraries
+#                         openpqc_fips_break_drbg_cast and openpqc_fips_break_drbg_cast_null
+#   fips_break_entropy, fips_break_drbg_generate
+#                         the first draw after the self-tests meets a failing entropy source or DRBG: it fails with
+#                         its output zero, the DRBG's state reads zero, and the module is in the error state from then
+#                         on
+#   fips_break_fail_wipes_drbg
+#                         the module enters the error state through opqc_fips_fail (as after a failed pair-wise
+#                         consistency test) with its DRBG instantiated: the DRBG's state reads zero (white box,
+#                         through the test library)
+#   fips_rng              the module's DRBG through opqc_randombytes: the indicator (per thread), the refusal of
+#                         opqc_set_randombytes (-13), the reseed after fork(), the reseed interval, long requests
+#   fips_rng_entropy      a failing getrandom() (a seccomp filter) in a child process: the error state. Exit 77
+#                         (skipped) where the filter cannot be installed; with OPENPQC_REQUIRE_FULL_TESTS a failure
+#   fips_state_signal, fips_state_timer, fips_state_reenter
+#                         nothing is served on the thread that runs the self-tests while they run: a signal raised
+#                         there (also inside a CAST's own call of a service) or sent by a timer every millisecond
+#                         waits until the state is final, and a service its handler calls returns -12 (the self-tests
+#                         are made to fail); calls of services there that are no CAST's own return -12 and leave the
+#                         state (the test library openpqc_fips_break; tests/test_fips_state.c)
+#   fips_state_draw_during_failure
+#                         another thread enters the error state while a draw holds the DRBG's lock after generating:
+#                         the draw returns -12 with its output zero and the indicator 0
+#   fips_state_mask, fips_state_mask_error
+#                         the program blocks two signals before the module's constructor; after the self-tests (passed,
+#                         and failed) the thread's signal mask is that one again, signal for signal
+#   fips_state_order, fips_state_order_error
+#                         the order of the power-on self-tests, from the test library's record of their decisions: the
+#                         CASTs of SHA-256 and HMAC-SHA-256 (opqc_fips.c's copy of the integrity test's algorithm)
+#                         decide and pass before the integrity test decides (AS10.20, IG 10.2.A), then every CAST of
+#                         Core/opqc_fips.h in its order, each passed; with the CAST of HMAC-SHA-256 made to fail, the
+#                         integrity test does not run. Every fips_state_* test checks the record against AS10.20 too.
+#                         The record holds verdicts, in the order they were reached: it does not show when a test ran,
+#                         and the integrity test's own known-answer test of its own copy of HMAC-SHA-256
+#                         (opqc_fips_integrity.c; fips_break_integrity_hmac) is not in it
+#   fips_interpose        a program that defines opqc_randombytes and opqc_zeroize itself: the module (-Bsymbolic)
+#                         still uses its own
+# The test libraries are built only for these tests (EXCLUDE_FROM_ALL), never installed, and never the library
+# openpqc: fips_exports checks it for their marker. openpqc_fips_lazy has the module's objects and no test code, but is
+# linked without immediate binding and is not sealed (cmake/OpenPQCFips.cmake, TEST_LAZY_BINDING).
+if(OPENPQC_FIPS140_3)
+    # the object libraries of the library openpqc (the top-level CMakeLists.txt's list), for fips_exports
+    string(REGEX MATCHALL "TARGET_OBJECTS:[A-Za-z0-9_]+" _openpqc_module_object_libraries "${_openpqc_objects}")
+    list(TRANSFORM _openpqc_module_object_libraries REPLACE "^TARGET_OBJECTS:" "")
+    set(_openpqc_fips_module_objects $<TARGET_OBJECTS:openpqc_api_objects> $<TARGET_OBJECTS:openpqc_mlkem_objects>
+                                     $<TARGET_OBJECTS:openpqc_mldsa_objects> $<TARGET_OBJECTS:openpqc_slhdsa_objects>)
+    set(_openpqc_fips_core_sources ${PROJECT_SOURCE_DIR}/src/Core/opqc_platform.c
+                                   ${PROJECT_SOURCE_DIR}/src/Core/openpqc_version.c
+                                   ${PROJECT_SOURCE_DIR}/src/Core/opqc_drbg.c ${PROJECT_SOURCE_DIR}/src/Core/opqc_fips.c)
+    # the integrity test of the two test libraries, with OPQC_FIPS_TEST_BREAK for its own known-answer test (the
+    # test module of tests/fips_services takes openpqc_fips_break_core_objects with the module's integrity test)
+    openpqc_fips_core_objects(openpqc_fips_break_integrity_objects
+                              SOURCES ${PROJECT_SOURCE_DIR}/src/Core/opqc_fips_integrity.c
+                              DEFINITIONS OPQC_FIPS_TEST_BREAK)
+    # (opqc_drbg.c, OPQC_HMAC_DRBG_TEST_CORRUPT_CAST: byte 17 of the first case's known answer, byte 200 of the
+    # second's)
+    foreach(_openpqc_variant break break_drbg_cast break_drbg_cast_null)
+        set(_openpqc_defs OPQC_FIPS_TEST_BREAK)
+        if(_openpqc_variant STREQUAL "break_drbg_cast")
+            list(APPEND _openpqc_defs OPQC_HMAC_DRBG_TEST_CORRUPT_CAST=17)
+        elseif(_openpqc_variant STREQUAL "break_drbg_cast_null")
+            list(APPEND _openpqc_defs OPQC_HMAC_DRBG_TEST_CORRUPT_CAST=456)   # 256 + 200
+        endif()
+        openpqc_fips_core_objects(openpqc_fips_${_openpqc_variant}_core_objects SOURCES ${_openpqc_fips_core_sources}
+                                  DEFINITIONS ${_openpqc_defs})
+        add_library(openpqc_fips_${_openpqc_variant} SHARED EXCLUDE_FROM_ALL
+                    $<TARGET_OBJECTS:openpqc_fips_${_openpqc_variant}_core_objects>
+                    $<TARGET_OBJECTS:openpqc_fips_break_integrity_objects> ${_openpqc_fips_module_objects})
+        target_link_options(openpqc_fips_${_openpqc_variant} PRIVATE LINKER:--as-needed)
+        set_target_properties(openpqc_fips_${_openpqc_variant} PROPERTIES LINKER_LANGUAGE C)
+        openpqc_fips_link_module(openpqc_fips_${_openpqc_variant})   # cmake/OpenPQCFips.cmake
+    endforeach()
+    # the module's objects, linked without immediate binding and not sealed (the seal tool refuses it)
+    add_library(openpqc_fips_lazy SHARED EXCLUDE_FROM_ALL ${_openpqc_objects})
+    target_link_options(openpqc_fips_lazy PRIVATE LINKER:--as-needed)
+    set_target_properties(openpqc_fips_lazy PROPERTIES LINKER_LANGUAGE C)
+    openpqc_fips_link_module(openpqc_fips_lazy TEST_LAZY_BINDING)
+
+    add_executable(test_fips_load test_fips_load.c)
+    target_link_libraries(test_fips_load PRIVATE openpqc_strict_warnings Threads::Threads ${CMAKE_DL_LIBS})
+    target_include_directories(test_fips_load PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+                                                      ${PROJECT_BINARY_DIR}/include)
+    set_target_properties(test_fips_load PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    # the same program linked with the module (the loader binds it as it binds every library a program needs),
+    # without a RUNPATH: fips_integrity chooses the module through LD_LIBRARY_PATH
+    add_executable(test_fips_load_linked test_fips_load.c)
+    target_compile_definitions(test_fips_load_linked PRIVATE OPENPQC_TEST_FIPS_LOAD_LINKED)
+    target_link_libraries(test_fips_load_linked PRIVATE OpenPQC::openpqc openpqc_strict_warnings Threads::Threads
+                                                        ${CMAKE_DL_LIBS})
+    set_target_properties(test_fips_load_linked PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                                           LINKER_LANGUAGE C SKIP_BUILD_RPATH ON)
+    # the per-set services check the module's state (tests/fips_services): test_fips_load checks every one of them
+    target_compile_definitions(test_fips_load PRIVATE OPENPQC_FIPS_TEST_PER_SET)
+    target_compile_definitions(test_fips_load_linked PRIVATE OPENPQC_FIPS_TEST_PER_SET)
+    add_dependencies(test_fips_load openpqc openpqc_fips_break openpqc_fips_break_drbg_cast
+                     openpqc_fips_break_drbg_cast_null openpqc_fips_lazy)
+
+    add_test(NAME fips_exports
+             COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DREADELF=${CMAKE_READELF}
+                     -DSEAL=$<TARGET_FILE:openpqc_fips_seal> -DLIBRARY=$<TARGET_FILE:openpqc>
+                     -DCONTROL=$<TARGET_FILE:openpqc_fips_break> "-DSCHEMES=mlkem;mldsa;slhdsa"
+                     -DCOMPILE_COMMANDS=${PROJECT_BINARY_DIR}/compile_commands.json
+                     "-DOBJECTS=${_openpqc_module_object_libraries}"
+                     -DCONTROL_OBJECTS=openpqc_fips_break_core_objects
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/fips_exports.cmake)
+    add_test(NAME fips_abi
+             COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DCXX=${CMAKE_CXX_COMPILER}
+                     "-DINCLUDES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+                     -DLIBRARY=$<TARGET_FILE:openpqc> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/fips_abi
+                     -DABI_VERSION=${OPENPQC_ABI_VERSION} -P ${CMAKE_CURRENT_SOURCE_DIR}/fips_abi.cmake)
+    set(_openpqc_fips_python "")
+    if(Python3_Interpreter_FOUND)
+        set(_openpqc_fips_python -DPYTHON=${Python3_EXECUTABLE})
+    endif()
+    # the packaging tools whose copies must stay sealed (strip, objcopy; eu-strip of elfutils if installed)
+    set(_openpqc_fips_packaging "")
+    foreach(_openpqc_tool STRIP OBJCOPY)
+        if(CMAKE_${_openpqc_tool})
+            list(APPEND _openpqc_fips_packaging -D${_openpqc_tool}=${CMAKE_${_openpqc_tool}})
+        endif()
+    endforeach()
+    find_program(OPENPQC_EU_STRIP eu-strip)
+    if(OPENPQC_EU_STRIP)
+        list(APPEND _openpqc_fips_packaging -DEU_STRIP=${OPENPQC_EU_STRIP})
+    endif()
+    # With Python and every packaging tool, fips_integrity runs every check. Without one of them the script leaves
+    # out what needs it (Python: the lazily bound library's refusals and the independent recomputation of the stored
+    # value; a packaging tool: its copies) and would still pass: then fips_integrity is not registered here, the end
+    # of this file reports it as skipped (its requirements python, binutils, elfutils), and fips_integrity_partial
+    # runs what the tools found allow.
+    set(_openpqc_fips_integrity_name fips_integrity)
+    if(NOT (Python3_Interpreter_FOUND AND CMAKE_STRIP AND CMAKE_OBJCOPY AND OPENPQC_EU_STRIP))
+        set(_openpqc_fips_integrity_name fips_integrity_partial)
+    endif()
+    openpqc_expect_tests(TESTS fips_integrity NEEDS python binutils elfutils)
+    add_test(NAME ${_openpqc_fips_integrity_name}
+             COMMAND ${CMAKE_COMMAND} -DLIBRARY=$<TARGET_FILE:openpqc> -DLOADER=$<TARGET_FILE:test_fips_load>
+                     -DLINKED=$<TARGET_FILE:test_fips_load_linked> -DLAZY=$<TARGET_FILE:openpqc_fips_lazy>
+                     -DSEAL=$<TARGET_FILE:openpqc_fips_seal> -DNM=${CMAKE_NM} -DREADELF=${CMAKE_READELF}
+                     -DWORK=${CMAKE_CURRENT_BINARY_DIR}/fips_integrity ${_openpqc_fips_python}
+                     ${_openpqc_fips_packaging} -DREQUIRE_FULL=${OPENPQC_REQUIRE_FULL_TESTS}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/fips_integrity.cmake)
+    add_test(NAME fips_integrity_aslr
+             COMMAND ${CMAKE_COMMAND} -DLIBRARY=$<TARGET_FILE:openpqc> -DLOADER=$<TARGET_FILE:test_fips_load>
+                     -DSEAL=$<TARGET_FILE:openpqc_fips_seal> -DNM=${CMAKE_NM} -DREADELF=${CMAKE_READELF}
+                     -DWORK=${CMAKE_CURRENT_BINARY_DIR}/fips_integrity_aslr -DCASES=aslr
+                     -DREQUIRE_FULL=${OPENPQC_REQUIRE_FULL_TESTS} -P ${CMAKE_CURRENT_SOURCE_DIR}/fips_integrity.cmake)
+    if(NOT OPENPQC_REQUIRE_FULL_TESTS)   # the case says why it did not run (tests/fips_integrity.cmake)
+        set_tests_properties(fips_integrity_aslr PROPERTIES SKIP_REGULAR_EXPRESSION "aslr: NOT CHECKED")
+    endif()
+    set_tests_properties(fips_exports fips_abi ${_openpqc_fips_integrity_name} fips_integrity_aslr PROPERTIES
+                         TIMEOUT 300)
+
+    # without a RUNPATH: fips_preinit chooses the module through LD_LIBRARY_PATH
+    add_executable(test_fips_preinit test_fips_preinit.c)
+    target_link_libraries(test_fips_preinit PRIVATE OpenPQC::openpqc openpqc_strict_warnings ${CMAKE_DL_LIBS})
+    set_target_properties(test_fips_preinit PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                                       LINKER_LANGUAGE C SKIP_BUILD_RPATH ON)
+    add_test(NAME fips_preinit
+             COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:test_fips_preinit> -DLIBRARY=$<TARGET_FILE:openpqc>
+                     -DLOADER=$<TARGET_FILE:test_fips_load> -DREADELF=${CMAKE_READELF}
+                     -DWORK=${CMAKE_CURRENT_BINARY_DIR}/fips_preinit -P ${CMAKE_CURRENT_SOURCE_DIR}/fips_preinit.cmake)
+
+    add_test(NAME fips_break_none COMMAND test_fips_load $<TARGET_FILE:openpqc_fips_break> operational)
+    set(_openpqc_fips_breaks sha256 sha512 sha3_256 shake128 shake256 hmac_sha256 integrity_hmac hmac_sha512
+                             mlkem_keygen mlkem_encaps mlkem_decaps mlkem_decaps_reject mldsa_keygen mldsa_sign
+                             mldsa_verify mldsa_prehash_sign mldsa_prehash_sha2_256_sign mldsa_prehash_sha2_384_sign
+                             mldsa_rejection2_keygen mldsa_rejection2_sign
+                             mldsa_rejection4_keygen mldsa_rejection4_sign slhdsa_sha2_keygen slhdsa_sha2_sign
+                             slhdsa_sha2_verify slhdsa_sha2_prehash_sign slhdsa_shake_keygen slhdsa_shake_sign
+                             slhdsa_shake_verify)
+    foreach(_openpqc_b IN LISTS _openpqc_fips_breaks)
+        add_test(NAME fips_break_${_openpqc_b}
+                 COMMAND test_fips_load $<TARGET_FILE:openpqc_fips_break> error ${_openpqc_b})
+    endforeach()
+    foreach(_openpqc_b drbg_cast drbg_cast_null)
+        add_test(NAME fips_break_${_openpqc_b}
+                 COMMAND test_fips_load $<TARGET_FILE:openpqc_fips_break_${_openpqc_b}> error)
+    endforeach()
+    foreach(_openpqc_b entropy drbg_generate)
+        add_test(NAME fips_break_${_openpqc_b}
+                 COMMAND test_fips_load $<TARGET_FILE:openpqc_fips_break> first-draw-fails ${_openpqc_b})
+    endforeach()
+    add_test(NAME fips_break_fail_wipes_drbg COMMAND test_fips_load $<TARGET_FILE:openpqc_fips_break> fail-wipes-drbg)
+
+    add_executable(test_fips_rng test_fips_rng.c)
+    target_link_libraries(test_fips_rng PRIVATE OpenPQC::openpqc openpqc_strict_warnings Threads::Threads
+                                                ${CMAKE_DL_LIBS})
+    set_target_properties(test_fips_rng PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                                   LINKER_LANGUAGE C)
+    add_test(NAME fips_rng COMMAND test_fips_rng)
+    add_test(NAME fips_rng_entropy COMMAND test_fips_rng entropy)
+    set_tests_properties(fips_rng fips_rng_entropy PROPERTIES TIMEOUT 300)
+    if(NOT OPENPQC_REQUIRE_FULL_TESTS)   # a seccomp filter that cannot be installed: skipped, or with it a failure
+        set_tests_properties(fips_rng_entropy PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
+    # the module's state while the self-tests run, and at the end of a draw (the test library openpqc_fips_break,
+    # whose environment variable chooses the call, signal or failure; tests/test_fips_state.c)
+    add_executable(test_fips_state test_fips_state.c)
+    target_include_directories(test_fips_state PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+                                                       ${PROJECT_BINARY_DIR}/include)
+    target_link_libraries(test_fips_state PRIVATE openpqc_fips_break openpqc_strict_warnings)
+    set_target_properties(test_fips_state PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                                     LINKER_LANGUAGE C)
+    foreach(_openpqc_s signal:signal timer:slhdsa_shake_verify reenter:reenter
+                       draw_during_failure:fail_during_draw mask:none mask_error:sha256 order:none
+                       order_error:hmac_sha256)
+        string(REPLACE ":" ";" _openpqc_s ${_openpqc_s})
+        list(GET _openpqc_s 0 _openpqc_mode)
+        list(GET _openpqc_s 1 _openpqc_break)
+        string(REPLACE "_" "-" _openpqc_arg ${_openpqc_mode})
+        add_test(NAME fips_state_${_openpqc_mode} COMMAND test_fips_state ${_openpqc_arg})
+        set_tests_properties(fips_state_${_openpqc_mode} PROPERTIES TIMEOUT 120
+                             ENVIRONMENT OPENPQC_FIPS_TEST_BREAK=${_openpqc_break})
+    endforeach()
+
+    add_executable(test_fips_interpose test_fips_interpose.c)
+    target_link_libraries(test_fips_interpose PRIVATE OpenPQC::openpqc openpqc_strict_warnings)
+    set_target_properties(test_fips_interpose PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                                         LINKER_LANGUAGE C)
+    add_test(NAME fips_interpose COMMAND test_fips_interpose)
+endif()
+
+# The FIPS services of the schemes (their own tests, in their own directory), and NIST's vectors run through the
+# module's C API (tests/fips_vectors). Both directories are part of every FIPS configuration: a missing one stops it.
+# Their tests are declared here too, so that the end of this file reports one that its directory no longer registers.
+# fips_services_inflight_drbg, fips_services_inflight_own_drbg and fips_services_testing_interfaces make getrandom()
+# fail in a child process with a seccomp filter, as fips_rng_entropy does (above), and fail, not skip, where none can
+# be installed (some containers): a requirement of the system they run on, which configuring cannot see.
+set(_openpqc_fips_directories "")
+if(OPENPQC_FIPS140_3)
+    add_subdirectory(fips_services)
+    list(APPEND _openpqc_fips_directories fips_services)
+    openpqc_expect_tests(TESTS fips_services_mlkem fips_services_mldsa fips_services_slhdsa_f
+                               fips_services_facade fips_services_threads fips_services_cxx
+                               fips_services_pct_none fips_services_pct_mlkem768_keygen
+                               fips_services_pct_mlkem1024_keygen_from_seed fips_services_pct_mldsa65_keygen
+                               fips_services_pct_mldsa87_keygen_from_seed fips_services_pct_slhdsa_sha2_192f_keygen
+                               fips_services_pct_slhdsa_shake_128s_keygen fips_services_pct_kem_keygen
+                               fips_services_pct_sig_keygen fips_services_testing_interfaces
+                               fips_services_inflight_control fips_services_inflight_drbg
+                               fips_services_inflight_own_drbg fips_services_inflight_pct fips_services_inflight_stress
+                         NEEDS threads)
+    openpqc_expect_tests(TESTS fips_services_slhdsa_s NEEDS threads LABELS slow)
+    add_subdirectory(fips_vectors)
+    list(APPEND _openpqc_fips_directories fips_vectors)
+    openpqc_expect_tests(TESTS fips_vectors_identify fips_vectors_control_static NEEDS python)
+    openpqc_expect_tests(TESTS fips_vectors_mlkem fips_vectors_mldsa fips_vectors_control_corrupt
+                               fips_vectors_control_garble NEEDS python LABELS network)
+    openpqc_expect_tests(TESTS fips_vectors_slhdsa NEEDS python LABELS network slow)
+endif()
+
 # --- the tests that a directory registers only on a condition ----------------------------------------
 # Declared with openpqc_expect_tests (above): here, or by the directory itself. Keep the list in step with
-# the directories' CMakeLists.txt. Not in it: the tests of what an option turns on, which a configuration
-# without the option does not have (mlkem_pct_library and mldsa_pct_library with OPENPQC_MLKEM_KEYGEN_PCT and
-# OPENPQC_MLDSA_KEYGEN_PCT; the GPU tests with OPENPQC_SYCL, of which the summary says when they are not built).
+# the directories' CMakeLists.txt. Not in it: the GPU tests, which OPENPQC_SYCL turns on, and of which the summary
+# says when they are not built.
+#
+# mlkem_pct_library and mldsa_pct_library run against the library's own pair-wise consistency tests after KeyGen,
+# which only FIPS 140-3 mode compiles in (tests/ML-KEM, tests/ML-DSA). They are declared in that mode only: the
+# ordinary build has no such tests and reports nothing, and a FIPS configuration whose directory no longer registers
+# them reports it, as for fips_services_* (above). Their directories register them in every FIPS configuration, so
+# they need nothing that FIPS 140-3 mode does not: they are declared with linux, which every FIPS configuration meets
+# (the mode needs Linux with GCC or Clang; a cross build too, where fipsplatform is not met). One that is not
+# registered is then left out for a reason this file does not know: a warning, and with OPENPQC_REQUIRE_FULL_TESTS a
+# configuration error.
+if(OPENPQC_FIPS140_3)
+    openpqc_expect_tests(TESTS mlkem_pct_library mldsa_pct_library NEEDS linux)
+endif()
+
+# Three tests are registered by the top-level CMakeLists.txt after this directory, whose targets they use:
+# fips_configure, and in FIPS mode fips_integrity_preload and fips_application_nopie (cmake/OpenPQCFips.cmake).
+# They are declared here like the others and checked at the end of the top-level directory
+# (_openpqc_check_top_level_tests, at the end of this file), where they exist.
+set(_openpqc_top_level_tests fips_configure)
+openpqc_expect_tests(TESTS fips_configure NEEDS fipsplatform)
+if(OPENPQC_FIPS140_3)
+    list(APPEND _openpqc_top_level_tests fips_integrity_preload fips_application_nopie)
+    # nosan: in a sanitizer build, the library that the case preload preloads cannot come before the sanitizer's
+    # runtime, and the case checks nothing (tests/fips_integrity.cmake): the test is disabled
+    openpqc_expect_tests(TESTS fips_integrity_preload NEEDS threads nosan)
+    openpqc_expect_tests(TESTS fips_application_nopie NEEDS threads)
+endif()
+set_property(GLOBAL PROPERTY OPENPQC_TOP_LEVEL_TESTS ${_openpqc_top_level_tests})
 
 # what each requirement key needs, and why it is not met (empty: met)
 set(_openpqc_linux_gnu OFF)
@@ -332,6 +687,9 @@ set(_openpqc_unmet_wrap "")
 set(_openpqc_unmet_clang "")
 set(_openpqc_unmet_avx2 "")
 set(_openpqc_unmet_m32 "")
+set(_openpqc_unmet_binutils "")
+set(_openpqc_unmet_elfutils "")
+set(_openpqc_unmet_fipsplatform "")
 if(NOT Python3_Interpreter_FOUND)
     set(_openpqc_unmet_python "Python 3 not found")
 endif()
@@ -363,6 +721,19 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND NOT OPENPQC_CT_ASM
 endif()
 if(NOT OPENPQC_HAVE_REFERENCE_SLHDSA_AVX2)
     set(_openpqc_unmet_avx2 "the reference's AVX2 code is not built (x86-64 with AVX2 only)")
+endif()
+if(NOT CMAKE_STRIP OR NOT CMAKE_OBJCOPY)
+    set(_openpqc_unmet_binutils "strip or objcopy not found (GNU binutils)")
+endif()
+if(NOT OPENPQC_EU_STRIP)
+    set(_openpqc_unmet_elfutils "eu-strip not found (elfutils)")
+endif()
+# where FIPS 140-3 mode can be configured (the top-level CMakeLists.txt): fips_configure
+if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"
+        AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+        AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CROSSCOMPILING))
+    string(CONCAT _openpqc_unmet_fipsplatform "needs a build where FIPS 140-3 mode can be configured (x86-64 "
+           "Linux, 64-bit pointers, GCC or Clang, not cross-compiling)")
 endif()
 if(NOT _openpqc_x86_64)
     set(_openpqc_unmet_m32 "needs an x86-64 host and GCC or Clang (a 32-bit x86 build, -m32)")
@@ -438,7 +809,7 @@ endforeach()
 
 # the tests registered, and the directory of each
 set(_openpqc_registered "")
-foreach(_openpqc_dir . ML-KEM ML-DSA SLH-DSA Core gpu)
+foreach(_openpqc_dir . ML-KEM ML-DSA SLH-DSA Core gpu ${_openpqc_fips_directories})
     get_filename_component(_openpqc_dir ${CMAKE_CURRENT_SOURCE_DIR}/${_openpqc_dir} ABSOLUTE)
     get_property(_openpqc_tests DIRECTORY ${_openpqc_dir} PROPERTY TESTS)
     foreach(_openpqc_t IN LISTS _openpqc_tests)
@@ -469,12 +840,22 @@ foreach(_openpqc_t IN LISTS _openpqc_expected)
             list(APPEND _openpqc_why "${_openpqc_unmet_${_openpqc_n}}")
             # a tool that can be installed (on an x86-64 host, the 32-bit libraries too); the other
             # requirements are properties of the platform or of the configuration
-            if(_openpqc_n MATCHES "^(python|openssl|valgrind|threads|clang)$"
+            if(_openpqc_n MATCHES "^(python|openssl|valgrind|threads|clang|binutils|elfutils)$"
                OR (_openpqc_n STREQUAL "m32" AND _openpqc_x86_64))
                 set(_openpqc_tool_missing ON)
             endif()
         endif()
     endforeach()
+    if(_openpqc_t IN_LIST _openpqc_top_level_tests)   # not registered yet: _openpqc_check_top_level_tests
+        list(JOIN _openpqc_why ", " _openpqc_why)
+        set_property(GLOBAL PROPERTY OPENPQC_TOP_LEVEL_WHY_${_openpqc_t} "${_openpqc_why}")
+        set(_openpqc_disable "")
+        if(_openpqc_unmet_nosan AND "nosan" IN_LIST _openpqc_needs_${_openpqc_t})
+            set(_openpqc_disable "sanitizer build")
+        endif()
+        set_property(GLOBAL PROPERTY OPENPQC_TOP_LEVEL_DISABLE_${_openpqc_t} "${_openpqc_disable}")
+        continue()
+    endif()
     if(_openpqc_t IN_LIST _openpqc_registered)
         if(_openpqc_unmet_nosan AND "nosan" IN_LIST _openpqc_needs_${_openpqc_t})
             list(APPEND _openpqc_disabled ${_openpqc_t})
@@ -528,10 +909,6 @@ endif()
 # cannot work (mlkem_stack stops with a SEGV in its search, mldsa_stack skips itself, slhdsa_stack
 # fails); the setting is appended to the caller's ASAN_OPTIONS, so it wins over an earlier
 # detect_stack_use_after_return=1.
-set(_openpqc_asan OFF)
-if(CMAKE_C_FLAGS MATCHES "-fsanitize=([^ ]*,)?address" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize=([^ ]*,)?address")
-    set(_openpqc_asan ON)
-endif()
 if(_openpqc_cross_directory)
     foreach(_openpqc_t IN LISTS _openpqc_registered)
         if(NOT DEFINED _openpqc_dir_${_openpqc_t})
@@ -551,7 +928,6 @@ if(_openpqc_cross_directory)
         endif()
     endforeach()
 endif()
-
 # --- summary ------------------------------------------------------------------------------------------
 list(LENGTH _openpqc_registered _openpqc_n)
 list(LENGTH _openpqc_disabled _openpqc_k)
@@ -619,3 +995,87 @@ if(_openpqc_unknown)
     endif()
     message(WARNING "Tests were left out for a reason tests/CMakeLists.txt does not know (listed above)")
 endif()
+
+# --- the tests of the top-level directory ---------------------------------------------------------------------------
+# _openpqc_check_top_level_tests(): run at the end of the top-level directory (cmake_language(DEFER), below), after
+# its CMakeLists.txt has registered fips_configure, fips_integrity_preload and fips_application_nopie. Each of them
+# declared above that is not registered there is registered as a test that reports itself skipped, with the reason;
+# one whose requirement nosan is not met (a sanitizer build) is disabled; fips_configure gets the build's
+# OPENPQC_REQUIRE_FULL_TESTS in its environment; and a test of that directory that is not declared above is reported,
+# so that the declarations stay in step with what the directory registers.
+function(_openpqc_check_top_level_tests)
+    get_property(_expected GLOBAL PROPERTY OPENPQC_TOP_LEVEL_TESTS)
+    get_property(_registered DIRECTORY PROPERTY TESTS)   # the top-level directory's tests
+    set(_present "")
+    set(_disabled "")
+    set(_disabled_why "")
+    set(_notes "")
+    set(_left_out 0)
+    set(_unknown OFF)
+    foreach(_t IN LISTS _expected)
+        get_property(_why GLOBAL PROPERTY OPENPQC_TOP_LEVEL_WHY_${_t})
+        get_property(_disable GLOBAL PROPERTY OPENPQC_TOP_LEVEL_DISABLE_${_t})
+        if(_t IN_LIST _registered)
+            list(APPEND _present ${_t})
+            if(_t STREQUAL "fips_configure")
+                # its cases that cannot check what they are for (a compiler case without a GCC or Clang, m32): a
+                # failure with OPENPQC_REQUIRE_FULL_TESTS (tests/fips_configure.cmake reads it from the environment)
+                set_property(TEST fips_configure APPEND PROPERTY ENVIRONMENT
+                             "OPENPQC_REQUIRE_FULL_TESTS=${OPENPQC_REQUIRE_FULL_TESTS}")
+            endif()
+            if(_disable)
+                set_tests_properties(${_t} PROPERTIES DISABLED TRUE)
+                list(APPEND _disabled ${_t})
+                set(_disabled_why "${_disable}")
+            endif()
+            continue()
+        endif()
+        if(NOT _why)
+            set(_why "not registered by the top-level CMakeLists.txt, for a reason tests/CMakeLists.txt does not know")
+            set(_unknown ON)
+        endif()
+        add_test(NAME ${_t} COMMAND ${CMAKE_COMMAND} -E echo "not registered: ${_why}")
+        set_tests_properties(${_t} PROPERTIES SKIP_REGULAR_EXPRESSION "not registered: ")
+        get_property(_labels GLOBAL PROPERTY OPENPQC_EXPECTED_LABELS_${_t})
+        if(_labels)
+            set_tests_properties(${_t} PROPERTIES LABELS "${_labels}")
+        endif()
+        list(APPEND _notes "  left out, ${_why}: ${_t}")
+        math(EXPR _left_out "${_left_out} + 1")
+    endforeach()
+    set(_undeclared "")
+    foreach(_t IN LISTS _registered)
+        if(NOT _t IN_LIST _expected)
+            list(APPEND _undeclared ${_t})
+        endif()
+    endforeach()
+    list(LENGTH _present _n)
+    list(LENGTH _disabled _k)
+    list(JOIN _present " " _list)
+    if(_list)
+        set(_list " (${_list})")
+    endif()
+    message(NOTICE "OpenPQC tests of the top-level directory: ${_n} registered${_list}, ${_k} of them disabled; "
+                   "${_left_out} left out (registered as skipped)")
+    foreach(_note IN LISTS _notes)
+        message(NOTICE "${_note}")
+    endforeach()
+    if(_disabled)
+        list(JOIN _disabled " " _list)
+        message(NOTICE "  disabled, ${_disabled_why}: ${_list}")
+    endif()
+    if(_undeclared)
+        list(JOIN _undeclared " " _list)
+        message(WARNING "Tests registered by the top-level CMakeLists.txt are not declared in tests/CMakeLists.txt "
+                        "(_openpqc_top_level_tests): ${_list}")
+    endif()
+    if(_unknown)
+        if(OPENPQC_REQUIRE_FULL_TESTS)
+            message(FATAL_ERROR "OPENPQC_REQUIRE_FULL_TESTS: tests of the top-level directory were left out for a "
+                                "reason tests/CMakeLists.txt does not know (listed above)")
+        endif()
+        message(WARNING "Tests of the top-level directory were left out for a reason tests/CMakeLists.txt does not "
+                        "know (listed above)")
+    endif()
+endfunction()
+cmake_language(DEFER DIRECTORY ${PROJECT_SOURCE_DIR} CALL _openpqc_check_top_level_tests)

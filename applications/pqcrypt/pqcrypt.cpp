@@ -36,7 +36,8 @@
  * 32 instead of the 4032-byte ML-DSA private key. Each use expands the seed with keygen_from_seed
  * (ML-KEM.KeyGen_internal, ML-DSA.KeyGen_internal), which FIPS 203 (Section 3.3) and FIPS 204
  * (Section 3.6.3) allow for a seed stored in place of the private key. keygen draws the seeds
- * from the operating system (opqc_randombytes) and expands them in the same way, which is
+ * from opqc_randombytes (the operating system's RNG, or in FIPS 140-3 mode the module's
+ * HMAC_DRBG) and expands them in the same way, which is
  * exactly ML-KEM.KeyGen and ML-DSA.KeyGen. The hash of the public key next to
  * the seed turns a damaged seed into an error instead of a key that silently fails to decrypt.
  * keygen creates the secret key files with mode 0600 and never overwrites an existing file.
@@ -231,7 +232,7 @@ struct Party {
     SigKeys sig;
 };
 
-// ML-KEM.KeyGen and ML-DSA.KeyGen: fresh seeds from the operating system, then expanded
+// ML-KEM.KeyGen and ML-DSA.KeyGen: fresh seeds from opqc_randombytes, then expanded
 Status new_party(Party& p) {
     if (opqc_randombytes(p.kem_seed.data(), p.kem_seed.size()) != 0 ||
         opqc_randombytes(p.sig_seed.data(), p.sig_seed.size()) != 0) {

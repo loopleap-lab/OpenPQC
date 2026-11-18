@@ -27,7 +27,8 @@
  * d || z (FIPS 203, Section 3.3); opqc_sycl_mlkem_enc_derand for testing only: anybody
  * who knows m knows K (openpqc/testing.h, where the CPU's counterpart is).
  * opqc_sycl_mlkem_keypair and opqc_sycl_mlkem_enc draw the coins on the host from
- * Core's opqc_randombytes (Core/opqc_platform.h: a source that the application
+ * Core's opqc_randombytes (Core/opqc_platform.h: in FIPS 140-3 mode the module's
+ * HMAC_DRBG, which refuses every other source; otherwise a source that the application
  * registered with opqc_set_randombytes, or else the default, the operating system's
  * RNG unless the libraries are built with OPENPQC_EXTERNAL_RANDOMBYTES; FIPS 203,
  * Section 3.3: the module, not the caller, generates the randomness).
@@ -47,15 +48,16 @@
  * Fail closed. Encaps and Decaps first set every status entry to
  * OPQC_SYCL_MLKEM_FAILED, queued before their first kernel; the kernel that writes an
  * operation's outputs, its last, also writes its entry, so that an entry other than
- * OPQC_SYCL_MLKEM_FAILED comes with the operation's outputs. When a call returns -2 or
- * OPQC_SYCL_MLKEM_RNG_FAIL, every status entry reads OPQC_SYCL_MLKEM_FAILED and the
- * outputs of all n operations (keys, ciphertexts, shared secrets) are zero; a refused
- * call (-1) sets the status entries only, when status itself is usable, and writes
- * nothing else. Such a call waits for these writes (and so for the work queued before
- * them): it leaves no write into the caller's buffers behind it, which may be read,
- * reused or freed as soon as it returns. None of these writes can run on a device that
- * a fault has lost (on CUDA an invalid address is sticky): take results only when the
- * call, sync and the copy back all returned 0 (Device failures).
+ * OPQC_SYCL_MLKEM_FAILED comes with the operation's outputs. When a call returns -2,
+ * OPQC_SYCL_MLKEM_RNG_FAIL or (KeyGen, which has no status) OPENPQC_ERR_PCT, every
+ * status entry reads OPQC_SYCL_MLKEM_FAILED and the outputs of all n operations (keys,
+ * ciphertexts, shared secrets) are zero; a refused call (-1) sets the status entries
+ * only, when status itself is usable, and writes nothing else. Such a call waits for
+ * these writes (and so for the work queued before them): it leaves no write into the
+ * caller's buffers behind it, which may be read, reused or freed as soon as it returns.
+ * None of these writes can run on a device that a fault has lost (on CUDA an invalid
+ * address is sticky): take results only when the call, sync and the copy back all
+ * returned 0 (Device failures).
  *
  * Return values. Every function returns 0 on success or a negative value:
  *   -1   a refused argument: nothing is computed and no output is written (Encaps and
@@ -68,11 +70,18 @@
  *        that does not exist (or an OPENPQC_SYCL_DEVICE that is not a device index),
  *        or device memory that is not available; for memcpy a NULL dst or src
  *   -2   an exception of the SYCL runtime, a context that has failed (Device
- *        failures), or, for keypair and enc, page-locked host memory for the coins
- *        that cannot be allocated
- *   OPQC_SYCL_MLKEM_RNG_FAIL        the RNG failed (keypair, enc)
- *   OPQC_SYCL_MLKEM_SELF_TEST_FAIL  create: the device computed a wrong result in the
- *                                   self-test, and no context was created
+ *        failures), or, for keypair and enc (and keypair_derand with the pair-wise
+ *        consistency test), page-locked host memory for the coins that cannot be
+ *        allocated
+ *   OPQC_SYCL_MLKEM_RNG_FAIL        the RNG failed (keypair, enc; keypair_derand with the
+ *                                   pair-wise consistency test, which draws m)
+ *   OPENPQC_ERR_PCT (-6)            keypair and keypair_derand with the pair-wise
+ *                                   consistency test (below): a key pair failed it, or a
+ *                                   part of it did not run; the keys of all n operations
+ *                                   are zero
+ *   OPQC_SYCL_MLKEM_SELF_TEST_FAIL  create, where it runs the self-test (below): the device
+ *                                   computed a wrong result in the self-test, and no
+ *                                   context was created
  * -4 and -5 occur only in status. The GPU's -1 and -2 are not the CPU library's codes.
  * Every function that returns a status is declared OPQC_MUST_CHECK (Core/opqc_common.h),
  * as those of the CPU library are: the compiler warns about a call whose result is not
@@ -98,17 +107,44 @@
  *
  * Calls are asynchronous: they return once the work is queued, and
  * opqc_sycl_mlkem_sync waits for it. keypair and enc wait for the copy of each launch's
- * coins, and so for the work queued before it; a call that fails waits as Fail closed
- * says. A call with n = 0 has nothing to do: it returns 0 (-2 on a context that has
- * failed) without looking at its buffers.
+ * coins, and so for the work queued before it, and KeyGen with the pair-wise
+ * consistency test waits for the test of every launch; a call that fails waits as Fail
+ * closed says. A call with n = 0 has nothing to do: it returns 0 (-2 on a context that
+ * has failed) without looking at its buffers.
  *
- * Self-test. opqc_sycl_mlkem_create runs one KeyGen, one Encaps and the Decaps of its
- * ciphertext and of a tampered copy of it, of fixed inputs, on the device, and compares
- * the results with the CPU library's (a known-answer test at start-up, as FIPS 140-3
- * asks of a module; the compilers of device code have been seen to miscompile code
- * like this, and some compile it at run time). A device that computes a wrong result
- * gets no context. There is no pair-wise consistency test of the keys that the device
- * generates (the CPU library has one as an option, openpqc_mlkem.h).
+ * Self-test, in FIPS 140-3 mode or with the developer definition
+ * OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST. There opqc_sycl_mlkem_create runs one KeyGen, one
+ * Encaps and the Decaps of its ciphertext and of a tampered copy of it, of fixed inputs,
+ * on the device, and compares the results with the CPU library's (a known-answer test at
+ * start-up, as FIPS 140-3 asks of a module; the compilers of device code have been seen
+ * to miscompile code like this, and some compile it at run time). A device that computes
+ * a wrong result gets no context. An ordinary build runs none and holds neither its code
+ * nor its answers, so it has no known-answer check of the device: only the project's
+ * tests compare the device's results with the CPU library's. The developer definition is
+ * a compile definition for the project's tests, not a CMake option, and no target of the
+ * libraries gives it: the white-box test mlkem_sycl_faults_pct compiles the backend with
+ * it, and a build that gives it to every object (CMAKE_CXX_FLAGS) has the self-test in
+ * its libraries too.
+ *
+ * Pair-wise consistency test, in FIPS 140-3 mode only (the mode gives the CPU library
+ * its test too, openpqc_mlkem.h; the CMake option OPENPQC_MLKEM_KEYGEN_PCT that gave an
+ * ordinary build the test no longer exists). There keypair and keypair_derand test every
+ * key pair they make, on the device (FIPS 203, Section 7.1, item 4): Encaps_internal
+ * under ek with a random m (32 bytes per pair from opqc_randombytes, drawn as the coins
+ * of keypair are, so that keypair_derand then needs the RNG too) and Decaps of the
+ * ciphertext under dk, with the checks of Sections 7.2 and 7.3; the pair passes only if
+ * both checks pass and K equals K', which are compared without a branch on their bytes.
+ * The test fails closed: before its kernels run, every value its verdict reads is set to
+ * a failure (both statuses to OPENPQC_ERR_PCT, K and K' to different bytes), its last
+ * kernel counts the pairs that passed, and a launch passes only when that count, read
+ * back, is its number of pairs (a count that cannot be read back counts as none). So a
+ * pair whose test did not run, in part or at all, fails. If one pair of the call fails,
+ * the keys of all n operations are overwritten with zeros (and waited for) and the call
+ * returns OPENPQC_ERR_PCT; which pair failed is not reported. The context has not
+ * failed: the next call runs. The test's values (ciphertexts, K, K', statuses, the
+ * count, m) are zeroized after every launch. It adds |c| + 72 bytes per operation to the
+ * workspace, and costs about three times as much as KeyGen itself (an RTX 3050). In an
+ * ordinary build KeyGen tests nothing, as the ordinary CPU library.
  *
  * Device failures. Most device errors (a kernel that faults, a lost device) are found
  * after the call that caused them has returned 0: by a later call, by sync, or by a
@@ -142,12 +178,13 @@
  * failure) and by destroy, each as far as the device still accepts work: after a
  * sticky fault it accepts none, and what the kernels wrote stays in device memory until
  * the driver reuses it. Every arithmetic kernel clears its local memory before it ends.
- * The coins of keypair and enc go to the device from page-locked host memory that the
- * context holds and wipes at once after each copy; even so, NVIDIA's CUDA driver has
- * been seen to keep copies of such small host-to-device transfers in memory of its own
- * (mappings of /dev/nvidiactl), after the call and after destroy, where the library
- * cannot reach them. The outputs are the caller's to destroy: opqc_sycl_mlkem_free
- * overwrites what it frees with zeros.
+ * The pair-wise consistency test's values are zeroized after every launch of the test
+ * (above). The coins of keypair and enc, and the test's m, go to the device from
+ * page-locked host memory that the context holds and wipes at once after each copy;
+ * even so, NVIDIA's CUDA driver has been seen to keep copies of such small
+ * host-to-device transfers in memory of its own (mappings of /dev/nvidiactl), after the
+ * call and after destroy, where the library cannot reach them. The outputs are the
+ * caller's to destroy: opqc_sycl_mlkem_free overwrites what it frees with zeros.
  *
  * Threads. A context may be used from several host threads: their calls take turns
  * (each holds the context's lock while it queues its work, and keypair and enc also
@@ -202,9 +239,9 @@ typedef struct opqc_sycl_mlkem opqc_sycl_mlkem;
  * environment variable OPENPQC_SYCL_DEVICE=<index> names (a decimal index; anything
  * else is refused with -1), or SYCL's default device when it is unset or empty.
  * Device memory for `max_batch` operations per launch (1 to OPQC_SYCL_MLKEM_MAX_BATCH)
- * is allocated; larger calls are split into launches of max_batch operations. Runs the
- * self-test (above) before it returns. Returns 0 and the context in *ctx, or an error
- * with *ctx = NULL.
+ * is allocated; larger calls are split into launches of max_batch operations. In FIPS
+ * 140-3 mode, or with the developer definition, runs the self-test (above) before it
+ * returns. Returns 0 and the context in *ctx, or an error with *ctx = NULL.
  */
 OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mlkem_create(opqc_sycl_mlkem **ctx, int level, size_t max_batch, int device);
 /* Waits for the context's work, zeroizes its device memory, and frees it (also on a

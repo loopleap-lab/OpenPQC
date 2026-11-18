@@ -27,7 +27,8 @@ compare their behavior and performance across hardware platforms.
 
 **Research-grade.** OpenPQC follows the text of FIPS 203, 204 and 205 and passes the NIST ACVP test cases in its
 suite, and in an independent review in October 2026 its outputs matched the reference implementations and OpenSSL in
-every comparison made. It is not FIPS 140-3 validated and not yet hardened for production. Read
+every comparison made. It is not FIPS 140-3 validated and not yet hardened for production; its opt-in
+[FIPS 140-3 mode](docs/FIPS-140-3.md) is designed for FIPS 140-3; not validated. Read
 [Maturity and scope](#maturity-and-scope), the [Security notes](#security-notes) and [SECURITY.md](SECURITY.md)
 before you use it, and use a validated module for production and FIPS deployments.
 
@@ -41,7 +42,7 @@ before you use it, and use a validated module for production and FIPS deployment
 
 The shared core provides Keccak-f[1600], SHA-3, SHAKE, SHA-2, the twelve pre-hash functions used by
 HashML-DSA and HashSLH-DSA, constant-time helpers, randomness (the operating system's, or a source the
-application registers), and zeroization.
+application registers; in FIPS 140-3 mode the module's HMAC_DRBG), and zeroization.
 
 All of it is one library, `openpqc` (CMake target `OpenPQC::openpqc`). The GPU API, `openpqc/sycl.h` in the
 library `openpqc_sycl` (`OpenPQC::sycl`), runs operations in batches, with one context type for all 18 parameter
@@ -203,7 +204,7 @@ int main(void)
     uint8_t ss_enc[OPENPQC_MLKEM_BYTES], ss_dec[OPENPQC_MLKEM_BYTES];
     int result = 1;
 
-    if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||         /* randomness from the operating system */
+    if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||         /* randomness from the OS, or FIPS mode's DRBG */
         openpqc_mlkem768_encaps(ct, ss_enc, pk) != OPENPQC_OK || /* checks pk first (FIPS 203, Section 7.2) */
         openpqc_mlkem768_decaps(ss_dec, ct, sk) != OPENPQC_OK) {
         goto cleanup;                                             /* use none of pk, sk, ct, ss_enc, ss_dec */
@@ -410,10 +411,10 @@ reference implementations; it does not mean ready for production ([Maturity and 
 
 | Group | CPU | GPU | Tests |
 | --- | --- | --- | --- |
-| Core | Keccak-f[1600], SHA-3, SHAKE, SHA-2 (C11); the twelve pre-hash functions of HashML-DSA and HashSLH-DSA with their OIDs; constant-time helpers, randomness that fails closed (the operating system's, or a source the application registers or links), zeroization and stack clearing | the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message and workspace helpers; the context that the three backends share: a lock, a failed state after a device error, wiping of the workspace, page-locked coin staging | known answers, incremental vs one-shot, the sponge's phase checks, stack and register residue (also 32-bit x86), constant time at -O0 to -Os (valgrind) and branch-free assembly on seven processors (compile only), the RNG's failure paths and registered sources, NIST ACVP for SHA-2, SHA-3 and SHAKE, the OID table; on the GPU the helpers and the context's failure handling |
-| ML-KEM | implemented (512/768/1024), C11/C++20; optional pair-wise consistency test; the stack burn can be left out (`OPENPQC_MLKEM_STACK_BURN`) | SYCL: batched KeyGen (also from seeds d ‖ z)/Encaps/Decaps through the GPU API (`openpqc/sycl.h`), all parameter sets; status required on every call and fail-closed, a known-answer self-test when a context is created; Encaps with given randomness only in the testing library (`OpenPQC::sycl_testing`); no pair-wise consistency test | KAT, ACVP (435 cases), Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind constant-time tests (also of the library at fixed optimization levels, and of Encaps and Decaps in the library as built), stack-residue tests, fresh randomness, the pair-wise consistency test; SYCL: byte identity, the error contract and fault injection on every device |
-| ML-DSA | implemented (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20; malformed private keys refused, key checks; optional pair-wise consistency test | SYCL: batched KeyGen (also from seeds xi)/Sign/Verify (messages or mu; hedged or deterministic; one key per operation or one for all), all parameter sets; status required on every call and fail-closed, a known-answer self-test when a context is created, the optional pair-wise consistency test; HashML-DSA through mu; signing with given randomness only in the testing library; malformed private keys refused, verification's values zeroized | KAT, ACVP (1335 vectors), Wycheproof (1138 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), exhaustive math tests, valgrind constant-time tests (also at fixed levels), malformed private keys, stack-residue and thread-stack tests, fresh randomness, the register clearing in the x86-64 code; SYCL: byte identity, the error contract and fault injection on every device |
-| SLH-DSA | implemented (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic and hedged signing, the internal functions), C11/C++20; optional pair-wise consistency test | SYCL: batched KeyGen/Sign/Verify, also pre-hash (PH(M) given) and one-key, hedged or deterministic, all parameter sets; status required on every call and fail-closed; the internal functions and signing with given randomness only in the backend's internal API and the testing library; no self-test and no pair-wise consistency test; the baseline pipeline only (the optimisation experiments are planned, not done) | KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), math-core tests against transcriptions of the standard, valgrind constant-time test (also at -O2), stack-residue and short-stack tests, fresh randomness; SYCL: byte identity, fresh randomness and fault injection on every device |
+| Core | Keccak-f[1600], SHA-3, SHAKE, SHA-2, HMAC-SHA-256 and HMAC-SHA-512 (C11); HMAC_DRBG with SHA-512 (SP 800-90A), the random bit generator of the FIPS 140-3 mode; the twelve pre-hash functions of HashML-DSA and HashSLH-DSA with their OIDs; constant-time helpers, randomness that fails closed (the operating system's, or a source the application registers or links; in FIPS 140-3 mode the DRBG), zeroization and stack clearing; the FIPS 140-3 mode's state, self-tests, integrity test and indicator | the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message and workspace helpers; the context that the three backends share: a lock, a failed state after a device error, wiping of the workspace, page-locked coin staging | known answers, incremental vs one-shot, the sponge's phase checks, stack and register residue (also 32-bit x86), constant time at -O0 to -Os (valgrind) and branch-free assembly on seven processors (compile only), the RNG's failure paths and registered sources, NIST ACVP for SHA-2, SHA-3 and SHAKE (with the large-data tests), HMAC against RFC 4231, the DRBG against NIST's CAVP vectors, the OID table; in FIPS 140-3 mode the module's boundary, integrity test, forced self-test failures and indicator; on the GPU the helpers and the context's failure handling |
+| ML-KEM | implemented (512/768/1024), C11/C++20; a pair-wise consistency test after KeyGen in FIPS 140-3 mode; the stack burn can be left out (`OPENPQC_MLKEM_STACK_BURN`) | SYCL: batched KeyGen (also from seeds d ‖ z)/Encaps/Decaps through the GPU API (`openpqc/sycl.h`), all parameter sets; status required on every call and fail-closed; Encaps with given randomness only in the testing library (`OpenPQC::sycl_testing`); a known-answer self-test when a context is created and a pair-wise consistency test of every key pair, in FIPS 140-3 mode only | KAT, ACVP (435 cases), Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind constant-time tests (also of the library at fixed optimization levels, and of Encaps and Decaps in the library as built), stack-residue tests, fresh randomness, the pair-wise consistency test; SYCL: byte identity, the error contract and fault injection on every device |
+| ML-DSA | implemented (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20; malformed private keys refused, key checks; a pair-wise consistency test after KeyGen in FIPS 140-3 mode | SYCL: batched KeyGen (also from seeds xi)/Sign/Verify (messages or mu; hedged or deterministic; one key per operation or one for all), all parameter sets; status required on every call and fail-closed; a known-answer self-test when a context is created and a pair-wise consistency test of every key pair, in FIPS 140-3 mode only; HashML-DSA through mu; signing with given randomness only in the testing library; malformed private keys refused, verification's values zeroized | KAT, ACVP (1335 vectors), Wycheproof (1138 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), exhaustive math tests, valgrind constant-time tests (also at fixed levels), malformed private keys, stack-residue and thread-stack tests, fresh randomness, the register clearing in the x86-64 code; SYCL: byte identity, the error contract and fault injection on every device |
+| SLH-DSA | implemented (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic and hedged signing, the internal functions), C11/C++20; a pair-wise consistency test after KeyGen in FIPS 140-3 mode | SYCL: batched KeyGen/Sign/Verify, also pre-hash (PH(M) given) and one-key, hedged or deterministic, all parameter sets; status required on every call and fail-closed; the internal functions and signing with given randomness only in the backend's internal API and the testing library; a known-answer self-test when a context is created and a pair-wise consistency test of every key pair, in FIPS 140-3 mode only; the baseline pipeline only (the optimisation experiments are planned, not done) | KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), math-core tests against transcriptions of the standard, valgrind constant-time test (also at -O2), stack-residue and short-stack tests, fresh randomness; SYCL: byte identity, fresh randomness and fault injection on every device |
 | FN-DSA | planned, waiting for FIPS 206 | planned | - |
 
 ### Running the tests
@@ -444,11 +445,15 @@ of checks, messages outside their buffer, launches of 3 operations, a context on
 C++ layer), `device_hash` (the hash functions of `openpqc/sycl/device.hpp` against Core's CPU functions, 1856 cases),
 `mlkem_sycl`, `mldsa_sycl` and `slhdsa_sycl` (the backends' own C APIs: byte identity with the CPU library, the status
 and error contract, fresh randomness, two threads on one context), `mlkem_sycl_faults`, `mldsa_sycl_faults` (also as
-`mldsa_sycl_faults_nopct`, the backend without KeyGen's pair-wise consistency test, as built by default) and
-`slhdsa_sycl_faults` (device work that fails part way, by fault injection: fail-closed status and outputs,
-zeroization, the failed context), `core_sycl` (the helpers the backends share), and `core_sycl_sticky`,
-`mldsa_sycl_sticky` and `slhdsa_sycl_faults_sticky`, which cause a real fault on an NVIDIA GPU in a process of their
-own (skipped without one). Without the label, `sycl_exports` checks that the shared `openpqc_sycl` exports the GPU API
+`mldsa_sycl_faults_nopct`) and `slhdsa_sycl_faults` (also as `slhdsa_sycl_faults_nopct`): device work that fails part
+way, by fault injection (fail-closed status and outputs, zeroization, the failed context); the variants
+`mlkem_sycl_faults`, `mldsa_sycl_faults_nopct` and `slhdsa_sycl_faults_nopct` compile the backend as the build compiles
+it, without KeyGen's pair-wise consistency test and create's self-test in an ordinary build, where they report each case
+that needs them as not applicable, and with both in FIPS 140-3 mode; `gpu_layout` and `gpu_self_test` check which of
+these tests the GPU library itself holds, and `gpu_fips`, `gpu_fips_inflight` and their testing forms (FIPS 140-3 mode)
+its contract with the module's state; `core_sycl` (the helpers the backends share), and `core_sycl_sticky`,
+`mldsa_sycl_sticky` and `slhdsa_sycl_faults_sticky`, which cause a real fault on an NVIDIA GPU in a process of their own
+(skipped without one). Without the label, `sycl_exports` checks that the shared `openpqc_sycl` exports the GPU API
 (`openpqc_gpu_*`) and nothing else, with `openpqc_sycl_testing` as the control (Linux).
 
 ### CI presets
@@ -462,8 +467,6 @@ cmake --workflow --preset gcc-asan-ubsan        # AddressSanitizer and UBSan at 
 cmake --preset ct-clang-O2 && cmake --build --preset ct-clang-O2 && ctest --preset ct-clang-O2
                                                 # constant-time tests at one level: ct-{gcc,clang}-{O0,O2,O3,Os}
 ctest --preset gcc-release-network              # ACVP and Wycheproof, after the gcc-release workflow
-cmake --workflow --preset gcc-release-pct       # ML-KEM and ML-DSA with their pair-wise consistency tests compiled in,
-                                                # and their quick tests; also clang-release-pct
 ```
 
 `.github/workflows/ci.yml` runs these presets in an Arch Linux container (GCC 16, Clang 23, valgrind); it has not
@@ -507,7 +510,7 @@ includes (Core's, and each scheme's C and C++ API) under `<prefix>/include/openp
 | [src/ML/KEM/](src/ML/KEM/README.md) | ML-KEM-512/768/1024 (FIPS 203): `math/` (C11 math core: Z_q, NTT, compression, encoding, sampling), `scheme/` (C++20: K-PKE, ML-KEM, input checks, one function per FIPS 203 algorithm), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_mlkem.h` and the C++ API `mlkem.hpp` |
 | [src/ML/DSA/](src/ML/DSA/README.md) | ML-DSA-44/65/87 and HashML-DSA (FIPS 204): `math/` (C11 math core: Z_q, NTT, rounding and hints, encoding, sampling), `scheme/` (C++20: one function per FIPS 204 algorithm, HashML-DSA, external mu), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_mldsa.h` and the C++ API `mldsa.hpp` |
 | [src/SLH/DSA/](src/SLH/DSA/README.md) | The twelve SLH-DSA parameter sets and HashSLH-DSA (FIPS 205): `math/` (C11 math core: toInt, toByte, base_2b, the address ADRS, HMAC and MGF1), `scheme/` (C++20: WOTS+, XMSS, the hypertree, FORS, one function per FIPS 205 algorithm), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_slhdsa.h` and the C++ API `slhdsa.hpp` |
-| [docs/](docs/) | `GPU_ACCELERATION.md` (the GPU design, the measurements and the comparison with published GPU work), `PRIMITIVES.md` (the mathematical primitives of the schemes and their groups), `catalog/` (per-symbol catalogs of the upstream projects), `SOURCE_MAP.md` (mlkem-native file by file: what is FIPS 203 and what mlkem-native added) |
+| [docs/](docs/) | `GPU_ACCELERATION.md` (the GPU design, the measurements and the comparison with published GPU work), `PRIMITIVES.md` (the mathematical primitives of the schemes and their groups), `catalog/` (per-symbol catalogs of the upstream projects), `SOURCE_MAP.md` (mlkem-native file by file: what is FIPS 203 and what mlkem-native added), `FIPS-140-3.md` (the FIPS 140-3 mode: plan and status) and `FIPS-140-3-security-policy.md` (the draft of its security policy, SP 800-140B) |
 | [tutorial/](tutorial/README.md) | Interactive Jupyter walkthrough and Docker environment |
 | [examples/](examples/README.md) | C, C++, and GPU API examples; CPU, GPU, and presentation demos (`demo_cpu`, `demo_gpu`, `live_demo`); `device_hash`: OpenPQC's hash functions in an application's own SYCL kernel |
 | [applications/](applications/README.md) | Application demos built from the three schemes |
@@ -534,8 +537,8 @@ builds, with the -O0 figures given apart.
 | `OPENPQC_BUILD_BENCHMARKS` | `ON` at top level | Build CPU and available GPU benchmarks |
 | `OPENPQC_BUILD_EXAMPLES` | `ON` at top level | Build API examples, demos, and application demos |
 | `OPENPQC_WERROR` | `ON` at top level | Treat warnings in OpenPQC code as errors: `-Werror` for the targets that link `openpqc_strict_warnings` (Core's and the schemes' CPU libraries, most of their tests, the examples; not the SYCL backends, the GPU tests or the benchmarks), and for the mlkem-native C code that the tests and benchmarks compile (`mlkem_native.c` and `mlkem_native_all.c` from `reference/`, and mlkem-native's test programs in `tests/ML-KEM/src`) |
-| `BUILD_SHARED_LIBS` | `OFF` | Build the library `openpqc` as a shared library; it exports the C APIs only |
-| `OPENPQC_SYCL_SHARED` | `ON` | Build the GPU library `openpqc_sycl` as a shared library, which DPC++ links the device code into once; `OFF`: static, and every program that uses it is linked as SYCL code (`-fsycl` and the device targets). Shared, it exports the GPU API only (test `sycl_exports`); static, it also contains the backends' own functions, which no installed header declares |
+| `BUILD_SHARED_LIBS` | `OFF` (`ON` in FIPS 140-3 mode) | Build the library `openpqc` as a shared library; it exports the C APIs only. FIPS 140-3 mode refuses `OFF` |
+| `OPENPQC_SYCL_SHARED` | `ON` | Build the GPU library `openpqc_sycl` as a shared library, which DPC++ links the device code into once; `OFF`: static, and every program that uses it is linked as SYCL code (`-fsycl` and the device targets). Shared, it exports the GPU API only (test `sycl_exports`); static, it also contains the backends' own functions, which no installed header declares. FIPS 140-3 mode refuses `OFF` |
 | `OPENPQC_WITH_MLKEM`, `_MLDSA`, `_SLHDSA` | `ON` | The schemes the libraries contain (`OPENPQC_HAVE_*` in `Core/openpqc_version.h` say which); the tests, benchmarks and examples need all three |
 | `OPENPQC_NATIVE` | `ON` | Enable supported SIMD/assembly backends in the mlkem-native reference |
 
@@ -547,11 +550,9 @@ builds, with the -O0 figures given apart.
 | `OPENPQC_SYCL_TARGETS` | Empty | DPC++ device targets passed through `-fsycl-targets` |
 | `OPENPQC_SYCL_FLAGS` | Empty | Extra flags for SYCL sources and, with DPC++, linking; e.g. `-DOPQC_SHA2_UNROLL_PASSES=1`, which keeps the SHA-2 rounds in loops: the same results, a DPC++ link of SLH-DSA's backend in about 2 instead of 10 minutes, SHA-256 on the GPUs measured 6–10 % slower |
 | `OPENPQC_SLHDSA_SYCL_SETS` | Empty: all 12 | Development builds: select SLH-DSA GPU parameter-set IDs (1–12, separated by commas, e.g. `3,4`; the CMake list form `3;4` does not build). DPC++ generates the device code of every set when it links `openpqc_sycl` and each white-box test that compiles the backend, about 10 minutes and 1.2 GiB for all twelve |
-| `OPENPQC_MLKEM_KEYGEN_PCT` | `OFF` | ML-KEM's KeyGen runs the pair-wise consistency test of FIPS 203 §7.1 (CPU library; SLH-DSA's test is a compile definition, see its README) |
-| `OPENPQC_MLDSA_KEYGEN_PCT` | `OFF` | ML-DSA's KeyGen runs the pair-wise consistency test of FIPS 140-3: it signs and verifies with each new key pair (the CPU library and the GPU backend in `openpqc_sycl`) |
-| `OPENPQC_FIPS140_3` | `OFF` | FIPS 140-3 mode: work in progress, no effect yet (the build is the ordinary library, not a validated module); the plan is in [docs/FIPS-140-3.md](docs/FIPS-140-3.md) |
+| `OPENPQC_FIPS140_3` | `OFF` | FIPS 140-3 mode: the shared library `libopenpqc` is built as a FIPS 140-3 module, designed for FIPS 140-3; not validated ([docs/FIPS-140-3.md](docs/FIPS-140-3.md), [security policy draft](docs/FIPS-140-3-security-policy.md)). Every object of the libraries gets `OPENPQC_FIPS140_3=1`, part of the ABI tag; the library tests itself when it is loaded (integrity test, known-answer tests), tests every key pair it generates, has one error state and an approved-service indicator (`openpqc/fips.h`), and draws every random value from its own HMAC_DRBG, seeded from `getrandom`; `opqc_set_randombytes` is refused. Every scheme's KeyGen runs its pair-wise consistency test, in the CPU library and in the GPU backends, and every GPU context runs a known-answer self-test when it is created: only this mode has these tests, and no option adds them to the ordinary build (the former options `OPENPQC_MLKEM_KEYGEN_PCT` and `OPENPQC_MLDSA_KEYGEN_PCT`, and `OPENPQC_SLHDSA_KEYGEN_PCT`, stop the configuration in every build: remove them from an old cache with `cmake -U`). The module is linked with a version script made from its headers, which fixes its exports; the build checks its exports and imports after the link (configuring needs `nm`). x86-64 Linux with GCC or Clang only; `BUILD_SHARED_LIBS` defaults to `ON` and `OFF` is refused, as are `OPENPQC_MLKEM_STACK_BURN=OFF`, `OPENPQC_SYCL_SHARED=OFF`, `OPENPQC_EXTERNAL_RANDOMBYTES` and, with the tests, a linker without `--wrap` (test `fips_configure`): configure it in a new build directory. Without `OPENPQC_BUILD_TESTS`, the static library targets `openpqc::core`, `openpqc::mlkem`, `openpqc::mldsa` and `openpqc::slhdsa` hold no code in this mode and nothing that links them compiles (with the tests they hold the module's code without its self-tests, for the tests only), and the benchmarks, which link them, are not built |
 | `OPENPQC_MLKEM_STACK_BURN` | `ON` | ML-KEM overwrites the stack below every call with zeros when it returns (44, 54 or 64 KiB, the stack burn), which removes what the compiler kept in stack slots of its own (FIPS 203 §3.3); a call then needs about 48, 58 or 68 KiB of stack and 1.3–4.0 % more cycles. `OFF` keeps the named wipes and `Poly`'s destructor but leaves the compiler's copies on the stack, and the ML-KEM tests then check the library so built (see [src/ML/KEM/README.md](src/ML/KEM/README.md#choices-that-differ-from-mlkem-native)) |
-| `OPENPQC_EXTERNAL_RANDOMBYTES` | `OFF` | The libraries, the GPU library included, take their randomness from the application's `int opqc_external_randombytes(uint8_t *out, size_t len)` instead of the operating system (`Core/opqc_platform.h`; [Security notes](#security-notes)); the project's tests, benchmarks and demos do not define that function, so configuring stops unless `OPENPQC_BUILD_TESTS`, `_BENCHMARKS` and `_EXAMPLES` are `OFF` |
+| `OPENPQC_EXTERNAL_RANDOMBYTES` | `OFF` | The libraries, the GPU library included, take their randomness from the application's `int opqc_external_randombytes(uint8_t *out, size_t len)` instead of the operating system (`Core/opqc_platform.h`; [Security notes](#security-notes)); the project's tests, benchmarks and demos do not define that function, so configuring stops unless `OPENPQC_BUILD_TESTS`, `_BENCHMARKS` and `_EXAMPLES` are `OFF`. FIPS 140-3 mode refuses it |
 | `OPENPQC_REQUIRE_FULL_TESTS` | `OFF` | Fail the configuration when a tool that tests need is missing (Python 3, OpenSSL, valgrind, threads, Clang, and on x86-64 the 32-bit C and C++ libraries for `hash_m32`) instead of leaving those tests out |
 | `OPENPQC_SANITIZE` | Empty | Sanitizers for every target (GCC, Clang), e.g. `address,undefined`; the constant-time tests are then left out (valgrind cannot run them) |
 | `OPENPQC_TEST_TIMEOUT_FACTOR` | Empty | Multiplies the TIMEOUT of every test; empty: 10 in a sanitizer build, 3 in a Debug build, 1 otherwise |
@@ -570,19 +571,52 @@ SHA-2 loop-unrolling tradeoffs.
 
 ## Maturity and scope
 
-**What OpenPQC is.** A research-grade implementation of FIPS 203 (ML-KEM), FIPS 204 (ML-DSA) and FIPS 205
-(SLH-DSA), written to follow the text of the standards, with a C API and SYCL backends that run batches of operations
-on GPUs. It is version 0.3.0: there are no releases yet, and the API and ABI may change. It is not a validated
-cryptographic module and has not been submitted for FIPS 140-3 validation. It has no approved random bit generator,
-no self-tests when the library is loaded (the ML-KEM and ML-DSA GPU contexts run a known-answer test when they are
-created), no integrity test, no error state, no service indicator and no defined module boundary. The CPU library
-`openpqc` contains no testing interface (they are in `OpenPQC::testing`, which is never installed); the shared GPU
-library `openpqc_sycl` exports the GPU API only (its testing interfaces are in `OpenPQC::sycl_testing`, never
-installed; test `sycl_exports`), while a static `openpqc_sycl` still contains the backends' own functions, their
-`_derand` functions among them, which no installed header declares. FIPS 140-3 support is planned as an opt-in
-build flag (SECURITY.md, Known issues). Where FIPS 140-3 is required, use a validated module;
-OpenPQC can serve as an independent implementation to cross-check it. Passing NIST's published ACVP vectors is not a
-CAVP certificate.
+**What OpenPQC is.** A research-grade implementation of FIPS 203 (ML-KEM), FIPS 204 (ML-DSA) and FIPS 205 (SLH-DSA),
+written to follow the text of the standards, with a C API and SYCL backends that run batches of operations on GPUs. It
+has no release yet (the version number that the source tree carries, 0.3.0, which `openpqc_version()` returns, is
+not a release), and the API and ABI may change. It is not a validated cryptographic module
+and has not been submitted for FIPS 140-3 validation. The ordinary build (the default) has no approved random bit
+generator, no self-tests when the library is loaded or a GPU context is created (so an ordinary GPU build has no
+known-answer check of the device), no pair-wise consistency tests after key generation, no integrity test, no error
+state, no service indicator and no defined module boundary; the FIPS 140-3 mode (below) has the others, and in place of
+the first an SP 800-90A HMAC_DRBG (not CAVP-tested; seeded by the operating system, whose source has no identified ESV
+certificate). The CPU library `openpqc` contains no testing interface (they are in `OpenPQC::testing`, which is never
+installed); the shared GPU library `openpqc_sycl` exports the GPU API only (its testing interfaces are in
+`OpenPQC::sycl_testing`, never installed; test `sycl_exports`), while a static `openpqc_sycl`, which the FIPS 140-3 mode
+refuses, still contains the backends' own functions, their `_derand` functions among them, which no installed header
+declares. Where FIPS 140-3 is required, use a validated module; OpenPQC can serve as an independent implementation to
+cross-check it. Passing NIST's published ACVP vectors is not a CAVP certificate.
+
+**FIPS 140-3 mode.** Configured with `-DOPENPQC_FIPS140_3=ON` (x86-64 Linux with GCC or Clang), the build makes the
+shared library `libopenpqc` a module designed for FIPS 140-3; not validated: no laboratory has tested it, no CAVP
+certificate covers its algorithms, and nothing has been submitted to the CMVP. The module exports only its services (the
+C APIs of the 18 parameter sets, the runtime-selected API and `opqc_randombytes`, with the version, the algorithm table,
+`opqc_zeroize`, `opqc_set_randombytes`, which refuses, `opqc_fips_mark_non_approved` and the functions of
+`openpqc/fips.h`: 195 functions). When it is loaded it checks its own file (HMAC-SHA-256 over every loaded segment,
+against the value stored after the link) and runs a known-answer test of each algorithm; every key generation runs a
+pair-wise consistency test; any failure, of the entropy source or the DRBG too, puts it into one error state, in which
+every service returns `OPENPQC_ERR_ERROR_STATE` (-12) until it is loaded again (`openpqc_fips_status()`), and a service
+during whose computation the module entered its error state returns -12 with its outputs zeroized (a key generation
+whose own pair-wise consistency test failed returns `OPENPQC_ERR_PCT`, -6, with its keys zeroized). After each service,
+`openpqc_fips_service_approved()` tells the calling thread whether it was an approved service that succeeded:
+`keygen_from_seed` of ML-KEM and ML-DSA is approved as the import of a key pair in its seed format (NIST's PQC FAQ),
+while ML-DSA's key checks and HashML-DSA or HashSLH-DSA with a pre-hash weaker than the parameter set are computed but
+not approved. Every random value comes from an HMAC_DRBG (SP 800-90A, SHA-512, 256-bit strength; not CAVP-tested) inside
+the module, seeded from `getrandom`; the module has no SP 800-90B entropy source, so the operating system's must be
+validated (an ESV certificate) where the module is used, and without one the module cannot be validated there.
+`opqc_set_randombytes` is refused. The module relies on the C library and the dynamic loader it is linked against: in a
+process where any function it imports (`getrandom`, `getpid`, `__tls_get_addr` and the others the security policy lists)
+is replaced or interposed, by whatever mechanism, none of its guarantees holds, its entropy input, error state and
+indicator among them (the security policy draft, Section 6.2); it defines the memory functions it calls itself, so that
+its integrity test and zeroization do not go through the C library. The header-only C++ APIs, the GPU library and the
+testing interfaces are outside the module, and the GPU services are not approved (in this mode the GPU library also
+tests every key pair it generates, every context runs a known-answer test when it is created, and a GPU call checks
+the module's state again once its work is done, so that in this mode the GPU calls wait for their work). In a FIPS
+build NIST's ACVP vectors also run through the sealed module itself (`fips_vectors_*`). The mode was developed on the
+branch `fips140-3`; the review has not verified it. [docs/FIPS-140-3.md](docs/FIPS-140-3.md) gives what is done and what
+remains (among it the entropy path through the C library, a laboratory, the CAVP certificates, the entropy source's
+validation, a CI job), and [docs/FIPS-140-3-security-policy.md](docs/FIPS-140-3-security-policy.md) the draft of the
+security policy.
 
 **What has been checked.** In October 2026 an independent review ran the CPU library against every NIST ACVP test
 case in the project's suite (435 ML-KEM, 1335 ML-DSA and 1248 SLH-DSA cases), the known-answer tests and the
@@ -612,8 +646,8 @@ none of them high or medium. Not re-verified: the documentation changes of 2026-
 change them again, and a smaller round of 2026-11-09 that followed the re-verification (GPU ML-DSA signing also zeroizes
 μ and the context string, a GPU context's `sync` also reports another context's sticky fault, the constant-time tests
 compile their copies of ML-KEM and SLH-DSA with the libraries' options, and a test checks that ML-KEM code compiled with
-the other setting of the stack burn cannot take the place of the library's). [SECURITY.md](SECURITY.md) lists what
-remains open.
+the other setting of the stack burn cannot take the place of the library's). The FIPS 140-3 mode (above) came after
+that, and the review has not verified it. [SECURITY.md](SECURITY.md) lists what remains open.
 
 **Side channels and secrets.** The project's valgrind tests check that secret data decides no branch and no memory
 address, on x86-64 Linux, for the operations the tests run, with copies of the libraries that the tests compile (with
@@ -645,18 +679,28 @@ claimed: other compilers (MSVC's cl.exe gets the volatile barrier, which only GC
 `core_volatile_*_ct` tests; clang-cl gets the assembly barrier), other processors, link-time optimization, and the GPU
 code, where the barrier is the identity: there the generated code of ML-KEM's implicit-rejection select was read (both
 CUDA toolchains had made it a load from a secret-dependent address; it is now masked through device memory), but device
-timing has never been measured. In scope is timing through branches and memory addresses only; the values that FIPS 204
-makes public and ML-DSA therefore branches on (rejected signing attempts, the challenge) are listed in
-[src/ML/DSA/README.md](src/ML/DSA/README.md#choices-that-differ-from-the-reference-implementation).
+timing has never been measured. In scope is timing through branches and memory addresses only; the values that ML-DSA's
+design leaves public, as the reference implementation does, and that it therefore branches on (whether a signing
+attempt is rejected, the challenge) are listed in
+[src/ML/DSA/README.md](src/ML/DSA/README.md#choices-that-differ-from-the-reference-implementation). For the FIPS 140-3
+mode, the security policy draft states this mitigation, its evidence and its limits as its
+[Section 12](docs/FIPS-140-3-security-policy.md#12-mitigation-of-other-attacks) (IG 12.A).
 
-**Randomness: the approved RBG is the integrator's.** FIPS 203 §3.3, FIPS 204 §3.6.1 and FIPS 205 §3.1 require the
-random values of key generation (and ML-KEM's m) to come from an approved random bit generator (SP 800-90A, B and C) of
-sufficient security strength: 128, 192 and 256 bits for ML-KEM-512, -768 and -1024; 192 and 256 bits for ML-DSA-65 and
--87 and at least 128 for ML-DSA-44 (192 to keep its category 2); 8n bits for SLH-DSA. ML-DSA's rnd should come from one.
-By default OpenPQC's libraries take these values from the operating system (`getrandom`, `arc4random_buf`,
-`BCryptGenRandom`): a sound source that fails closed (without randomness the buffer is zeroed and every randomized
-function returns its RNG failure code, -3), but not an approved RBG within a module boundary, and the library has no
-DRBG or health tests of its own. To supply one, register it with `opqc_set_randombytes(fn, ctx)`
+**Randomness: in FIPS 140-3 mode the module's HMAC_DRBG, the integrator's approved RBG otherwise.** FIPS 203 §3.3, FIPS
+204 §3.6.1 and FIPS 205 §3.1 require the random values of key generation (and ML-KEM's m) to come from an approved
+random bit generator (SP 800-90A, B and C) of sufficient security strength: 128, 192 and 256 bits for ML-KEM-512, -768
+and -1024; 192 and 256 bits for ML-DSA-65 and -87 and at least 128 for ML-DSA-44 (192 to keep its category 2); 8n bits
+for SLH-DSA. ML-DSA's rnd should come from one. In FIPS 140-3 mode the module has its own: an HMAC_DRBG (SP 800-90A Rev.
+1, SHA-512, 256 bits of security strength, enough for every parameter set; not CAVP-tested) seeded from `getrandom`,
+with its health test at load; it refuses `opqc_set_randombytes` (`OPENPQC_ERR_NOT_APPROVED`, -13), and the operating
+system's entropy source must be validated (SP 800-90B, an ESV certificate) where the module is used, and reached through
+the C library's `getrandom`, in a process where none of the module's imports is replaced or interposed (the security
+policy draft, [Section 2.8](docs/FIPS-140-3-security-policy.md#28-rbg-and-entropy) and [Section
+6.2](docs/FIPS-140-3-security-policy.md#62-configuration-settings-and-restrictions)). The rest of this paragraph is
+about the ordinary build. By default OpenPQC's libraries take these values from the operating system (`getrandom`,
+`arc4random_buf`, `BCryptGenRandom`): a sound source that fails closed (without randomness the buffer is zeroed and
+every randomized function returns its RNG failure code, -3), but not an approved RBG within a module boundary, and the
+ordinary library has no DRBG or health tests of its own. To supply one, register it with `opqc_set_randombytes(fn, ctx)`
 (`Core/opqc_platform.h`) before other threads draw. Every later `opqc_randombytes` call then calls `fn(ctx, out, len)`,
 and so does every randomized function of the three schemes, the coins of the GPU backends included. `fn` must fill all
 `len` bytes from an approved DRBG of the required strength and return 0, or return nonzero (the library then zeroizes
@@ -693,18 +737,17 @@ host code does not.
 **What is not destroyed.** On the CPU: registers, which nothing clears at the end of an ML-KEM, ML-DSA or SLH-DSA
 operation (Core's hash functions and the functions of ML-DSA that run a sponge on secret input zero the call-used
 registers when they return, where the compiler has `zero_call_used_regs`: GCC 11 and Clang 15 or later, on x86 and
-AArch64; `mldsa_regs_asm` checks ML-DSA's functions, and Core's as compiled into ML-DSA, in the x86-64 code of GCC
-and Clang at -O1, -O2, -O3 and -Os; 32-bit x86 and AArch64 were not checked), and which the kernel or the dynamic
-linker can copy to memory; in an ML-KEM library built with `OPENPQC_MLKEM_STACK_BURN=OFF`, the copies that the
-compiler keeps in stack slots of its own; copies that the operating system makes (swap, core dumps); the caller's
-buffers. On the GPU: the random coins pass through page-locked memory that is wiped after each copy, but NVIDIA's
-driver has been seen to keep copies of such small transfers in memory of its own, also after `destroy`; after a
-sticky device fault (on CUDA an invalid address) no wipe can run any more; ML-DSA's signing leaves the challenges c of
-its attempts in the context's workspace until later calls overwrite them or `destroy` zeroizes it.
-`openpqc_gpu_free` overwrites what it frees with zeros for every scheme, and returns `OPENPQC_ERR_DEVICE` when the
-context has failed and the overwrite may not have happened (the backends' own `opqc_sycl_mldsa_free` and
-`opqc_sycl_slhdsa_free`, which the shared GPU library does not export, free without wiping). The scheme READMEs give
-the details and the tests that check what is destroyed.
+AArch64; `mldsa_regs_asm` checks ML-DSA's functions, and Core's as compiled into ML-DSA, in the x86-64 code of GCC and
+Clang at -O1, -O2, -O3 and -Os; 32-bit x86 and AArch64 were not checked), and which the kernel or the dynamic linker can
+copy to memory; in an ML-KEM library built with `OPENPQC_MLKEM_STACK_BURN=OFF`, the copies that the compiler keeps in
+stack slots of its own; copies that the operating system makes (swap, core dumps); the caller's buffers. On the GPU: the
+random coins pass through page-locked memory that is wiped after each copy, but NVIDIA's driver has been seen to keep
+copies of such small transfers in memory of its own, also after `destroy`; after a sticky device fault (on CUDA an
+invalid address) no wipe can run any more. (ML-DSA's signing now also zeroizes the challenges c and the result flags of
+its attempts after each call.) `openpqc_gpu_free` overwrites what it frees with zeros for every scheme, and returns
+`OPENPQC_ERR_DEVICE` when the context has failed and the overwrite may not have happened (the backends' own
+`opqc_sycl_mldsa_free` and `opqc_sycl_slhdsa_free`, which the shared GPU library does not export, free without wiping).
+The scheme READMEs give the details and the tests that check what is destroyed.
 
 **GPU backends.** Suitable for experiments and benchmarks on hardware the operator controls, not yet for a production
 service, and not for a GPU shared with untrusted code: device timing has not been measured. Every call of the GPU API
@@ -715,11 +758,18 @@ create a new one. After a sticky fault on CUDA (an invalid address) that is not 
 fails, a new create on it fails too, and only a new process can use the device again. The buffer checks ask the SYCL
 runtime, which does not tell a freed buffer from a live one under DPC++'s Level Zero and on AdaptiveCpp's OpenMP host
 device, that host device takes every pointer for its own (a call with another GPU's device memory ended the process
-there), and DPC++ and AdaptiveCpp take USM memory of another SYCL context on the same device for the context's:
-pass only buffers of the context that are still allocated, and for the application's own allocations create the
-context in its SYCL context (`openpqc_gpu_create_on`). SLH-DSA's context runs no self-test when it is created, and no
-GPU KeyGen has a pair-wise consistency test except ML-DSA's when the libraries are built with the CMake option
-`OPENPQC_MLDSA_KEYGEN_PCT`; the ML-DSA signer refuses private keys whose s1 or s2 is out of range, as the CPU library
+there), and DPC++ and AdaptiveCpp take USM memory of another SYCL context on the same device for the context's: pass
+only buffers of the context that are still allocated, and for the application's own allocations create the context in
+its SYCL context (`openpqc_gpu_create_on`). In the ordinary build no context runs a self-test when it is created, so the
+GPU library has no known-answer check of the device (only the project's tests compare the device's results with the CPU
+library's), and no GPU KeyGen has a pair-wise consistency test; no CMake option adds either (the maintainers' decision
+of 2026-11-17; only the developer definitions `OPENPQC_*_SYCL_CREATE_SELF_TEST` of the project's tests compile the
+self-tests in, `openpqc/sycl.h`, Self-test). In FIPS 140-3 mode the GPU library is outside the module and its services
+are not approved (the indicator reads 0 after each; a call that begins in the module's error state returns -12, and one
+during which the module entered it returns -12 with its outputs zeroed once its work is done); there every context runs
+a known-answer test of its parameter set when it is created, and the KeyGen of all three schemes tests every key pair on
+the device, failing closed when a part of the test does not run (ML-KEM and SLH-DSA then fail the whole call, with every
+key zeroed). In every build, the ML-DSA signer refuses private keys whose s1 or s2 is out of range, as the CPU library
 does (`OPENPQC_ERR_INVALID_SECRET_KEY` in the operation's status entry, with an all-zero signature).
 
 ## License

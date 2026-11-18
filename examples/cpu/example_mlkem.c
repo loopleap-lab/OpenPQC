@@ -212,8 +212,8 @@ static void input_checks(const uint8_t ek[EK_BYTES], const uint8_t dk[DK_BYTES],
  * these 64 bytes instead of the 2400-byte dk and expanded when needed: FIPS 203, Section 3.3,
  * allows this use of KeyGen_internal, which keygen_from_seed is (behind the checks of Section 7).
  * The seed is a secret like dk. keygen does not return its seed, so a seed to store comes from
- * the application's own random bit generator; here that is Core's opqc_randombytes, the
- * operating system's RNG, which keygen uses as well.
+ * the application's own random bit generator; here that is Core's opqc_randombytes, which keygen
+ * uses as well: the operating system's RNG, or in FIPS 140-3 mode the module's HMAC_DRBG.
  */
 static void stored_seed(void)
 {

@@ -33,6 +33,9 @@
 #                             malformed inputs
 #   mlkem_pct, mlkem_pct_fail the library built with the pair-wise consistency test
 #                             (OPENPQC_MLKEM_KEYGEN_PCT), and built so that the test fails
+#                             (copies of the library that these tests compile, in every build)
+#   mlkem_pct_library         FIPS 140-3 mode: the same test against the library as built, which
+#                             has the pair-wise consistency test in that mode only
 #   mlkem_pct_odr             an application's KeyGen without the test cannot replace the
 #                             library's
 #   mlkem_config_odr, mlkem_config_odr_O0
@@ -182,16 +185,16 @@ if(Python3_Interpreter_FOUND)
     endforeach()
 endif()
 
-# The configuration of the library as built (the CMake options OPENPQC_MLKEM_STACK_BURN and
-# OPENPQC_MLKEM_KEYGEN_PCT, CMakeLists.txt). Built without the stack burn (OFF), the library's objects get
+# The configuration of the library as built (the CMake option OPENPQC_MLKEM_STACK_BURN and FIPS 140-3 mode, both in
+# the top-level CMakeLists.txt). Built without the stack burn (OFF), the library's objects get
 # OPENPQC_MLKEM_NO_STACK_BURN (scheme/ml_kem.hpp); the tests' own copies of the library that stand for it (with
 # the pair-wise consistency test, at other optimization levels, and for the constant-time tests) are then
 # compiled the same way, and the stack tests that run against the library or these copies are told so
 # (OPENPQC_TEST_NO_STACK_BURN): mlkem_stack and its variants run check 1 only and print why check 2 is left
 # out, and mlkem_thread_stack checks that a call needs less stack than the burn would use, and that on a stack
-# too small for it a call ends in a fault at the guard page, never writes below it. Built with the pair-wise
-# consistency test, the library's objects get OPENPQC_MLKEM_KEYGEN_PCT, and so do the copies for the
-# constant-time tests.
+# too small for it a call ends in a fault at the guard page, never writes below it. In FIPS 140-3 mode, and only
+# there, the library's objects get OPENPQC_MLKEM_KEYGEN_PCT (the pair-wise consistency test), and so do the copies
+# for the constant-time tests.
 set(_mlkem_burn_definitions "")        # for the copies of the library
 set(_mlkem_test_burn_definitions "")   # for the stack tests
 if(DEFINED OPENPQC_MLKEM_STACK_BURN AND NOT OPENPQC_MLKEM_STACK_BURN)
@@ -199,8 +202,27 @@ if(DEFINED OPENPQC_MLKEM_STACK_BURN AND NOT OPENPQC_MLKEM_STACK_BURN)
     set(_mlkem_test_burn_definitions OPENPQC_TEST_NO_STACK_BURN)
 endif()
 set(_mlkem_pct_definitions "")         # for the copies that stand for the library as built
-if(OPENPQC_MLKEM_KEYGEN_PCT)
+if(OPENPQC_FIPS140_3)
     set(_mlkem_pct_definitions OPENPQC_MLKEM_KEYGEN_PCT)
+endif()
+# The copies stand for the library only if they have the pair-wise consistency test exactly when the library's
+# objects (openpqc_mlkem_objects, which have their definitions before this directory is added) have it. Configuring
+# stops where the two differ: the constant-time tests and mlkem_config_odr would then test another configuration
+# than the library's, and still pass.
+get_target_property(_mlkem_library_definitions openpqc_mlkem_objects COMPILE_DEFINITIONS)
+set(_mlkem_library_pct_found OFF)
+if("OPENPQC_MLKEM_KEYGEN_PCT" IN_LIST _mlkem_library_definitions)
+    set(_mlkem_library_pct_found ON)
+endif()
+set(_mlkem_copies_pct_found OFF)
+if("OPENPQC_MLKEM_KEYGEN_PCT" IN_LIST _mlkem_pct_definitions)
+    set(_mlkem_copies_pct_found ON)
+endif()
+if(NOT _mlkem_library_pct_found STREQUAL _mlkem_copies_pct_found)
+    message(FATAL_ERROR "tests/ML-KEM: OPENPQC_MLKEM_KEYGEN_PCT on the library's objects (openpqc_mlkem_objects): "
+                        "${_mlkem_library_pct_found}; on the test copies that stand for the library: "
+                        "${_mlkem_copies_pct_found} (OPENPQC_FIPS140_3=${OPENPQC_FIPS140_3}). FIPS 140-3 mode, and "
+                        "only it, gives both of them the definition (the top-level CMakeLists.txt and this file).")
 endif()
 
 # --- constant-time tests (valgrind) ----------------------------------------------
@@ -230,12 +252,16 @@ endif()
 #                    also says what it cannot see; KeyGen needs the library's
 #                    declassification of rho and is left out); skipped (77) where the
 #                    build's flags enable instructions that valgrind cannot decode; not in a
-#                    sanitizer build
+#                    sanitizer build. In FIPS 140-3 mode the library draws m from the module's
+#                    HMAC_DRBG and refuses the registered source (checked): the program is linked
+#                    with -Wl,--wrap=getrandom, and Encaps runs in a child process whose DRBG
+#                    reseeds after fork() from an entropy input marked secret, so that m, and the
+#                    DRBG's reseed and generate, run on secret data
 # The copies of the library for the tests (openpqc_mlkem_ct*) are compiled as the library's
 # objects are: with its warning and hardening options (openpqc_strict_warnings, with
 # -fstack-clash-protection where the compiler has it), as position-independent code, and in
-# the build's configuration of ML-KEM (above: the stack burn and the pair-wise consistency
-# test as the CMake options give them to the library). So they differ from it only in
+# the build's configuration of ML-KEM (above: the stack burn as the CMake option gives it to
+# the library, and the pair-wise consistency test in FIPS 140-3 mode). So they differ from it only in
 # OPQC_CT_TESTING, the level (in the fixed-level copies), and the x86-64 extensions that
 # valgrind cannot decode, which the copies and the test programs are compiled without
 # (OPENPQC_CT_ISA_FLAGS, tests/CMakeLists.txt).
@@ -301,6 +327,11 @@ if(OPENPQC_VALGRIND AND OPENPQC_VALGRIND_INCLUDE_DIR)
         if(OPENPQC_HAVE_STATIC_LINK)
             target_link_options(test_mlkem_ct_production PRIVATE -static)
         endif()
+        # FIPS 140-3 mode (x86-64 Linux with GCC or Clang only, whose linkers have --wrap): the program's
+        # __wrap_getrandom marks the DRBG's entropy input as secret (above)
+        if(OPENPQC_FIPS140_3)
+            target_link_options(test_mlkem_ct_production PRIVATE -Wl,--wrap=getrandom)
+        endif()
         foreach(level 512 768 1024)
             add_test(NAME mlkem${level}_ct_production
                      COMMAND ${OPENPQC_VALGRIND} --error-exitcode=1 --track-origins=yes
@@ -354,6 +385,10 @@ add_test(NAME mlkem_differential COMMAND test_mlkem_differential)
 #   mlkem_pct_fail   the same with OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST, which breaks the check: KeyGen
 #                    must fail with OPENPQC_ERR_PCT and zeroize both keys. This shows that the
 #                    check is compiled in and that its result is used, which mlkem_pct alone cannot show.
+#   In FIPS 140-3 mode a failed check puts the module (the state in the tests' libraries) in its
+#   error state for good: mlkem_pct_fail and mlkem_pct_odr run each KeyGen of each set in a process
+#   of its own, and after the failure (indicator 0) both KeyGens must return OPENPQC_ERR_ERROR_STATE
+#   without drawing or writing; mlkem_pct ends with the module still operational.
 foreach(variant pct pct_fail)
     add_library(openpqc_mlkem_${variant}_objects OBJECT ${OPENPQC_MLKEM_SOURCES})
     target_include_directories(openpqc_mlkem_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
@@ -425,11 +460,15 @@ target_link_libraries(test_mlkem_config_odr PRIVATE openpqc_mlkem)
 add_test(NAME mlkem_config_odr COMMAND test_mlkem_config_odr)
 set_tests_properties(mlkem_config_odr PROPERTIES SKIP_RETURN_CODE 77)
 
-#   mlkem_pct_library  in a build with the CMake option OPENPQC_MLKEM_KEYGEN_PCT (CMakeLists.txt), the test of
-#                    mlkem_pct against the library as built (openpqc_mlkem_testrng): it fails unless the option
-#                    has put the pair-wise consistency test into the library's KeyGen (keypair_derand must draw
-#                    the test's m)
-if(OPENPQC_MLKEM_KEYGEN_PCT)
+#   mlkem_pct_library  in FIPS 140-3 mode, the test of mlkem_pct against the library as built
+#                    (openpqc_mlkem_testrng, the module's ML-KEM objects): it fails unless the mode has put the
+#                    pair-wise consistency test into the library's KeyGen (keypair_derand must draw the test's m;
+#                    the top-level CMakeLists.txt). The ordinary build's library has no such test.
+#   The tests above and below that compile copies of the library with the test themselves (mlkem_pct,
+#   mlkem_pct_fail, mlkem_pct_odr, mlkemNNN_pct_*, mlkem_differential_pct, mlkem_stack_pct,
+#   mlkem_stack_noburn_pct, mlkem_thread_stack_pct) run in every build: the scheme layer's test is the code
+#   that FIPS 140-3 mode compiles into the module.
+if(OPENPQC_FIPS140_3)
     add_executable(test_mlkem_pct_library test_mlkem_pct.c)
     target_link_libraries(test_mlkem_pct_library PRIVATE openpqc_mlkem_testrng openpqc_strict_warnings)
     set_target_properties(test_mlkem_pct_library PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON

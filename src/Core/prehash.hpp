@@ -38,7 +38,11 @@
 // bits in FIPS 205, Section 10.2 (n = 16, 24, 32), i.e. a digest of at least twice that many bits; FIPS 205,
 // Section 10.2.2 adds that SHA-256 and SHAKE128 are only appropriate for parameter sets of security category
 // 1. That is a requirement on how the pre-hash versions are used, which this code does not enforce (NIST's
-// test vectors combine every PH with every parameter set of both schemes).
+// test vectors combine every PH with every parameter set of both schemes). In FIPS 140-3 mode the C APIs
+// report a pre-hash weaker than the set as a service that is not approved (approved-service indicator 0;
+// ML/DSA/mldsa.cpp and SLH/DSA/slhdsa.cpp, prehash_approved), and still compute it. When an application
+// calls the functions of this file itself (prehash, prehash_oid, prehash_bytes), they run as its own code,
+// outside the FIPS 140-3 module, and set no indicator.
 //
 // The C APIs take PH as an int, the enumerator's value: Core/openpqc_prehash.h names the twelve values.
 #pragma once

@@ -21,6 +21,25 @@
 
 #include "SLH/DSA/scheme/slh_dsa.hpp"
 
+#if defined(OPENPQC_FIPS140_3)
+#include "Core/openpqc_core.h" // opqc_fips_mark_non_approved
+#include "openpqc/fips.h"      // openpqc_fips_status
+// FIPS 140-3 mode: the testing interfaces are outside the module and are not approved services. Each reports so
+// through the module's approved-service indicator when it returns, after any service of the module it called
+// (opqc_fips_mark_non_approved, which can only clear the indicator). While the module is in its error state
+// (openpqc_fips_status), none of them computes: each returns OPENPQC_ERR_ERROR_STATE before any other check and
+// writes nothing, as the services of the module and the GPU library's testing interfaces do.
+#define OPENPQC_TESTING_RETURN(...)                                                                              \
+    do {                                                                                                         \
+        const openpqc_status testing_status_ =                                                                   \
+                openpqc_fips_status() == 0 ? (__VA_ARGS__) : OPENPQC_ERR_ERROR_STATE;                            \
+        opqc_fips_mark_non_approved();                                                                           \
+        return testing_status_;                                                                                  \
+    } while (0)
+#else
+#define OPENPQC_TESTING_RETURN(...) return __VA_ARGS__
+#endif
+
 namespace {
 
 using namespace openpqc::slhdsa;
@@ -87,27 +106,28 @@ struct Testing {
 
 #define OPENPQC_TESTING_SLHDSA_DEFINE(S, T)                                                                      \
     openpqc_status openpqc_testing_slhdsa_##S##_keygen_derand(uint8_t* pk, uint8_t* sk, const uint8_t* seed) {   \
-        return Testing<params::T>::keygen_derand(pk, sk, seed);                                                  \
+        OPENPQC_TESTING_RETURN(Testing<params::T>::keygen_derand(pk, sk, seed));                                 \
     }                                                                                                            \
     openpqc_status openpqc_testing_slhdsa_##S##_sign_derand(uint8_t* sig, const uint8_t* m, size_t mlen,         \
                                                             const uint8_t* ctx, size_t ctxlen,                   \
                                                             const uint8_t* addrnd, const uint8_t* sk) {          \
-        return Testing<params::T>::sign_derand(sig, m, mlen, ctx, ctxlen, addrnd, sk);                           \
+        OPENPQC_TESTING_RETURN(Testing<params::T>::sign_derand(sig, m, mlen, ctx, ctxlen, addrnd, sk));          \
     }                                                                                                            \
     openpqc_status openpqc_testing_slhdsa_##S##_prehash_sign_derand(uint8_t* sig, const uint8_t* m, size_t mlen, \
                                                                     const uint8_t* ctx, size_t ctxlen, int ph,   \
                                                                     const uint8_t* addrnd, const uint8_t* sk) {  \
-        return Testing<params::T>::prehash_sign_derand(sig, m, mlen, ctx, ctxlen, ph, addrnd, sk);               \
+        OPENPQC_TESTING_RETURN(                                                                                  \
+                Testing<params::T>::prehash_sign_derand(sig, m, mlen, ctx, ctxlen, ph, addrnd, sk));             \
     }                                                                                                            \
     openpqc_status openpqc_testing_slhdsa_##S##_sign_internal(uint8_t* sig, const uint8_t* mprime,               \
                                                               size_t mprimelen, const uint8_t* addrnd,           \
                                                               const uint8_t* sk) {                               \
-        return Testing<params::T>::sign_internal(sig, mprime, mprimelen, addrnd, sk);                            \
+        OPENPQC_TESTING_RETURN(Testing<params::T>::sign_internal(sig, mprime, mprimelen, addrnd, sk));           \
     }                                                                                                            \
     openpqc_status openpqc_testing_slhdsa_##S##_verify_internal(const uint8_t* sig, size_t siglen,               \
                                                                 const uint8_t* mprime, size_t mprimelen,         \
                                                                 const uint8_t* pk) {                             \
-        return Testing<params::T>::verify_internal(sig, siglen, mprime, mprimelen, pk);                          \
+        OPENPQC_TESTING_RETURN(Testing<params::T>::verify_internal(sig, siglen, mprime, mprimelen, pk));         \
     }
 
 extern "C" {

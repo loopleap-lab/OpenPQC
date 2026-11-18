@@ -15,7 +15,8 @@
  * The program
  *   [1] makes n key pairs, signs n messages of different lengths (message i with key i) and
  *       verifies the signatures, each call with a status array; keygen and sign are the
- *       randomized calls, whose xi and rnd come from the operating system's RNG on the host;
+ *       randomized calls, whose xi and rnd come from opqc_randombytes on the host (the
+ *       operating system's RNG, or in FIPS 140-3 mode the module's HMAC_DRBG);
  *   [2] has the CPU library (ML/DSA/openpqc_mldsa.h) verify the device's signatures;
  *   [3] flips one bit of one message: only the status of that message becomes
  *       OPENPQC_ERR_INVALID_SIGNATURE;
@@ -24,7 +25,7 @@
  *   [5] signs with an external mu (FIPS 204, Algorithm 7, line 6): the host computes the
  *       64-byte message representative mu of each message with openpqc_mldsa65_external_mu,
  *       and only mu goes to the device, which signs it (openpqc_gpu_sig_sign_mu, hedged: rnd
- *       from the operating system) and verifies it (openpqc_gpu_sig_verify_mu); the CPU verifies
+ *       from opqc_randombytes) and verifies it (openpqc_gpu_sig_verify_mu); the CPU verifies
  *       the signatures against the full messages.
  * The secret keys stay on the device; openpqc_gpu_free overwrites device memory with zeros
  * before it frees it. It is the counterpart of cuPQC's examples/public_key/example_ml_dsa.cu. The
@@ -85,8 +86,10 @@ void check(openpqc_status s, const char* what) {
     if (s != OPENPQC_OK) fail(std::string(what) + " failed: " + openpqc_status_string(s));
 }
 
-// The context; declared before the buffers, so that it is destroyed after them. Creating it runs
-// a known-answer self-test on the device; destroying it zeroizes its workspace.
+// The context; declared before the buffers, so that it is destroyed after them. In FIPS 140-3
+// mode, or with the developer definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST, creating it runs a
+// known-answer self-test on the device (an ordinary GPU build runs none and has no known-answer
+// check of the device); destroying it zeroizes its workspace.
 class Context {
 public:
     Context(std::size_t max_batch, int device) {
@@ -236,7 +239,7 @@ bool run(std::size_t n, int device) {
     // The messages of every signing and verification call; size bounds the offsets, which the
     // device checks (a message outside the buffer gets OPENPQC_ERR_INVALID_ARGUMENT)
     const openpqc_gpu_messages messages{d_msg.get(), d_offsets.as_offsets(), 0, msg.size()};
-    // Hedged signing (rnd from the operating system), one key per message; and the same with
+    // Hedged signing (rnd from opqc_randombytes), one key per message; and the same with
     // key 0 for every message
     const openpqc_sign_opts opts{ctxstr, CONTEXT_LEN, 0, 0};
     const openpqc_sign_opts one_key{ctxstr, CONTEXT_LEN, 0, OPENPQC_GPU_ONE_KEY};

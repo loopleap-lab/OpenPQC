@@ -15,10 +15,22 @@ option(OPENPQC_WERROR           "Treat warnings in OpenPQC's own code as errors"
 option(OPENPQC_REQUIRE_FULL_TESTS
        "Fail the configuration if a tool tests need is missing: Python 3, OpenSSL, valgrind, threads, Clang, -m32 libraries"
        OFF)
-option(OPENPQC_MLKEM_KEYGEN_PCT
-       "ML-KEM: KeyGen runs the pair-wise consistency test of FIPS 140-3 (FIPS 203, Section 7.1)" OFF)
-option(OPENPQC_MLDSA_KEYGEN_PCT
-       "ML-DSA: KeyGen (CPU and SYCL) runs the pair-wise consistency test of FIPS 140-3 (signs and verifies)" OFF)
+option(OPENPQC_FIPS140_3
+       "FIPS 140-3 mode: libopenpqc built as a FIPS 140-3 module (not a validated one; see docs/FIPS-140-3.md)" OFF)
+# The pair-wise consistency tests after key generation are part of FIPS 140-3 mode, which builds them into every
+# scheme (below), and have no option of their own. The options OPENPQC_MLKEM_KEYGEN_PCT and OPENPQC_MLDSA_KEYGEN_PCT
+# of earlier versions are refused in every form (the command line, a preset, a cache, a parent project's variable),
+# so that a configuration that asks for them does not quietly build something else.
+foreach(_openpqc_removed IN ITEMS OPENPQC_MLKEM_KEYGEN_PCT OPENPQC_MLDSA_KEYGEN_PCT OPENPQC_SLHDSA_KEYGEN_PCT)
+    if(DEFINED ${_openpqc_removed})
+        message(FATAL_ERROR "${_openpqc_removed} is not an option of OpenPQC (it is ${${_openpqc_removed}} here): the "
+                            "pair-wise consistency tests after key generation (FIPS 140-3 IG 10.3.A) are part of FIPS "
+                            "140-3 mode, and OPENPQC_FIPS140_3=ON builds them into every scheme, on the CPU and the "
+                            "GPU. Remove the variable (cmake -U ${_openpqc_removed}, the preset, or a new build "
+                            "directory), and configure with OPENPQC_FIPS140_3=ON for a library with them")
+    endif()
+endforeach()
+# FIPS 140-3 mode needs the shared library: its default follows the mode, and an explicit OFF is refused below
 option(OPENPQC_MLKEM_STACK_BURN
        "ML-KEM: overwrite the stack below every call with zeros when it returns (FIPS 203, Section 3.3)" ON)
 option(OPENPQC_EXTERNAL_RANDOMBYTES
@@ -26,9 +38,8 @@ option(OPENPQC_EXTERNAL_RANDOMBYTES
 option(OPENPQC_WITH_MLKEM  "The library contains ML-KEM (FIPS 203)" ON)
 option(OPENPQC_WITH_MLDSA  "The library contains ML-DSA (FIPS 204)" ON)
 option(OPENPQC_WITH_SLHDSA "The library contains SLH-DSA (FIPS 205)" ON)
-option(BUILD_SHARED_LIBS "Build the library openpqc as a shared library (default: static)" OFF)
-option(OPENPQC_FIPS140_3
-       "FIPS 140-3 mode (work in progress: no effect yet, not a validated module; see docs/FIPS-140-3.md)" OFF)
+option(BUILD_SHARED_LIBS "Build the library openpqc as a shared library (default: static; shared in FIPS 140-3 mode)"
+       ${OPENPQC_FIPS140_3})
 set(OPENPQC_SANITIZE "" CACHE STRING
     "Sanitizers for every target (GCC, Clang): the list of -fsanitize=, e.g. address,undefined; empty: none")
 
@@ -68,6 +79,83 @@ if(OPENPQC_EXTERNAL_RANDOMBYTES AND (OPENPQC_BUILD_TESTS OR OPENPQC_BUILD_BENCHM
                         "-DOPENPQC_BUILD_EXAMPLES=OFF")
 endif()
 
+# FIPS 140-3 mode (docs/FIPS-140-3.md, src/Core/opqc_fips.h): the shared library libopenpqc is built as the module.
+# Every object of the build gets OPENPQC_FIPS140_3=1, the libraries' objects among them (it is part of their ABI
+# tag, src/Core/abi.hpp), and the tests and programs too, so that each compiled copy of a library source is the
+# FIPS one. The mode needs:
+#   - x86-64 Linux (ELF64) with the GNU C library, and GCC or Clang: the integrity test finds the loaded module
+#     through the linker's symbols __ehdr_start and _DYNAMIC, knows the dynamic relocations of x86-64 and how the
+#     GNU C library's loader relocates a dynamic section (src/Core/opqc_fips_integrity.c), the DRBG is seeded from
+#     getrandom(), and the self-tests run from a library constructor. The module is linked with immediate binding
+#     (-z now) and sealed after its link (cmake/OpenPQCFips.cmake);
+#   - the shared library: the module is one file, whose loaded image the integrity test covers. A static library
+#     would be linked into each program with the program's own code, and no value fixed at link time of the library
+#     could cover it (BUILD_SHARED_LIBS=OFF is refused);
+#   - the shared GPU library, if any (OPENPQC_SYCL_SHARED, ON by default): it exports the GPU API only
+#     (cmake/openpqc_sycl.map), whose calls check the module's state and report "not approved"; a static one would
+#     give every program that links it all the functions of the GPU backends, those that take the randomness from
+#     the caller (FIPS 203, Section 3.3, keeps them for testing) included, which do neither (OFF is refused);
+#   - the module's own random bit generator: an application's (OPENPQC_EXTERNAL_RANDOMBYTES) is refused;
+#   - the pair-wise consistency tests after key generation (FIPS 140-3 IG 10.3.A, Additional Comment 1): this mode
+#     gives every scheme's library objects the definitions OPENPQC_MLKEM_KEYGEN_PCT, OPENPQC_MLDSA_KEYGEN_PCT and
+#     OPENPQC_SLHDSA_KEYGEN_PCT (below), which no option turns off;
+#   - ML-KEM's stack burn (OPENPQC_MLKEM_STACK_BURN, ON by default): FIPS 203, Section 3.3, asks that intermediate
+#     values be destroyed, and without the burn the copies the compiler makes of them stay on the stack; OFF is
+#     refused;
+#   - with the tests, a linker with --wrap: the test core_rng of the module's DRBG and its entropy input
+#     (tests/Core/CMakeLists.txt) replaces getrandom(), getpid() and clock_gettime() through it, and without it the
+#     test would not exist.
+if(OPENPQC_FIPS140_3)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+       OR NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"
+       OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "OPENPQC_FIPS140_3 needs x86-64 Linux with GCC or Clang (system ${CMAKE_SYSTEM_NAME}, "
+                            "processor ${CMAKE_SYSTEM_PROCESSOR}, pointers of ${CMAKE_SIZEOF_VOID_P} bytes, C "
+                            "${CMAKE_C_COMPILER_ID}, C++ ${CMAKE_CXX_COMPILER_ID}): the module's integrity test reads "
+                            "its ELF64 image as loaded (__ehdr_start, _DYNAMIC) and knows x86-64's dynamic "
+                            "relocations, its DRBG is seeded from getrandom(), and its self-tests run from a library "
+                            "constructor")
+    endif()
+    if(DEFINED OPENPQC_SYCL_SHARED AND NOT OPENPQC_SYCL_SHARED)
+        message(FATAL_ERROR "OPENPQC_FIPS140_3 and OPENPQC_SYCL_SHARED=OFF cannot be combined: a static GPU library "
+                            "openpqc_sycl would give every program that links it all the functions of the GPU "
+                            "backends, those that take the randomness from the caller included (FIPS 203, Section "
+                            "3.3: for testing only), which neither check the module's state nor report \"not "
+                            "approved\"; the shared one exports the GPU API only. Configure without "
+                            "OPENPQC_SYCL_SHARED (ON is its default)")
+    endif()
+    if(OPENPQC_EXTERNAL_RANDOMBYTES)
+        message(FATAL_ERROR "OPENPQC_FIPS140_3 and OPENPQC_EXTERNAL_RANDOMBYTES cannot be combined: in FIPS 140-3 "
+                            "mode the module's own HMAC_DRBG is the source of randomness, never the application's "
+                            "opqc_external_randombytes(); configure without OPENPQC_EXTERNAL_RANDOMBYTES")
+    endif()
+    if(NOT BUILD_SHARED_LIBS)
+        message(FATAL_ERROR "OPENPQC_FIPS140_3 needs BUILD_SHARED_LIBS=ON (its default in this mode; a cache from a "
+                            "configuration without the mode keeps OFF: set it ON or start a new build directory): "
+                            "the module is the shared library libopenpqc, whose integrity value is computed when it "
+                            "is linked; a static library has no module image of its own to check")
+    endif()
+    if(NOT OPENPQC_MLKEM_STACK_BURN)
+        message(FATAL_ERROR "OPENPQC_FIPS140_3 needs OPENPQC_MLKEM_STACK_BURN=ON (its default): FIPS 203, Section "
+                            "3.3, asks that ML-KEM's intermediate values be destroyed, and without the stack burn "
+                            "the copies that the compiler makes of them in stack slots of its own stay after a call")
+    endif()
+    if(OPENPQC_BUILD_TESTS)
+        # the same check, and the same cache variable, as tests/Core/CMakeLists.txt's
+        include(CheckLinkerFlag)
+        check_linker_flag(C "-Wl,--wrap=getrandom" OPENPQC_HAVE_LINKER_WRAP)
+        if(NOT OPENPQC_HAVE_LINKER_WRAP)
+            message(FATAL_ERROR "OPENPQC_FIPS140_3 with the tests needs a linker with --wrap (GNU ld, gold, lld, "
+                                "mold): the test core_rng of the module's DRBG gives it a fixed entropy input, process "
+                                "id and clocks through -Wl,--wrap=getrandom, --wrap=getpid and --wrap=clock_gettime, "
+                                "and compares its output with known answers; it is the only test of how the DRBG is "
+                                "seeded. Use such a linker, or configure with OPENPQC_BUILD_TESTS=OFF")
+        endif()
+    endif()
+    find_package(Threads REQUIRED)
+    add_compile_definitions(OPENPQC_FIPS140_3=1)
+endif()
+
 # Sanitizers: the flags go into CMAKE_C_FLAGS and CMAKE_CXX_FLAGS, with which every target (the
 # references' included) is compiled and linked, and which the build files below look at to recognise a
 # sanitizer build: cmake/OpenPQCWarnings.cmake drops its limit on frame sizes under AddressSanitizer,
@@ -89,6 +177,7 @@ endif()
 include(cmake/OpenPQCWarnings.cmake)   # openpqc_strict_warnings, openpqc_warnings, openpqc_c_warnings
 include(cmake/OpenPQCNative.cmake)     # OPENPQC_NATIVE_ARCH / _FLAGS (for the reference)
 include(cmake/OpenPQCLibrary.cmake)    # openpqc_library_objects
+include(cmake/OpenPQCFips.cmake)       # FIPS 140-3 mode: openpqc_fips_core_objects, openpqc_fips_link_module
 include(GNUInstallDirs)
 # The headers are installed under <prefix>/include/openpqc, keeping their layout (Core/, ML/KEM/, ...): they
 # include each other by these paths, and the directories' names are too general for <prefix>/include itself.
@@ -258,13 +347,25 @@ add_subdirectory(src/ML/DSA)
 add_subdirectory(src/SLH/DSA)
 add_subdirectory(include/openpqc)   # the common C API: openpqc/common.h, kem.h, sig.h, testing.h
 
-# ML-KEM with the pair-wise consistency test after KeyGen (FIPS 140-3; FIPS 203, Section 7.1, item 4):
-# the definition is given to the library's own objects only (openpqc_mlkem and openpqc_mlkem_testrng),
-# so the test is a property of the compiled library; KeyGen then also draws the test's m from the RNG.
-if(OPENPQC_MLKEM_KEYGEN_PCT)
+# The pair-wise consistency tests after KeyGen (FIPS 140-3 IG 10.3.A, Additional Comment 1), in FIPS 140-3 mode only:
+# the definitions go to the library's own objects (openpqc_<scheme>_objects, of which the library openpqc, the
+# per-scheme libraries of the tests and, through cmake/OpenPQCLibrary.cmake, the testing interfaces are made), so
+# that each test is a property of the compiled library. The GPU backends' objects get theirs in the schemes'
+# directories (src/ML/KEM/CMakeLists.txt, ...).
+#   ML-KEM (FIPS 203, Section 7.1, item 4): OPENPQC_MLKEM_KEYGEN_PCT; KeyGen then also draws the test's m from the
+#   RNG (scheme/ml_kem.hpp);
+#   ML-DSA: OPENPQC_MLDSA_KEYGEN_PCT; KeyGen signs a fixed message with the new sk and verifies it with the new pk,
+#   deterministically: no randomness is drawn (scheme/ml_dsa.hpp);
+#   SLH-DSA: OPENPQC_SLHDSA_KEYGEN_PCT, in the same way (src/SLH/DSA/CMakeLists.txt).
+# The ordinary build has none of them; the tests compile copies of the schemes with them (tests/ML-KEM, ...).
+if(OPENPQC_FIPS140_3)
     target_compile_definitions(openpqc_mlkem_objects PRIVATE OPENPQC_MLKEM_KEYGEN_PCT)
+    target_compile_definitions(openpqc_mldsa_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
+    target_compile_definitions(openpqc_slhdsa_objects PRIVATE OPENPQC_SLHDSA_KEYGEN_PCT)
+    message(STATUS "OpenPQC pair-wise consistency tests after KeyGen: ON (FIPS 140-3 mode; ML-KEM, ML-DSA, SLH-DSA)")
+else()
+    message(STATUS "OpenPQC pair-wise consistency tests after KeyGen: OFF (part of FIPS 140-3 mode only)")
 endif()
-message(STATUS "OpenPQC ML-KEM pair-wise consistency test after KeyGen: ${OPENPQC_MLKEM_KEYGEN_PCT}")
 
 # ML-KEM without the stack burn (OPENPQC_MLKEM_STACK_BURN=OFF), in the same way: the definition
 # OPENPQC_MLKEM_NO_STACK_BURN goes to the library's own objects only. Every call then still zeroizes the
@@ -276,24 +377,53 @@ if(NOT OPENPQC_MLKEM_STACK_BURN)
 endif()
 message(STATUS "OpenPQC ML-KEM stack burn after every call: ${OPENPQC_MLKEM_STACK_BURN}")
 
-# ML-DSA with the pair-wise consistency test after KeyGen (FIPS 140-3; scheme/ml_dsa.hpp), in the same way:
-# the definition goes to the library's own objects only (openpqc_mldsa and openpqc_mldsa_testrng, and the
-# GPU backend openpqc_mldsa_sycl, src/ML/DSA/CMakeLists.txt), and KeyGen then signs a fixed message
-# with the new sk and verifies it with the new pk (deterministically: no randomness is drawn).
-if(OPENPQC_MLDSA_KEYGEN_PCT)
-    target_compile_definitions(openpqc_mldsa_objects PRIVATE OPENPQC_MLDSA_KEYGEN_PCT)
-endif()
-message(STATUS "OpenPQC ML-DSA pair-wise consistency test after KeyGen (CPU and SYCL): ${OPENPQC_MLDSA_KEYGEN_PCT}")
-
-# FIPS 140-3 mode: the switch that the module's features will hang on (docs/FIPS-140-3.md lists them in order).
-# It changes nothing yet: the libraries built with it ON are the ordinary ones, and none of them is a FIPS 140-3
-# module. When the first feature lands, the definition it adds must be part of the library's ABI tag, so that code
-# compiled with and without it cannot be mixed (the module-boundary decision).
+# FIPS 140-3 mode (above; src/Core/opqc_fips.h): the state of the module, its self-tests and its indicator
+# (src/Core/opqc_fips.c) and its integrity test (src/Core/opqc_fips_integrity.c) are objects of the library openpqc
+# only, compiled with OPQC_FIPS_MODULE_BUILD. The static libraries of the tests (openpqc_core, openpqc_core_testrng,
+# and through them the per-scheme ones), which contain the module's other objects for the algorithm tests, get a
+# test-only build of opqc_fips.c (OPQC_FIPS_TEST_STATIC_LIBRARY: the same state, error state, indicator and RNG
+# routing, without the power-on self-tests, which need the sealed shared library and every scheme). Every build
+# compiles opqc_fips.c into openpqc: outside the mode it defines the two functions of openpqc/fips.h only.
+set(_openpqc_fips_module_definitions "")
 if(OPENPQC_FIPS140_3)
-    message(WARNING "OPENPQC_FIPS140_3 is a work in progress and has no effect yet: this build is the ordinary "
-                    "library, not a FIPS 140-3 module (docs/FIPS-140-3.md)")
+    set(_openpqc_fips_module_definitions OPQC_FIPS_MODULE_BUILD)
 endif()
-message(STATUS "OpenPQC FIPS 140-3 mode (work in progress, no effect yet): ${OPENPQC_FIPS140_3}")
+openpqc_fips_core_objects(openpqc_fips_objects SOURCES src/Core/opqc_fips.c
+                          DEFINITIONS ${_openpqc_fips_module_definitions})
+if(OPENPQC_FIPS140_3)
+    # the integrity test, and the module's own memcpy, memmove and memset with it (cmake/OpenPQCFips.cmake)
+    openpqc_fips_core_objects(openpqc_fips_integrity_objects SOURCES src/Core/opqc_fips_integrity.c
+                              DEFINITIONS OPQC_FIPS_MODULE_BUILD)
+    # The static libraries openpqc_core (openpqc::core) and, on it, openpqc_mlkem, openpqc_mldsa and openpqc_slhdsa
+    # (openpqc::mlkem, ...) hold the module's code without its power-on self-tests and integrity test: they report
+    # the state operational and their services approved without either. They are for the tests only, and only a
+    # build with the tests gives them the test build of the module's state (OPQC_FIPS_TEST_STATIC_LIBRARY). In a
+    # build without the tests (a project that includes OpenPQC with add_subdirectory, say), the targets still exist
+    # (src/*/CMakeLists.txt), but compiling anything that links them stops with an error that says so
+    # (cmake/openpqc_fips_test_only.c), and the benchmarks, which link them, are not built (below).
+    if(OPENPQC_BUILD_TESTS)
+        openpqc_fips_core_objects(openpqc_fips_testlib_objects SOURCES src/Core/opqc_fips.c
+                                  DEFINITIONS OPQC_FIPS_TEST_STATIC_LIBRARY)
+        target_sources(openpqc_core PRIVATE $<TARGET_OBJECTS:openpqc_fips_testlib_objects>)
+        if(TARGET openpqc_core_testrng)
+            target_sources(openpqc_core_testrng PRIVATE ${PROJECT_SOURCE_DIR}/src/Core/opqc_fips.c)
+            target_compile_definitions(openpqc_core_testrng PRIVATE OPQC_FIPS_TEST_STATIC_LIBRARY)
+        endif()
+    elseif(TARGET openpqc_core)
+        target_sources(openpqc_core INTERFACE ${PROJECT_SOURCE_DIR}/cmake/openpqc_fips_test_only.c)
+    endif()
+    # the tool that seals the module after its link (cmake/OpenPQCFips.cmake), run on the build machine
+    add_executable(openpqc_fips_seal cmake/openpqc_fips_seal.c)
+    target_include_directories(openpqc_fips_seal PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(openpqc_fips_seal PRIVATE openpqc_strict_warnings)
+    set_target_properties(openpqc_fips_seal PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+endif()
+if(OPENPQC_FIPS140_3)
+    message(STATUS "OpenPQC FIPS 140-3 mode: ON (libopenpqc is built and sealed as the module; not a validated "
+                   "module, docs/FIPS-140-3.md)")
+else()
+    message(STATUS "OpenPQC FIPS 140-3 mode: OFF")
+endif()
 
 message(STATUS "OpenPQC randomness from the application's opqc_external_randombytes(): ${OPENPQC_EXTERNAL_RANDOMBYTES}")
 
@@ -302,7 +432,11 @@ message(STATUS "OpenPQC randomness from the application's opqc_external_randomby
 # APIs from C or C++ (a C program links it with the C compiler alone: cmake/OpenPQCLibrary.cmake), and the
 # C++ APIs (mlkem.hpp, mldsa.hpp, slhdsa.hpp: C++20). Hidden visibility: a shared library exports the C APIs
 # only. The testing interfaces are never in it (OpenPQC::testing below).
-set(_openpqc_objects $<TARGET_OBJECTS:openpqc_core_objects> $<TARGET_OBJECTS:openpqc_api_objects>)
+set(_openpqc_objects $<TARGET_OBJECTS:openpqc_core_objects> $<TARGET_OBJECTS:openpqc_api_objects>
+                     $<TARGET_OBJECTS:openpqc_fips_objects>)
+if(OPENPQC_FIPS140_3)
+    list(APPEND _openpqc_objects $<TARGET_OBJECTS:openpqc_fips_integrity_objects>)
+endif()
 foreach(_openpqc_scheme IN ITEMS mlkem mldsa slhdsa)
     string(TOUPPER ${_openpqc_scheme} _openpqc_upper)
     if(OPENPQC_WITH_${_openpqc_upper})
@@ -333,6 +467,11 @@ endif()
 set_target_properties(openpqc PROPERTIES LINKER_LANGUAGE C
                                          VERSION ${PROJECT_VERSION}
                                          SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
+# FIPS 140-3 mode: the module's link (-Bsymbolic, no RUNPATH, threads, the list of its exports), the check of its
+# exports and imports, and its seal (cmake/OpenPQCFips.cmake)
+if(OPENPQC_FIPS140_3)
+    openpqc_fips_link_module(openpqc MODULE)
+endif()
 
 # The testing interfaces (openpqc/testing.h; FIPS 203, Section 3.3; FIPS 204, Section 6; FIPS 205, Section 9):
 # randomness that the caller chooses and the internal functions, for known-answer tests and ACVP clients, in a
@@ -426,10 +565,36 @@ endif()
 if(OPENPQC_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+    # FIPS 140-3 mode: the integrity test with a preloaded memcpy, and a program that is not position-independent
+    # (cmake/OpenPQCFips.cmake)
+    if(OPENPQC_FIPS140_3)
+        openpqc_fips_program_tests()
+    endif()
+    # fips_configure: the configurations that FIPS 140-3 mode refuses (above) are refused, each with its message
+    # (tests/fips_configure.cmake), in scratch build directories; in every build with the tests, where the mode can
+    # be configured at all
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"
+       AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+       AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CROSSCOMPILING)
+        add_test(NAME fips_configure
+                 COMMAND ${CMAKE_COMMAND} -DSOURCE=${PROJECT_SOURCE_DIR} -DWORK=${PROJECT_BINARY_DIR}/tests/fips_configure
+                         "-DGENERATOR=${CMAKE_GENERATOR}" "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+                         "-DC_COMPILER=${CMAKE_C_COMPILER}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                         -P ${PROJECT_SOURCE_DIR}/tests/fips_configure.cmake)
+        set_tests_properties(fips_configure PROPERTIES TIMEOUT 900)
+    endif()
 endif()
 
+# The benchmarks link the static libraries of the schemes (openpqc::mlkem, ...), which in FIPS 140-3 mode exist only
+# for the tests (above)
 if(OPENPQC_BUILD_BENCHMARKS)
-    add_subdirectory(bench)
+    if(OPENPQC_FIPS140_3 AND NOT OPENPQC_BUILD_TESTS)
+        message(STATUS "OpenPQC benchmarks: not built (FIPS 140-3 mode without OPENPQC_BUILD_TESTS: they link the "
+                       "static libraries that hold the module's code without its self-tests, which this mode has "
+                       "for the tests only)")
+    else()
+        add_subdirectory(bench)
+    endif()
 endif()
 
 # Demos and example programs (examples/) and application demos (applications/); the example
@@ -458,13 +623,18 @@ install(EXPORT OpenPQCTargets NAMESPACE OpenPQC:: DESTINATION ${CMAKE_INSTALL_LI
 
 # The headers: Core's C and C++ APIs, and of each scheme the C API and its C++ API (the files they include). The
 # scheme layers, the math cores and the GPU backends' internals stay in the source tree.
+# Not installed, being internal to the library: opqc_drbg.h and opqc_fips.h, which declare functions of the library
+# that are hidden in the module and absent outside FIPS mode, and opqc_hmac.h, the header-only HMAC that the DRBG and
+# the integrity test use: no installed header includes it, and an application that compiled it would run a copy of
+# HMAC of its own, outside the FIPS 140-3 module and its self-tests
 install(DIRECTORY src/Core/ DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core
-        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp" PATTERN "sycl" EXCLUDE)
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp" PATTERN "sycl" EXCLUDE
+                       PATTERN "opqc_drbg.h" EXCLUDE PATTERN "opqc_fips.h" EXCLUDE PATTERN "opqc_hmac.h" EXCLUDE)
 install(FILES ${PROJECT_BINARY_DIR}/include/Core/openpqc_version.h DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR}/Core)
 # The common API (openpqc/*.h, *.hpp), without the testing interfaces (openpqc/testing.h, testing.hpp), whose
 # library is not installed
 install(FILES include/openpqc/common.h include/openpqc/kem.h include/openpqc/sig.h include/openpqc/openpqc.h
-              include/openpqc/common.hpp include/openpqc/openpqc.hpp
+              include/openpqc/fips.h include/openpqc/common.hpp include/openpqc/openpqc.hpp
         DESTINATION ${OPENPQC_INSTALL_INCLUDEDIR})
 foreach(_openpqc_scheme IN ITEMS "ML/KEM:mlkem" "ML/DSA:mldsa" "SLH/DSA:slhdsa")
     string(REPLACE ":" ";" _openpqc_parts ${_openpqc_scheme})

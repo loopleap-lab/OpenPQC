@@ -74,21 +74,22 @@
  *
  * Randomness. opqc_sycl_mldsa_keypair, opqc_sycl_mldsa_sign and
  * opqc_sycl_mldsa_sign_one_key draw xi and rnd on the host from Core's
- * opqc_randombytes (Core/opqc_platform.h: a source that the application
- * registered with opqc_set_randombytes, or else the default, the operating
- * system's RNG unless the libraries are built with OPENPQC_EXTERNAL_RANDOMBYTES;
- * FIPS 204, Section 3.6.1: the module, not the caller, generates the
- * randomness), 32 bytes per operation and launch, into page-locked host memory
- * of the context, from which they are copied to the device and wiped at once; in
- * device memory they are wiped after the launch, whatever happened. They never
- * pass through pageable memory, whose copies the CUDA driver stages through
- * buffers of its own, out of the library's reach (NVIDIA's driver has been seen to
- * keep copies of small page-locked transfers in its own mappings too). The
- * randomized calls check their arguments before they draw anything. Signing with
- * rnd = 0^32 is the deterministic variant. HashML-DSA runs through the external-mu
- * functions, with mu computed on the host (openpqc_mldsaNN_external_mu does not
- * cover it; mu = H(tr || 1 || |ctx| || ctx || OID || PH(M), 64), FIPS 204,
- * Algorithm 4).
+ * opqc_randombytes (Core/opqc_platform.h: in FIPS 140-3 mode the module's
+ * HMAC_DRBG, which refuses every other source; otherwise a source that the
+ * application registered with opqc_set_randombytes, or else the default, the
+ * operating system's RNG unless the libraries are built with
+ * OPENPQC_EXTERNAL_RANDOMBYTES; FIPS 204, Section 3.6.1: the module, not the
+ * caller, generates the randomness), 32 bytes per operation and launch, into
+ * page-locked host memory of the context, from which they are copied to the
+ * device and wiped at once; in device memory they are wiped after the launch,
+ * whatever happened. They never pass through pageable memory, whose copies the
+ * CUDA driver stages through buffers of its own, out of the library's reach
+ * (NVIDIA's driver has been seen to keep copies of small page-locked transfers in
+ * its own mappings too). The randomized calls check their arguments before they
+ * draw anything. Signing with rnd = 0^32 is the deterministic variant. HashML-DSA
+ * runs through the external-mu functions, with mu computed on the host
+ * (openpqc_mldsaNN_external_mu does not cover it; mu = H(tr || 1 || |ctx| || ctx
+ * || OID || PH(M), 64), FIPS 204, Algorithm 4).
  *
  * Status. `status` is a device buffer of n int32_t, 4-byte aligned (as the
  * buffers of opqc_sycl_mldsa_malloc are; a misaligned one returns -1). It receives
@@ -132,11 +133,13 @@
  *                         key was refused (Status, above); it comes before
  *                         OPENPQC_ERR_SIGNING_LIMIT
  *   OPENPQC_ERR_SIGNING_LIMIT  signing without a status buffer (above)
- *   OPENPQC_ERR_PCT       KeyGen built with OPENPQC_MLDSA_KEYGEN_PCT: a
- *                                    key pair failed the pair-wise consistency
- *                                    test (below)
- *   OPQC_SYCL_MLDSA_SELF_TEST_FAIL   create: the device computed a wrong result
- *                                    in the self-test, and no context was created
+ *   OPENPQC_ERR_PCT       KeyGen with the pair-wise consistency test
+ *                                    (FIPS 140-3 mode): a key pair failed it, or
+ *                                    a part of it did not run (below)
+ *   OPQC_SYCL_MLDSA_SELF_TEST_FAIL   create, where it runs the self-test
+ *                                    (below): the device computed a wrong
+ *                                    result in the self-test, and no context
+ *                                    was created
  * The GPU's -1 and -2 are not the CPU library's codes of the same values
  * (OPENPQC_ERR_INVALID_SIGNATURE, OPENPQC_ERR_INVALID_ARGUMENT). A
  * KeyGen call (keypair, keypair_derand) that fails with any code but
@@ -187,12 +190,12 @@
  * Zeroization (FIPS 204, Section 3.6.3). Secret intermediate values kept in
  * device memory between the stages of a call are zeroized when the call ends, and
  * the arithmetic stages clear their local memory. A signing call also zeroizes
- * mu of every operation, which is computed from the message, and its workspace
- * copy of the context string, which is part of M' (Section 3.6.3: a confidential
- * message; the CPU library destroys mu after Sign), also when a key is refused
- * or a signature reaches the signing limit; it leaves the challenges c of its
- * attempts, and their flags, until later calls overwrite them or destroy
- * zeroizes the workspace (the CPU library destroys c at the end of each attempt).
+ * mu of every operation, which is computed from the message, its workspace copy
+ * of the context string, which is part of M' (Section 3.6.3: a confidential
+ * message; the CPU library destroys mu after Sign), and the challenges c of its
+ * attempts and their result flags, as the CPU library destroys c at the end of
+ * each attempt: after every launch, in every build, also when a key is refused, a
+ * signature reaches the signing limit, or the randomness of a later launch fails.
  * A verification call zeroizes what it computed as well, since the inputs of a
  * verification may have to stay confidential (Section 3.6.3: a signature used as
  * a bearer token, a confidential message): every value except the matrix A^,
@@ -207,28 +210,39 @@
  * kernels wrote then stays in device memory until the driver reuses it). The
  * caller's buffers are the caller's to clear.
  *
- * Self-test. opqc_sycl_mldsa_create runs, on the device, a KeyGen, a
- * deterministic signature, and the verification of that signature and of a
- * tampered copy, of fixed inputs, and compares the results with the CPU
- * library's (a known-answer test at start-up, as FIPS 140-3 asks of a module; the
- * compilers of device code have been seen to miscompile code like this, and some
- * compile it at run time, on the machine that runs it). A device that computes a
- * wrong result gets no context. It costs one call of each, and on a device whose
- * code is compiled at run time (Intel GPUs, AdaptiveCpp) that compilation happens
- * in create. Create zeroizes the whole workspace after the self-test, so that a
- * new context holds none of its values (they are public, but lie in sections
- * that hold secrets otherwise); a context that fails there gives -2 and no
- * context.
+ * Self-test, in FIPS 140-3 mode or with the developer definition
+ * OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST. There opqc_sycl_mldsa_create runs, on the
+ * device, a KeyGen, a deterministic signature, and the verification of that
+ * signature and of a tampered copy, of fixed inputs, and compares the results
+ * with the CPU library's (a known-answer test at start-up, as FIPS 140-3 asks of
+ * a module; the compilers of device code have been seen to miscompile code like
+ * this, and some compile it at run time, on the machine that runs it). An
+ * ordinary build runs none and holds neither its code nor its answers, so it has
+ * no known-answer check of the device: only the project's tests compare the
+ * device's results with the CPU library's. The developer definition is a compile
+ * definition for the project's tests, not a CMake option, and no target of the
+ * libraries gives it: the white-box test mldsa_sycl_faults compiles the backend
+ * with it, and a build that gives it to every object (CMAKE_CXX_FLAGS) has the
+ * self-test in its libraries too. A device that computes a wrong result gets no
+ * context. It costs one call of each, and on a device whose code is compiled at
+ * run time (Intel GPUs, AdaptiveCpp) that compilation happens in create. Create
+ * zeroizes the whole workspace after the self-test, so that a new context holds
+ * none of its values (they are public, but lie in sections that hold secrets
+ * otherwise); a context that fails there gives -2 and no context.
  *
- * Pair-wise consistency test. Built with the CMake option
- * OPENPQC_MLDSA_KEYGEN_PCT (which also sets it for the CPU libraries; FIPS 140-3
- * asks the test of validated modules), KeyGen signs the empty message with
- * each key pair it makes (deterministically, with an empty context string) and
- * verifies the signature under its public key, all on the device. The pk and sk
- * of a pair that fails are overwritten with zeros, and the call returns
- * OPENPQC_ERR_PCT (the randomized call after computing all its pairs).
- * KeyGen then costs about as much as KeyGen, Sign and Verify together. Without it,
- * KeyGen tests nothing, as the CPU library without the option.
+ * Pair-wise consistency test, in FIPS 140-3 mode only (FIPS 140-3 asks the test
+ * of validated modules; the mode gives the CPU library its test too, and the
+ * CMake option OPENPQC_MLDSA_KEYGEN_PCT that gave an ordinary build the test no
+ * longer exists). There KeyGen signs the empty message with each key pair it
+ * makes (deterministically, with an empty context string) and verifies the
+ * signature under its public key, all on the device. The pk and sk of a pair that
+ * fails are overwritten with zeros, and the call returns OPENPQC_ERR_PCT (the
+ * randomized call after computing all its pairs); the other pairs keep their
+ * keys. A pair counts as passed only when the test's last kernel has seen it
+ * pass. If that kernel does not run for a launch, every pair of the launch is
+ * overwritten with zeros and counts as failed.
+ * KeyGen then costs about as much as KeyGen, Sign and Verify together. In an
+ * ordinary build KeyGen tests nothing, as the ordinary CPU library.
  *
  * Threads. A context may be used from several host threads: their calls take
  * turns (each holds the context's lock while it queues or runs its work; memcpy
@@ -261,10 +275,12 @@ typedef struct opqc_sycl_mldsa opqc_sycl_mldsa;
  * which the environment variable OPENPQC_SYCL_DEVICE=<index> can set; a
  * malformed value or an index out of range returns -1, openpqc_sycl.h). Device
  * memory for `max_batch` operations per launch is allocated -- about 47, 73 and
- * 114 KiB per operation for ML-DSA-44, -65 and -87 (2.4, 3.3 and 4.6 KiB more with
- * OPENPQC_MLDSA_KEYGEN_PCT); larger calls are split into launches of max_batch
- * operations. Then the self-test runs (above): 0, -1, -2 or
- * OPQC_SYCL_MLDSA_SELF_TEST_FAIL, and *ctx is NULL unless 0.
+ * 114 KiB per operation for ML-DSA-44, -65 and -87 (2.4, 3.3 and 4.6 KiB more in
+ * FIPS 140-3 mode, for the pair-wise consistency test); larger calls are split
+ * into launches of max_batch operations. In FIPS 140-3 mode, or with the
+ * developer definition, the self-test then runs (above). Returns 0, -1, -2 or
+ * (where the self-test runs) OPQC_SYCL_MLDSA_SELF_TEST_FAIL, and *ctx is NULL
+ * unless 0.
  */
 OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_mldsa_create(opqc_sycl_mldsa **ctx, int level, size_t max_batch, int device);
 OPENPQC_API void opqc_sycl_mldsa_destroy(opqc_sycl_mldsa *ctx);

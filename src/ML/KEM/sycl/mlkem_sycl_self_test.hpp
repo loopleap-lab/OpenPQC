@@ -1,7 +1,8 @@
 // Copyright (c) The OpenPQC project authors
 // SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 //
-// mlkem_sycl_self_test.hpp  --  the inputs and known answers of the self-test that opqc_sycl_mlkem_create runs
+// mlkem_sycl_self_test.hpp  --  the inputs and known answers of the self-test that opqc_sycl_mlkem_create runs in
+// FIPS 140-3 mode, or where the developer definition OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST is given (mlkem_sycl.cpp)
 //
 // The self-test (mlkem_sycl.cpp, self_test; openpqc_mlkem_sycl.h, Self-test) runs, on the new context's device,
 // ML-KEM.KeyGen_internal of d || z = coin(0) .. coin(63), ML-KEM.Encaps_internal under that key with m = coin(64) ..

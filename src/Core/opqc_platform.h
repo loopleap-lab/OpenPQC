@@ -43,6 +43,37 @@ OPENPQC_API void opqc_zeroize(void *p, size_t len);
  * A nonzero result of any source is a failure: opqc_randombytes then zeroizes
  * out, whatever the source wrote into it, and returns nonzero.
  *
+ * In FIPS 140-3 mode (the CMake option OPENPQC_FIPS140_3, a build of the
+ * shared library libopenpqc as the module; Core/opqc_fips.h) there is one
+ * source, the module's own random bit generator: an HMAC_DRBG with SHA-512 at
+ * a security strength of 256 bits (Core/opqc_drbg.h), the mechanism of SP
+ * 800-90A Rev. 1 (no CAVP certificate covers it), one instance for the whole
+ * process, behind a lock, so that every thread can draw. It is instantiated on
+ * the first draw with 32 bytes of entropy input and a 16-byte nonce, taken
+ * from one 48-byte getrandom() call (256 and 128 bits only if the source's
+ * output has full entropy, which the source's validation must support: SP
+ * 800-90A Rev. 1, Table 2 and Section 8.6.7; the module asks for the same
+ * number of bytes whatever the source's entropy rate), and a personalization
+ * string of the process id and the time (not counted as entropy); reseeded
+ * with 32 fresh bytes before its reseed interval of 2^16 requests runs out,
+ * and in both processes after fork() (pthread_atfork, and a check of the
+ * process id on every draw); a request longer than 2^16 bytes is served in
+ * pieces of at most 2^16 bytes. The operating system is the entropy source:
+ * FIPS 140-3 needs it to be a validated one (an ESV certificate of the
+ * platform's source), which this library cannot provide itself. The DRBG's
+ * state is set to zero when the module enters the error state, when it is
+ * unloaded and at a normal exit of the process (exit(), a return from main;
+ * not after _exit(), abort() or a fatal signal, which run no destructor). If
+ * the entropy source or the DRBG fails, the module enters the error state
+ * (Core/opqc_fips.h): opqc_randombytes and every other service fail from then
+ * on. In the error state opqc_randombytes returns OPENPQC_ERR_ERROR_STATE
+ * (-12, openpqc/common.h) with out zeroized, also a draw that was running when
+ * another thread entered it: the draw checks the module's state again after
+ * generating, under the DRBG's lock, and outputs its bytes only if the module
+ * is still operational. A successful draw is an approved service:
+ * openpqc_fips_service_approved() (openpqc/fips.h) then answers 1 on the
+ * calling thread, and 0 after a failure.
+ *
  * The result must be checked (OPQC_MUST_CHECK): after a failure out holds
  * zeros, not random bytes.
  */
@@ -59,8 +90,12 @@ typedef int (*opqc_randombytes_fn)(void *ctx, uint8_t *out, size_t len);
  * Makes fn(ctx, out, len) the source of every later opqc_randombytes call of
  * the program, in place of the default (opqc_external_randombytes or the
  * operating system, above); fn = NULL restores the default (ctx is then
- * ignored). Returns 0 when the source is in place; a nonzero value would mean
- * that nothing changed (this library accepts every source and NULL).
+ * ignored). Returns 0 when the source is in place, and a nonzero value when
+ * nothing changed. The ordinary library accepts every source and NULL. A
+ * FIPS 140-3 mode build refuses every registration, NULL included, with
+ * OPENPQC_ERR_NOT_APPROVED (-13; OPENPQC_ERR_ERROR_STATE, -12, in the error
+ * state), calls neither fn nor anything else, and keeps its HMAC_DRBG (above):
+ * an application's source is not the module's own DRBG.
  *
  * The contract:
  *   - register before other threads draw: the registration is one setting
@@ -87,9 +122,12 @@ typedef int (*opqc_randombytes_fn)(void *ctx, uint8_t *out, size_t len);
  *   - the library offers a registered source no way to reach the default
  *     one: a DRBG registered here takes its entropy input from a source of
  *     its own;
- *   - a module that FIPS 140-3 validates registers its approved random bit
- *     generator here (FIPS 203, Section 3.3; FIPS 204, Section 3.6.1;
- *     FIPS 205, Section 3.1), or links it as opqc_external_randombytes.
+ *   - the randomness of the schemes must come from an approved random bit
+ *     generator (FIPS 203, Section 3.3; FIPS 204, Section 3.6.1; FIPS 205,
+ *     Section 3.1). In FIPS 140-3 mode that is the module's own DRBG and
+ *     registration is refused (above); an ordinary build that must meet this
+ *     requirement registers an approved generator here, or links one as
+ *     opqc_external_randombytes.
  */
 OPQC_MUST_CHECK OPENPQC_API int opqc_set_randombytes(opqc_randombytes_fn fn, void *ctx);
 
@@ -101,7 +139,10 @@ OPQC_MUST_CHECK OPENPQC_API int opqc_set_randombytes(opqc_randombytes_fn fn, voi
  * system; the library has no other default (a source registered with
  * opqc_set_randombytes still comes first). A library built without the
  * option never calls it. The library variants openpqc_*_testrng are built
- * so, for the tests.
+ * so, for the tests. FIPS 140-3 mode cannot be built with the option (its
+ * source is the module's DRBG); its test variants, which are not the module,
+ * still draw from this function, and a failure of it is a failure of that
+ * draw only, not the error state.
  *
  * The contract is that of a registered source (above):
  *   - it must fill all len bytes of out and return 0, or return nonzero

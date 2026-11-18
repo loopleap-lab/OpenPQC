@@ -62,7 +62,8 @@ const openpqc_alg_info *a = openpqc_alg_info_get(OPENPQC_ML_DSA_65);    /* the s
 const openpqc_gpu_config cfg = {-1, n};             /* 1. device (-1: default), operations per launch */
 openpqc_gpu *gpu;
 if (openpqc_gpu_create(&gpu, OPENPQC_ML_DSA_65, &cfg) != OPENPQC_OK)
-    return -1;                                      /*    no such device, not enough memory, or a failed self-test */
+    return -1;                                      /*    no such device, not enough memory, or a failed self-test
+                                                           (FIPS 140-3 mode or the developer definition only) */
 uint8_t *d_pk = openpqc_gpu_malloc(gpu, n * a->public_key_bytes);       /* 2. device buffers: */
 uint8_t *d_sk = openpqc_gpu_malloc(gpu, n * a->secret_key_bytes);       /*    n operations back to back, */
 int32_t *d_status = openpqc_gpu_malloc(gpu, n * sizeof(int32_t));      /*    and a status entry for each */
@@ -847,7 +848,7 @@ It uses the GPU API's C++ layer, `openpqc/sycl.hpp`: a context `openpqc::sycl::C
 | Step | Technique | API |
 |---|---|---|
 | List the SYCL devices; the second argument picks one by index | SYCL device list | `openpqc_gpu_device_count`, `openpqc_gpu_implementation`, `openpqc_gpu_device_name`, `openpqc_gpu_device_platform` |
-| Make a context and device buffers for n operations | GPU API (setup); the context runs a known-answer self-test on the device | `openpqc::sycl::Context<KEM>` (`openpqc_gpu_create`), `openpqc::sycl::Buffer<T>` (`openpqc_gpu_malloc`) |
+| Make a context and device buffers for n operations | GPU API (setup); in FIPS 140-3 mode, or with the developer definition `OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST`, the context runs a known-answer self-test on the device (an ordinary GPU build runs none and has no known-answer check of the device) | `openpqc::sycl::Context<KEM>` (`openpqc_gpu_create`), `openpqc::sycl::Buffer<T>` (`openpqc_gpu_malloc`) |
 | The GPU makes n key pairs, then the program waits for the device (it waits like this after every device call) | ML-KEM-768 KeyGen, device call | `Context::keygen_async`, `Context::sync` |
 | The GPU encapsulates to each public key | ML-KEM-768 Encaps, device call | `Context::encaps_async` |
 | The GPU decapsulates; the host copies the results back and compares the secrets; every status entry must be `OPENPQC_OK` | ML-KEM-768 Decaps, device call; constant-time compare (its run time does not depend on the bytes) | `Context::decaps_async`, `Buffer::copy_to`, `openpqc::secret<N>::operator==` |
@@ -943,7 +944,7 @@ The GPU signs and verifies a batch of 10 ML-DSA-65 messages of different lengths
 
 | Step | Technique | API |
 |---|---|---|
-| List the SYCL devices, open a context on one (it runs a known-answer self-test), allocate device memory, copy the messages and their offsets over | GPU API (setup) | `openpqc_gpu_device_count`, `openpqc_gpu_device_name`, `openpqc_gpu_create`, `openpqc_gpu_malloc`, `openpqc_gpu_memcpy` |
+| List the SYCL devices, open a context on one (in FIPS 140-3 mode, or with the developer definition `OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST`, it runs a known-answer self-test; an ordinary GPU build runs none), allocate device memory, copy the messages and their offsets over | GPU API (setup) | `openpqc_gpu_device_count`, `openpqc_gpu_device_name`, `openpqc_gpu_create`, `openpqc_gpu_malloc`, `openpqc_gpu_memcpy` |
 | Make n key pairs on the GPU, then wait for the device (the program waits like this after every device call); every status entry must be `OPENPQC_OK` | ML-DSA-65 KeyGen, GPU batch | `openpqc_gpu_sig_keygen`, `openpqc_gpu_sync` |
 | Sign message i with key i; report the rounds of the signing loop | ML-DSA-65 Sign (hedged), GPU batch | `openpqc_gpu_sig_sign`, `openpqc_gpu_experimental_sign_stats` |
 | Verify the signatures on the GPU, then again after one bit of one message is flipped: its status entry must be `OPENPQC_ERR_INVALID_SIGNATURE`, the others `OPENPQC_OK` | ML-DSA-65 Verify, GPU batch | `openpqc_gpu_sig_verify` |

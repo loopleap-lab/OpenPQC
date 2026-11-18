@@ -38,9 +38,9 @@ therefore run the same arithmetic code.
 | Algorithms 13–15 K-PKE | `kpke::keygen`, `kpke::encrypt`, `kpke::decrypt` (`scheme/kpke.hpp`) |
 | Algorithms 16–18 internal algorithms | `internal::keygen`, `internal::encaps`, `internal::decaps` (`scheme/mlkem_internal.hpp`) |
 | Algorithms 19–21 ML-KEM | `ml_kem_keygen`, `ml_kem_encaps`, `ml_kem_decaps` and the `_derand` variants, each called as `keygen`, `encaps`, `decaps`, ..., which run it in a frame of its own and then overwrite the stack it used (`scheme/ml_kem.hpp`) |
-| §3.3 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which draws from a source the application registered with `opqc_set_randombytes`, or else from the operating system, and fails closed; FIPS 203 requires an approved RBG (SP 800-90A/B/C) of at least 128, 192 and 256 bits of strength for ML-KEM-512, -768 and -1024, which the integrator supplies (top-level README, [Security notes](../../../README.md#security-notes)) |
+| §3.3 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which draws from a source the application registered with `opqc_set_randombytes`, or else from the operating system, and fails closed; FIPS 203 requires an approved RBG (SP 800-90A/B/C) of at least 128, 192 and 256 bits of strength for ML-KEM-512, -768 and -1024, which the integrator supplies (top-level README, [Security notes](../../../README.md#security-notes)); in FIPS 140-3 mode it is the module's own HMAC_DRBG (SHA-512, 256 bits), and registering another source is refused ([FIPS 140-3 mode](#fips-140-3-mode)) |
 | §3.3 controlled access to the internal functions | `openpqc_testing_mlkemNNN_encaps_derand` takes m from the caller: a testing interface, in `OpenPQC::testing` (`openpqc/testing.h`), not in the library `openpqc`; `keygen_from_seed` takes d ‖ z, for a seed stored in place of dk ([Usage](#usage)); K-PKE is not offered as a scheme of its own |
-| §7.1 pair-wise consistency | `check_pair_wise_consistency` (item 4), run by KeyGen when `mlkem.cpp` is compiled with `OPENPQC_MLKEM_KEYGEN_PCT` (the CMake option of that name; see [Usage](#usage)); the checks of §7.1 for a key pair that the application imports or holds: `openpqc_mlkemNNN_check_keypair` |
+| §7.1 pair-wise consistency | `check_pair_wise_consistency` (item 4), run by KeyGen when `mlkem.cpp` is compiled with `OPENPQC_MLKEM_KEYGEN_PCT`, which FIPS 140-3 mode gives the library (and only that mode; see [Usage](#usage)), where a failure also puts the module into its error state; the checks of §7.1 for a key pair that the application imports or holds: `openpqc_mlkemNNN_check_keypair` |
 | §7.2 encapsulation key check | `check_encapsulation_key` (Encaps runs it); for one chunk, while decoding: `mlkem_byte_decode12_check8` (used by the GPU kernels) |
 | §7.3 decapsulation key check | `check_decapsulation_key` (Decaps runs it) |
 | §3.3 destruction of intermediate values | every `Poly` zeroizes itself when its lifetime ends, unnamed temporaries and by-value parameters included (`scheme/polynomials.hpp`); `ZeroizeOnExit` (`Core/zeroize.hpp`) destroys the secret byte strings (d ‖ z, σ, the PRF outputs, m, K, r, m′, K′, r′, K̄, c′) and the implicit-reject flag (§6.3); KeyGen, Encaps and Decaps run in frames of their own, and when they return, the stack they used is overwritten with zeros (`burn_stack`, `scheme/ml_kem.hpp`), which removes what the compiler kept in stack slots of its own (unless the library is built with the CMake option `OPENPQC_MLKEM_STACK_BURN=OFF`); `mlkem_stack` checks that they leave none of their secrets on the stack and, on x86-64, nothing that depends on their data; what remains is listed under [Destruction of intermediate values](#choices-that-differ-from-mlkem-native) |
@@ -151,7 +151,7 @@ C (link `OpenPQC::openpqc`):
 
 uint8_t pk[OPENPQC_MLKEM768_PUBLICKEYBYTES], sk[OPENPQC_MLKEM768_SECRETKEYBYTES];
 uint8_t ct[OPENPQC_MLKEM768_CIPHERTEXTBYTES], ss[OPENPQC_MLKEM_BYTES], ss2[OPENPQC_MLKEM_BYTES];
-if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||     /* randomness from the operating system */
+if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||     /* randomness from the OS, or FIPS mode's DRBG */
     openpqc_mlkem768_encaps(ct, ss, pk) != OPENPQC_OK || /* checks pk first (FIPS 203 §7.2) */
     openpqc_mlkem768_decaps(ss2, ct, sk) != OPENPQC_OK)  /* checks sk first (§7.3) */
     return -1;                                            /* an OPENPQC_ERR_* code: use none of the outputs */
@@ -214,19 +214,65 @@ built only with the tests, benchmarks or examples and never installed), as `open
 `keygen_from_seed` for a stored seed.
 
 The pair-wise consistency test that FIPS 140-3 asks of validated modules is compiled into KeyGen when `mlkem.cpp` is
-built with the definition `OPENPQC_MLKEM_KEYGEN_PCT`, which the CMake option of the same name (OFF by default) gives
-to the library (as the option `OPENPQC_MLDSA_KEYGEN_PCT` does for ML-DSA; the tests compile their own object libraries
-with it, and when the option is on, `mlkem_pct_library` checks the library as built). It is the check of FIPS 203 §7.1,
-item 4: a key encapsulated to ek with a random m must decapsulate with dk to the same key, at the cost of one
-Encaps_internal and one Decaps_internal per key pair. Its m comes from `opqc_randombytes`, so `keygen_from_seed`
+built with the definition `OPENPQC_MLKEM_KEYGEN_PCT`, which the top-level `CMakeLists.txt` gives to the library in FIPS
+140-3 mode only, as it gives ML-DSA and SLH-DSA theirs: the ordinary build has no such test, and no CMake option adds
+it (the maintainers' decision of 2026-11-17; the former option `OPENPQC_MLKEM_KEYGEN_PCT` stops the configuration,
+`cmake -U OPENPQC_MLKEM_KEYGEN_PCT` removes it from an old cache). The tests compile their own object libraries with
+the definition in every build, and in FIPS 140-3 mode `mlkem_pct_library` checks the library as built. It is the check
+of FIPS 203 §7.1, item 4: a key encapsulated to ek with a random m must decapsulate with dk to the same key, at the cost
+of one Encaps_internal and one Decaps_internal per key pair. Its m comes from `opqc_randombytes`, so `keygen_from_seed`
 then needs randomness as well. If none is available (`OPENPQC_ERR_RNG`) or the check fails (`OPENPQC_ERR_PCT`), both
-keys are zeroized. A key pair that passes is not changed: `keygen_from_seed` gives the same keys for the same seed
-with and without the check, and the known-answer tests pass unchanged. The check is a property of the compiled
-library: `scheme/ml_kem.hpp` defines KeyGen, Encaps, Decaps, the key-pair check and the stack burn in an inline
-namespace named after its configuration (the test and the burn), so an application that includes the scheme headers
-without the definition gets copies of its own under other names, which cannot take the place of the library's
-(`mlkem_pct_odr` for the test; `mlkem_config_odr`, and on Linux `mlkem_config_odr_O0`, for the burn). The definition
-applies to the CPU library only.
+keys are zeroized. A key pair that passes is not changed: `keygen_from_seed` gives the same keys for the same seed with
+and without the check, and the known-answer tests pass unchanged. The check is a property of the compiled library:
+`scheme/ml_kem.hpp` defines KeyGen, Encaps, Decaps, the key-pair check and the stack burn in an inline namespace named
+after its configuration (the test and the burn), so an application that includes the scheme headers without the
+definition gets copies of its own under other names, which cannot take the place of the library's (`mlkem_pct_odr` for
+the test; `mlkem_config_odr`, and on Linux `mlkem_config_odr_O0`, for the burn). FIPS 140-3 mode also gives the GPU
+backend its test of every key pair ([GPU backend](#gpu-backend-sycl)), and a key pair that fails the CPU library's test
+also puts the module into its error state.
+
+## FIPS 140-3 mode
+
+A library built with the CMake option `OPENPQC_FIPS140_3` is a module designed for FIPS 140-3; not validated
+([docs/FIPS-140-3.md](../../../docs/FIPS-140-3.md),
+[the security policy draft](../../../docs/FIPS-140-3-security-policy.md)). `openpqc_mlkem.h` has the contract in its
+paragraph "FIPS 140-3 mode"; in short:
+
+- Each function of the C API is a service of the module. It first checks the module's state and, in the error state,
+  returns `OPENPQC_ERR_ERROR_STATE` (-12) and writes nothing; it checks again when its computation ends, and if the
+  module entered its error state meanwhile (another thread's failed pair-wise consistency test, a failure of the
+  entropy source or the DRBG, its own draw included), it zeroizes its outputs and returns -12. It sets the calling
+  thread's approved-service indicator last (`openpqc_fips_service_approved`, `openpqc/fips.h`): 1 if the service is
+  approved and returned `OPENPQC_OK`, 0 otherwise (a refused key, ciphertext or argument, the error state). Decaps of
+  a ciphertext that implicit rejection answers returns `OPENPQC_OK` and reports 1.
+- Approved: `keygen`, `keygen_from_seed`, `encaps`, `decaps`, `check_pk`, `check_sk` and `check_keypair`.
+  `keygen_from_seed` imports a key pair in its seed format: ML-KEM.KeyGen_internal (Algorithm 16) on a seed d ‖ z
+  that an approved random bit generator of a cryptographic module generated (§3.3), with the pair-wise consistency
+  test; NIST's PQC FAQ (the answer last revised 2026-06-16) allows "generating the seed in one cryptographic module
+  and then importing or exporting it into another cryptographic module", and says that ML-KEM.KeyGen_Internal(d, z)
+  "can be accessed for this purpose". The module cannot check where a seed came from, and `keygen` never outputs its
+  own.
+- KeyGen always runs its pair-wise consistency test; a key pair that fails it is zeroized, the call returns
+  `OPENPQC_ERR_PCT`, and the module enters its error state until it is loaded again. `check_keypair`'s
+  `OPENPQC_ERR_PCT` is a verdict on the caller's key pair and leaves the module operational.
+- The module's CAST of ML-KEM (at load) runs ML-KEM-512's KeyGen from a known (d, z), Encaps with a known m, and
+  Decaps of a valid and of a modified ciphertext, against NIST ACVP vectors.
+- Outside the module: the C++ API (`mlkem.hpp`, compiled into the application; each of its operations is one call of a
+  service of the C API, whose indicator then applies), the scheme templates (`scheme/`) compiled into an application,
+  the testing interfaces (`OpenPQC::testing`; in the module's error state they return -12 and compute nothing) and
+  the GPU backend, whose services are not approved (indicator 0).
+- Tests (FIPS builds): `fips_services_mlkem` (every function on accepted and refused inputs, with the indicator preset
+  to the opposite value), `fips_services_facade`, `fips_services_cxx`, `fips_services_pct_mlkem768_keygen`,
+  `fips_services_pct_mlkem1024_keygen_from_seed` and `fips_services_pct_kem_keygen` (a forced failure of the test:
+  keys zero, -6, then every service -12), `fips_services_inflight_*` (every function of ML-KEM-512 held after its first
+  check while another thread puts the module in its error state, or failing its own draw: -12, outputs zero, indicator
+  0; held with no failure: its result; the security policy, Section 4.8), and `fips_vectors_mlkem` (all 435 ACVP cases
+  through the sealed module; label `network`). In a FIPS build `mlkem_pct_fail` and `mlkem_pct_odr` check, one KeyGen
+  per process, that a forced failure enters the error state (then `OPENPQC_ERR_ERROR_STATE`, nothing drawn or written),
+  and `mlkemNNN_ct_production` checks that registering a randomness source is refused and runs Encaps on an m drawn from
+  the DRBG in a child process whose entropy input it marks secret, so that valgrind checks the DRBG's reseed and
+  generate too (the module's DRBG, platform and ML-KEM objects as the tests' static libraries hold them, not the sealed
+  shared object).
 
 ## Using ML-KEM in an application (SP 800-227)
 
@@ -237,7 +283,8 @@ and intermediate values destroyed (SP 800-227 RS5). The rest of NIST SP 800-227 
 application, and the library cannot enforce it:
 
 - **Randomness (RS4).** An approved RBG of the parameter set's strength; the library's default is the operating
-  system's generator (top-level README, [Security notes](../../../README.md#security-notes)).
+  system's generator (top-level README, [Security notes](../../../README.md#security-notes)), and in FIPS 140-3 mode
+  the module's own HMAC_DRBG, whose entropy source the operational environment must provide validated.
 - **Ephemeral keys (RS6).** An ephemeral key pair serves one key establishment and is destroyed as soon as possible
   after it: `opqc_zeroize(sk, sizeof sk)` (`Core/opqc_platform.h`) once dk is no longer needed. The shared secret and
   every key derived from it are the application's to destroy in the same way; the C++ types `secret_key`,
@@ -284,7 +331,7 @@ const openpqc_alg_info *a = openpqc_alg_info_get(OPENPQC_ML_KEM_768);   /* the s
 const openpqc_gpu_config cfg = {-1, max_batch};              /* -1: default device (or OPENPQC_SYCL_DEVICE); 0: 4096 */
 openpqc_gpu *gpu;
 if (openpqc_gpu_create(&gpu, OPENPQC_ML_KEM_768, &cfg) != OPENPQC_OK)
-    return -1;                                               /* no such device, no memory, or the self-test failed */
+    return -1;                    /* no such device, no memory, or the self-test (FIPS 140-3 mode) failed */
 uint8_t *pk = openpqc_gpu_malloc(gpu, n * a->public_key_bytes);         /* ... likewise sk, ct, ss, ss2 */
 int32_t *enc_status = openpqc_gpu_malloc(gpu, n * sizeof(int32_t));     /* ... likewise kg_status, dec_status */
 openpqc_status rc = openpqc_gpu_kem_keygen(gpu, pk, sk, kg_status, n);  /* status: n x int32, required on every call */
@@ -330,7 +377,8 @@ the whole contract; in short:
   -10, the value of `OPENPQC_ERR_NOT_COMPUTED` (it was -2), so its entries pass through the GPU API unchanged.
 - **Return values.** `OPENPQC_ERR_INVALID_ARGUMENT` for a refused argument (nothing else is queued),
   `OPENPQC_ERR_DEVICE` for an exception of the SYCL runtime or a failed context, `OPENPQC_ERR_RNG` when the RNG fails,
-  and, from `openpqc_gpu_create`, `OPENPQC_ERR_SELF_TEST` (the backend's functions: -1, -2,
+  and, from `openpqc_gpu_create` in FIPS 140-3 mode or with the developer definition
+  `OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST`, `OPENPQC_ERR_SELF_TEST` (the backend's functions: -1, -2,
   `OPQC_SYCL_MLKEM_RNG_FAIL` -3 and `OPQC_SYCL_MLKEM_SELF_TEST_FAIL` -7). A device error found after a call has
   returned (by sync, a waiting memcpy or a later call) fails the context for good: from then on every call, sync and
   copy returns `OPENPQC_ERR_DEVICE`, whatever else is wrong with it (the backend's functions -2, except a call whose
@@ -348,10 +396,34 @@ the whole contract; in short:
   calls take turns, one shared context gives one call's throughput at a time; threads that need more should each
   have a context (with ML-DSA's backend, which has the same lock, four contexts signed about twice as fast as one
   shared by four threads on the RTX 3050).
-- **Self-test.** `openpqc_gpu_create` (in the backend, `opqc_sycl_mlkem_create`) runs a KeyGen, an Encaps and the
-  Decaps of a valid and of a tampered ciphertext of fixed inputs on the device and compares them with the CPU
-  library's results (`sycl/mlkem_sycl_self_test.hpp`; `test_mlkem_sycl` checks those answers against the CPU library).
-  There is no pair-wise consistency test of the keys the device generates.
+- **Self-test.** In FIPS 140-3 mode, or with the developer definition `OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST`,
+  `openpqc_gpu_create` (in the backend, `opqc_sycl_mlkem_create`) runs a KeyGen, an Encaps and the Decaps of a valid and
+  of a tampered ciphertext of fixed inputs on the device and compares them with the CPU library's results
+  (`sycl/mlkem_sycl_self_test.hpp`); a device that computes a wrong result gets no context. An ordinary build runs none,
+  and holds neither the self-test's code nor its answers, so it has no known-answer check of the device (the
+  maintainers' decision of 2026-11-17), and only the project's tests compare the device's results with the CPU
+  library's. The developer definition is a compile definition for the project's tests, not a CMake option, and no target
+  of the libraries gives it: the white-box test `mlkem_sycl_faults_pct` compiles the backend with it, and a build that
+  gives it to every object (`CMAKE_CXX_FLAGS`) has the self-test in its GPU library too. `test_mlkem_sycl` checks the
+  self-test's answers against the CPU library in every build, and reports by name, in an ordinary build, that create's
+  self-test does not apply.
+- **Pair-wise consistency test.** In FIPS 140-3 mode (and only there), in which `src/ML/KEM/CMakeLists.txt` gives the
+  backend's objects `OPENPQC_MLKEM_KEYGEN_PCT` as the top-level `CMakeLists.txt` gives the CPU library's, KeyGen tests
+  every key pair it generates on the device (FIPS 203 §7.1, item 4): Encaps_internal with a random m from
+  `opqc_randombytes` (in FIPS mode the module's DRBG; `keypair_derand` and `openpqc_gpu_kem_keygen_from_seed` then need
+  randomness too) and Decaps, with K and K′ compared without a branch on the bytes and the statuses of the checks of
+  §7.2 and §7.3 required. It fails closed: every value the verdict reads is first set to a failure, and a pair counts as
+  passed only when the verdict kernel has counted it as a pass, so a part of the test that the device does not run fails
+  it. If any pair fails, the whole call fails with `OPENPQC_ERR_PCT`: every key of the call is zeroed and every status
+  entry reads `OPENPQC_ERR_NOT_COMPUTED` (there is no result per key). The test's sections and m are zeroized after each
+  chunk, and the workspace grows by |c| + 72 bytes per operation. Its cost on the laptop's RTX 3050 under DPC++
+  (indicative): a launch of 4,096 ML-KEM-768 key pairs took 1.76 / 1.06 ms without the test and 6.62 / 3.99 ms with it
+  (median of 20, first and second pass), and through the GPU API, with the module's DRBG, 1.56 ms in an ordinary build
+  against 7.01 ms in FIPS mode. `mlkem_sycl_faults_pct` breaks the test in eleven ways (one pair or whole chunks, the
+  statuses alone, kernels left out, and one bad pair beside 99 good ones of its chunk, in the first chunk and in a
+  middle one), each in a derandomized and a randomized call, and requires -6 with every key zero; in a FIPS build
+  `mlkem_sycl_faults` does the same with the backend compiled with `OPENPQC_FIPS140_3` alone, which must turn the test
+  on, and `gpu_layout` checks that the GPU library has the test where the build promises it.
 - **Zeroization (FIPS 203 §3.3).** The secret values in the workspace (seeds, PRF outputs, m′, K′, K̄, coins) are
   zeroized after every launch, the whole workspace when a call or the device fails, and again by destroy, as far as
   the device still accepts work (after a sticky CUDA fault it accepts none, and what the kernels wrote stays in
@@ -378,12 +450,12 @@ filled with a pattern before each call, checks that randomized outputs are fresh
 and runs two threads on one context;
 `mlkem_sycl_faults` (`tests/gpu/test_mlkem_sycl_faults.cpp`) makes the device work fail part way, by fault injection,
 and checks the fail-closed status and outputs, the zeroization of the workspace, the failed state and an RNG failure,
-and that a create that fails (a wrong self-test answer, a refused launch, a lock that throws, and on GPUs a workspace
-too large for the device) frees all the device memory it allocated, its workspace and its self-test's buffer
-included, on every device: the test counts the USM allocations that Core's helpers hold (a count compiled into tests
-only), which must be back where they were after each failed create and zero after every case; where the runtime
-reports a GPU's free memory, the test also checks that it has not shrunk by the size of the workspaces that failed
-creates would leak.
+and that a create that fails (a wrong self-test answer where the self-test is compiled in, a refused launch, a lock
+that throws, and on GPUs a workspace too large for the device) frees all the device memory it allocated, its workspace
+and its self-test's buffer included, on every device: the test counts the USM allocations that Core's helpers hold (a
+count compiled into tests only), which must be back where they were after each failed create and zero after every case;
+where the runtime reports a GPU's free memory, the test also checks that it has not shrunk by the size of the workspaces
+that failed creates would leak.
 
 ## Build
 
@@ -392,17 +464,18 @@ creates would leak.
 tests below, never into `openpqc`. The objects of `mlkem.cpp` go into the library `openpqc` (`OpenPQC::openpqc`,
 which applications link; see the top-level README) and into two libraries for the tests and benchmarks, built only
 when they need them and never installed: `openpqc_mlkem` takes its randomness, as `openpqc` does, from Core's
-`opqc_randombytes` (a source registered with `opqc_set_randombytes`, else the operating system);
+`opqc_randombytes` (a source registered with `opqc_set_randombytes`, else the operating system; in FIPS 140-3 mode
+the module's HMAC_DRBG);
 `openpqc_mlkem_testrng` calls the application's `opqc_external_randombytes()` instead and exists for the tests: never
 link it into a program for production use, nor together with a production library (both define `opqc_randombytes`,
 and the linker keeps the first definition it finds, without an error). The GPU backend is part of the GPU library
 `openpqc_sycl` when a SYCL compiler is found (see the top-level README), under the GPU API; `openpqc_mlkem_sycl` is
 its static copy for the benchmarks, and `openpqc_sycl_testing` the library of the same objects that exports the
-backend's C API, for the white-box tests. The CMake option `OPENPQC_MLKEM_KEYGEN_PCT` compiles the pair-wise
-consistency test into the CPU libraries (`openpqc` and the tests' copies); the presets `gcc-release-pct` and
-`clang-release-pct` build with it (and with ML-DSA's `OPENPQC_MLDSA_KEYGEN_PCT`) and run the quick ML-KEM and ML-DSA
-tests against those libraries (no test labelled `slow` or `network`, and none of the `_ct` tests, which compile their
-own copies of the code).
+backend's C API, for the white-box tests. FIPS 140-3 mode compiles the pair-wise consistency test into the CPU library
+`openpqc` and the GPU backend, and the self-test of create into the GPU backend; no other build has them, and no CMake
+option or preset adds them (the presets `gcc-release-pct` and `clang-release-pct` are gone with the option). The tests
+that compile their own copies with the test (`mlkem_pct`, `mlkem_pct_fail`, `mlkem_pct_odr`, the `_pct` stack tests,
+`mlkemNNN_pct_func`, `_kat`, `_rng_fail` and `mlkem_differential_pct`) run in every build.
 
 The CMake option `OPENPQC_MLKEM_STACK_BURN` (ON by default) leaves the stack burn out of the CPU libraries when it is
 OFF (see Destruction of intermediate values). The definition `OPENPQC_MLKEM_NO_STACK_BURN` then goes to the library's
@@ -438,11 +511,13 @@ mlkem-native's own test programs run against this library and against the unmodi
 | `mlkem_thread_stack`, `mlkem_thread_stack_pct` | the stack each C function needs, on a thread (`encaps_derand` of `openpqc/testing.h`, and `check_keypair` with and without the seed, included): at most the documented 48, 58 and 68 KiB below the caller (9 KiB for `check_pk` and `check_sk`), every function returns on a stack of that size, and on stacks that are too small KeyGen, Encaps, Decaps and `check_keypair` end in a fault at the guard page without writing below it (`-fstack-clash-protection`; the same objects compiled without it write up to 15 KB below the guard page with Clang 23 and 9 KB with GCC 16, -O3); `_pct` for the library with the pair-wise consistency test. Each case on a guarded stack runs in a child process that cannot dump core (not dumpable, core size limit 0). In a build with `OPENPQC_MLKEM_STACK_BURN=OFF` the test checks instead that every call needs less than the burn's 44, 54 and 64 KiB (Memory, above, gives the sizes measured), and that on a stack smaller than what a call uses it ends in a fault at the guard page, never writing below it (Linux, threads; skipped under AddressSanitizer) |
 | `mlkem_pct`, `mlkem_pct_fail`, `mlkem_pct_odr` | the library built with the pair-wise consistency test (`OPENPQC_MLKEM_KEYGEN_PCT`): KeyGen succeeds, draws the test's m (also `keygen_from_seed`), and zeroizes both keys when that fails; and built so that the test fails (`OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_ERR_PCT` with both keys zeroized, which shows that the test is compiled in and its result used; `mlkem_pct_odr`: the same with an application's own KeyGen, compiled without the test, linked first, which must not take the place of the library's |
 | `mlkem_config_odr`, `mlkem_config_odr_O0` | an application's own copies of KeyGen, Encaps, Decaps and the stack burn, compiled with the other setting of `OPENPQC_MLKEM_STACK_BURN` than the library and linked first, in one program with the library: the functions whose bodies depend on the burn must have other addresses in the two configurations (every build), and the library's `keygen_from_seed`, `encaps_derand` (`openpqc/testing.h`) and `decaps` must overwrite the stack below them down to the burn's depth exactly when the library is built with the burn, with the application's own calls as the control (Linux, GCC or Clang; skipped where AddressSanitizer keeps locals off the stack). `mlkem_config_odr_O0` does the same against the copy of the library compiled at -O0, whose C API calls these functions out of line, so that a replaced copy shows whatever the build's level (Linux, GCC or Clang). A configuration name that leaves out the burn fails both |
-| `mlkem_pct_library` | only with the CMake option `OPENPQC_MLKEM_KEYGEN_PCT`: the test of `mlkem_pct` against the library as built, which fails unless the option has put the pair-wise consistency test into it (against the default library: 18 failed checks) |
+| `mlkem_pct_library` | FIPS 140-3 mode only: the test of `mlkem_pct` against the library as built, which fails unless the mode has put the pair-wise consistency test into it (against a library without it: 18 failed checks) |
 | `mlkemNNN_pct_func`, `_kat`, `_rng_fail`, `mlkem_differential_pct` | mlkem-native's functional, known-answer and RNG-failure tests, and the differential test, against the library with the pair-wise consistency test (the known-answer hash is the one in `META.yml`) |
 | `gpu_api` | the GPU API (`openpqc/sycl.h`, `sycl.hpp`) on every SYCL device, linked as an application links it, against this library and those of ML-DSA and SLH-DSA, for every parameter set of the build: for ML-KEM KeyGen from seeds and Decaps byte for byte, randomized KeyGen and Encaps through the CPU's checks, an invalid ek; the order of checks, launches of 3 operations, a context on the application's SYCL context, the C++ layer (label `gpu`) |
 | `mlkem_sycl` | the SYCL backend's own C API against this library on every SYCL device, the status and error contract, fresh coins and two threads on one context (label `gpu`) |
-| `mlkem_sycl_faults` | the SYCL backend when its work fails part way (white-box fault injection): fail-closed status and outputs, workspace zeroization, the failed state, an RNG failure, and creates that fail, which must free all the device memory they allocated, on every device (Core's count of USM allocations, compiled into this test only) (label `gpu`) |
+| `mlkem_sycl_faults` | the SYCL backend when its work fails part way (white-box fault injection): fail-closed status and outputs, workspace zeroization, the failed state, an RNG failure, and creates that fail, which must free all the device memory they allocated, on every device (Core's count of USM allocations, compiled into this test only); `mlkem_sycl_faults_pct` the same with KeyGen's pair-wise consistency test, whose failures it forces; `mlkem_sycl_faults_pct` also compiles create's self-test in (`OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST`) and makes it fail; `mlkem_sycl_faults` compiles the backend as the build compiles it: in a FIPS build with `OPENPQC_FIPS140_3` alone, failing unless that turns both tests on, whose failures it then forces too, and in an ordinary build without either, reporting by name each case that needs them as not applicable (label `gpu`) |
+| `gpu_layout` | the workspaces that the GPU library reports equal those of the backends as the white-box tests compile them as built, so that the library has KeyGen's pair-wise consistency test in FIPS 140-3 mode and not in an ordinary build (no device needed; label `gpu`) |
+| `gpu_self_test` | the GPU libraries hold every answer of the create self-tests of the three schemes in FIPS 140-3 mode and none in an ordinary build (no device needed; label `gpu`) |
 | `reference_mlkemNNN_unit`, `_alloc` | mlkem-native's tests of its own internals |
 
 Four tests in `tests/` cover the C APIs of all three schemes, and a fifth the GPU library's exports. `c_api_errors`

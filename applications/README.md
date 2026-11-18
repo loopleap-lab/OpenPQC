@@ -263,9 +263,10 @@ A server answers the TLS 1.3-style handshakes of 16,384 simulated clients: for e
 
 ```cpp
 #include "openpqc/sycl.h"
-// Once: one context per parameter set, sized for the largest batch (openpqc_gpu_create also runs a
-// known-answer self-test on the device); the buffers come from openpqc_gpu_malloc (device) and
-// openpqc_gpu_malloc_host (page-locked host)
+// Once: one context per parameter set, sized for the largest batch (in FIPS 140-3 mode, or with the
+// developer definitions OPENPQC_*_SYCL_CREATE_SELF_TEST, openpqc_gpu_create also runs a known-answer
+// self-test on the device; an ordinary GPU build has no known-answer check of the device); the buffers
+// come from openpqc_gpu_malloc (device) and openpqc_gpu_malloc_host (page-locked host)
 const openpqc_gpu_config kem_cfg{device, max_batch}, dsa_cfg{device, std::max<std::size_t>(max_batch, 512)};
 openpqc_gpu_create(&kem, OPENPQC_ML_KEM_768, &kem_cfg);
 openpqc_gpu_create(&dsa, OPENPQC_ML_DSA_65, &dsa_cfg);

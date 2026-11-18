@@ -16,9 +16,11 @@ is marked "(inferred)".
 > registers on return (`zero_call_used_regs`, GCC 11 and Clang 15 or later, x86 and AArch64; `H` fences its call of
 > the sponge so that it cannot become a tail jump, which Clang 23 had made of it at `-O1` to `-Os`, and
 > `mldsa_regs_asm` checks the x86-64 code of GCC and Clang; 32-bit x86 and AArch64 not checked);
-> the pair-wise consistency test (`OPENPQC_MLDSA_KEYGEN_PCT`) is a property of the compiled library, as key generation
-> lives in an inline namespace named after its configuration (`keygen_no_pct`, `keygen_pct`,
-> `keygen_pct_breakage_test`), tested by `mldsa_pct`, `mldsa_pct_fail` and `mldsa_pct_odr`. The interfaces that FIPS 204
+> the pair-wise consistency test (the definition `OPENPQC_MLDSA_KEYGEN_PCT`, which only FIPS 140-3 mode and the tests'
+> own objects give; the CMake option of that name no longer exists) is a property of the compiled library, as key
+> generation lives in an inline namespace named after its configuration (`keygen_no_pct`, `keygen_pct`,
+> `keygen_pct_breakage_test`), tested by `mldsa_pct`, `mldsa_pct_fail` and `mldsa_pct_odr` in every build and by
+> `mldsa_pct_library` against the library as built in FIPS 140-3 mode. The interfaces that FIPS 204
 > §6 keeps for testing (rnd given, the internal functions) are not in the library but in `OpenPQC::testing`
 > (`openpqc/testing.h`, `openpqc_testing_mldsaNN_*`); the library has the deterministic variant as
 > `openpqc_mldsaNN_sign_deterministic`, `prehash_sign_deterministic` and `sign_mu_deterministic`, and its status codes

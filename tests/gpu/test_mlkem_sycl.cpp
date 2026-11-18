@@ -33,8 +33,12 @@
 //                   every randomized key pair new and consistent, every randomized K the one its c decapsulates
 //                   to. Without the context's lock the stages of the two threads' calls interleave over the one
 //                   workspace on the in-order queue, and these checks fail.
-// Without a device: the known answers of the self-test that create runs (ML/KEM/sycl/mlkem_sycl_self_test.hpp)
-// must be the CPU library's.
+// Without a device: the known answers of the self-test that create runs in FIPS 140-3 mode
+// (ML/KEM/sycl/mlkem_sycl_self_test.hpp) must be the CPU library's. The library of an ordinary build runs no
+// self-test at create (only a build that gives every object the developer definition
+// OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST does): the test then says so by name, checks the answers all the same (the
+// white-box test test_mlkem_sycl_faults_pct runs the self-test with them), and expects nothing of create's
+// self-test from the library.
 //
 // Usage: test_mlkem_sycl [operations per batch, default 1000] [device index, default all]
 //        test_mlkem_sycl threads [rounds, default 40] [device index, default all]   (the thread test alone)
@@ -57,6 +61,14 @@
 #include "openpqc/testing.h"
 #include "ML/KEM/sycl/mlkem_sycl_self_test.hpp"
 #include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
+
+// Whether the library's create runs the known-answer self-test: in FIPS 140-3 mode, and in a build that gives
+// every object (this test's too) the developer definition OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST
+#if defined(OPENPQC_FIPS140_3) || defined(OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST)
+constexpr bool LIBRARY_SELF_TEST = true;
+#else
+constexpr bool LIBRARY_SELF_TEST = false;
+#endif
 
 namespace {
 
@@ -799,6 +811,11 @@ int main(int argc, char** argv) {
     const std::size_t bad_values = self_test_values(values);
     if (values) return bad_values == 0 ? 0 : 1;
     CHECK(bad_values == 0);   // the self-test's answers are the CPU library's
+    std::printf("self-test of create: the answers (mlkem_sycl_self_test.hpp) %s the CPU library's; %s\n",
+                bad_values == 0 ? "equal" : "DIFFER FROM",
+                LIBRARY_SELF_TEST ? "this build's create runs the self-test"
+                                  : "not applicable to this build's library: an ordinary build's create runs no "
+                                    "self-test (no OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST)");
 
     const std::size_t n = !threads_only && argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1000;
     const std::size_t rounds = threads_only && argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 40;

@@ -11,6 +11,12 @@
  * built from the schemes this build contains (OPENPQC_HAVE_MLKEM, _MLDSA, _SLHDSA: Core/openpqc_version.h,
  * from OPENPQC_WITH_*). Every check here (the kind of alg, the flags) runs before a per-set function is called, so
  * a refusal writes nothing, as the per-set functions' own checks do.
+ *
+ * FIPS 140-3 mode (OPENPQC_FIPS140_3; Core/opqc_fips.h): each function of openpqc/kem.h and openpqc/sig.h first
+ * sets the calling thread's indicator to 0 and, in the error state, returns OPENPQC_ERR_ERROR_STATE before any other
+ * check, writing nothing; otherwise the per-set function it calls sets the indicator for the service it performs.
+ * The functions of the algorithm table use no cryptographic algorithm: they work in the error state too and leave
+ * the indicator alone.
  */
 
 #include <stddef.h>
@@ -23,6 +29,17 @@
 #include "openpqc/common.h"
 #include "openpqc/kem.h"
 #include "openpqc/sig.h"
+
+#if defined(OPENPQC_FIPS140_3)
+#include "Core/opqc_fips.h"
+#define FIPS_SERVICE()                                                                                         \
+    do {                                                                                                       \
+        opqc_fips_set_approved(0);                                                                             \
+        if (opqc_fips_check() != 0) return OPENPQC_ERR_ERROR_STATE;                                            \
+    } while (0)
+#else
+#define FIPS_SERVICE() ((void)0)
+#endif
 
 /* --- the algorithms ------------------------------------------------------------------------------------------- */
 
@@ -131,6 +148,8 @@ const char *openpqc_status_string(openpqc_status status) {
     case OPENPQC_ERR_DEVICE: return "device failure";
     case OPENPQC_ERR_NOT_COMPUTED: return "not computed";
     case OPENPQC_ERR_UNSUPPORTED: return "unsupported algorithm or operation";
+    case OPENPQC_ERR_ERROR_STATE: return "module in error state";
+    case OPENPQC_ERR_NOT_APPROVED: return "service not approved";
     }
     return "unknown status";
 }
@@ -169,11 +188,13 @@ static const kem_impl *find_kem(openpqc_alg alg) {
 }
 
 openpqc_status openpqc_kem_keygen(openpqc_alg alg, uint8_t *pk, uint8_t *sk) {
+    FIPS_SERVICE();
     const kem_impl *k = find_kem(alg);
     return k == NULL ? OPENPQC_ERR_UNSUPPORTED : k->keygen(pk, sk);
 }
 
 openpqc_status openpqc_kem_keygen_from_seed(openpqc_alg alg, uint8_t *pk, uint8_t *sk, const uint8_t *seed) {
+    FIPS_SERVICE();
     const kem_impl *k = find_kem(alg);
     if (k == NULL) return OPENPQC_ERR_UNSUPPORTED;
     if (seed == NULL) return OPENPQC_ERR_INVALID_ARGUMENT;
@@ -181,26 +202,31 @@ openpqc_status openpqc_kem_keygen_from_seed(openpqc_alg alg, uint8_t *pk, uint8_
 }
 
 openpqc_status openpqc_kem_encaps(openpqc_alg alg, uint8_t *ct, uint8_t *ss, const uint8_t *pk) {
+    FIPS_SERVICE();
     const kem_impl *k = find_kem(alg);
     return k == NULL ? OPENPQC_ERR_UNSUPPORTED : k->encaps(ct, ss, pk);
 }
 
 openpqc_status openpqc_kem_decaps(openpqc_alg alg, uint8_t *ss, const uint8_t *ct, const uint8_t *sk) {
+    FIPS_SERVICE();
     const kem_impl *k = find_kem(alg);
     return k == NULL ? OPENPQC_ERR_UNSUPPORTED : k->decaps(ss, ct, sk);
 }
 
 openpqc_status openpqc_kem_check_public_key(openpqc_alg alg, const uint8_t *pk) {
+    FIPS_SERVICE();
     const kem_impl *k = find_kem(alg);
     return k == NULL ? OPENPQC_ERR_UNSUPPORTED : k->check_pk(pk);
 }
 
 openpqc_status openpqc_kem_check_secret_key(openpqc_alg alg, const uint8_t *sk) {
+    FIPS_SERVICE();
     const kem_impl *k = find_kem(alg);
     return k == NULL ? OPENPQC_ERR_UNSUPPORTED : k->check_sk(sk);
 }
 
 openpqc_status openpqc_kem_check_keypair(openpqc_alg alg, const uint8_t *pk, const uint8_t *sk, const uint8_t *seed) {
+    FIPS_SERVICE();
     const kem_impl *k = find_kem(alg);
     return k == NULL ? OPENPQC_ERR_UNSUPPORTED : k->check_keypair(pk, sk, seed);
 }
@@ -285,11 +311,13 @@ static const sig_impl *find_sig(openpqc_alg alg) {
 #define SIGN_FLAGS OPENPQC_SIGN_DETERMINISTIC
 
 openpqc_status openpqc_sig_keygen(openpqc_alg alg, uint8_t *pk, uint8_t *sk) {
+    FIPS_SERVICE();
     const sig_impl *s = find_sig(alg);
     return s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->keygen(pk, sk);
 }
 
 openpqc_status openpqc_sig_keygen_from_seed(openpqc_alg alg, uint8_t *pk, uint8_t *sk, const uint8_t *seed) {
+    FIPS_SERVICE();
     const sig_impl *s = find_sig(alg);
     if (s == NULL || s->keygen_from_seed == NULL) return OPENPQC_ERR_UNSUPPORTED;
     if (seed == NULL) return OPENPQC_ERR_INVALID_ARGUMENT;
@@ -298,6 +326,7 @@ openpqc_status openpqc_sig_keygen_from_seed(openpqc_alg alg, uint8_t *pk, uint8_
 
 openpqc_status openpqc_sig_sign(openpqc_alg alg, uint8_t *sig, const uint8_t *m, size_t mlen,
                                 const openpqc_sign_opts *opts, const uint8_t *sk) {
+    FIPS_SERVICE();
     const sig_impl *s = find_sig(alg);
     if (s == NULL) return OPENPQC_ERR_UNSUPPORTED;
     if (opts == NULL) return s->sign(sig, m, mlen, NULL, 0, sk);
@@ -312,6 +341,7 @@ openpqc_status openpqc_sig_sign(openpqc_alg alg, uint8_t *sig, const uint8_t *m,
 
 openpqc_status openpqc_sig_verify(openpqc_alg alg, const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen,
                                   const openpqc_sign_opts *opts, const uint8_t *pk) {
+    FIPS_SERVICE();
     const sig_impl *s = find_sig(alg);
     if (s == NULL) return OPENPQC_ERR_UNSUPPORTED;
     if (opts == NULL) return s->verify(sig, siglen, m, mlen, NULL, 0, pk);
@@ -321,11 +351,13 @@ openpqc_status openpqc_sig_verify(openpqc_alg alg, const uint8_t *sig, size_t si
 }
 
 openpqc_status openpqc_sig_check_secret_key(openpqc_alg alg, const uint8_t *sk) {
+    FIPS_SERVICE();
     const sig_impl *s = find_sig(alg);
     return s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->check_sk(sk);
 }
 
 openpqc_status openpqc_sig_check_keypair(openpqc_alg alg, const uint8_t *pk, const uint8_t *sk) {
+    FIPS_SERVICE();
     const sig_impl *s = find_sig(alg);
     return s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->check_keypair(pk, sk);
 }

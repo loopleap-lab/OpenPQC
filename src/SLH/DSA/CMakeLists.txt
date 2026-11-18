@@ -11,15 +11,19 @@
 #   sycl/              batched SLH-DSA on GPUs and other SYCL devices (optional)
 #
 # Targets:
-#   openpqc_slhdsa           the library; randomness from Core (opqc_randombytes: by default the operating system)
+#   openpqc_slhdsa           the library; randomness from Core (opqc_randombytes: by default the operating system);
+#                            in FIPS 140-3 mode only with the tests (OPENPQC_BUILD_TESTS: below)
 #   openpqc_slhdsa_testrng   the same code, randomness from the application's
 #                            opqc_external_randombytes(), for the tests
 #   openpqc_slhdsa_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
 #                           library for the benchmarks (top-level CMakeLists.txt; the tests use OpenPQC::sycl_testing)
 #
 # A build of slhdsa.cpp with the definition OPENPQC_SLHDSA_KEYGEN_PCT adds the
-# pair-wise consistency test of FIPS 140-3 to key generation (scheme/slh_dsa.hpp);
-# the tests compile it that way into an object library of their own, as for ML-DSA.
+# pair-wise consistency test of FIPS 140-3 to key generation (scheme/slh_dsa.hpp):
+# FIPS 140-3 mode, and only it, builds the library that way (top-level CMakeLists.txt),
+# and the tests also compile it that way into object libraries of their own, as for
+# ML-KEM and ML-DSA. The GPU backend turns its own test on from OPENPQC_FIPS140_3,
+# which every object of the mode gets (sycl/slhdsa_sycl.cpp).
 
 add_library(openpqc_slhdsa_objects OBJECT slhdsa.cpp)
 target_include_directories(openpqc_slhdsa_objects PUBLIC
@@ -38,14 +42,22 @@ if(OPENPQC_TESTING_LIBRARY)
     list(APPEND _openpqc_slhdsa_lib_objects $<TARGET_OBJECTS:openpqc_slhdsa_testing_objects>)
 endif()
 
-foreach(variant "" ${OPENPQC_TESTRNG_VARIANT})   # _testrng only with the tests (top-level CMakeLists.txt)
-    add_library(openpqc_slhdsa${variant} STATIC EXCLUDE_FROM_ALL ${_openpqc_slhdsa_lib_objects})
-    target_include_directories(openpqc_slhdsa${variant} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-        $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
-    target_link_libraries(openpqc_slhdsa${variant} PUBLIC openpqc_core${variant})
-    set_target_properties(openpqc_slhdsa${variant} PROPERTIES LINKER_LANGUAGE CXX)
-endforeach()
+# In FIPS 140-3 mode without the tests, openpqc_slhdsa would hold the module's code without its power-on self-tests:
+# it is then an interface library without code on openpqc_core, which stops the compilation of anything that links
+# it (src/Core/CMakeLists.txt)
+if(OPENPQC_FIPS140_3 AND NOT OPENPQC_BUILD_TESTS)
+    add_library(openpqc_slhdsa INTERFACE)
+    target_link_libraries(openpqc_slhdsa INTERFACE openpqc_core)
+else()
+    foreach(variant "" ${OPENPQC_TESTRNG_VARIANT})   # _testrng only with the tests (top-level CMakeLists.txt)
+        add_library(openpqc_slhdsa${variant} STATIC EXCLUDE_FROM_ALL ${_openpqc_slhdsa_lib_objects})
+        target_include_directories(openpqc_slhdsa${variant} PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+            $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
+        target_link_libraries(openpqc_slhdsa${variant} PUBLIC openpqc_core${variant})
+        set_target_properties(openpqc_slhdsa${variant} PROPERTIES LINKER_LANGUAGE CXX)
+    endforeach()
+endif()
 add_library(openpqc::slhdsa ALIAS openpqc_slhdsa)
 
 # GPU backend: batched SLH-DSA on any SYCL device (see sycl/openpqc_slhdsa_sycl.h). DPC++ generates the device

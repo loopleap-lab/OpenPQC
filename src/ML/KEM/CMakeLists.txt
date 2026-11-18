@@ -13,7 +13,8 @@
 # Targets:
 #   openpqc_mlkem_objects   the compiled C API, which goes into the library openpqc (top-level CMakeLists.txt);
 #                           randomness from Core (opqc_randombytes: by default the operating system)
-#   openpqc_mlkem           the same objects as a static library, for the tests and benchmarks
+#   openpqc_mlkem           the same objects as a static library, for the tests and benchmarks (in FIPS 140-3 mode only
+#                           with the tests, OPENPQC_BUILD_TESTS: below)
 #   openpqc_mlkem_testrng   the same, with randomness from the application's opqc_external_randombytes() (tests only)
 #   (both built only when a test or benchmark needs them)
 #   openpqc_mlkem_sycl      the SYCL backend (OPENPQC_SYCL): objects for the library openpqc_sycl, and a static
@@ -36,14 +37,22 @@ if(OPENPQC_TESTING_LIBRARY)
     list(APPEND _openpqc_mlkem_lib_objects $<TARGET_OBJECTS:openpqc_mlkem_testing_objects>)
 endif()
 
-foreach(variant "" ${OPENPQC_TESTRNG_VARIANT})   # _testrng only with the tests (top-level CMakeLists.txt)
-    add_library(openpqc_mlkem${variant} STATIC EXCLUDE_FROM_ALL ${_openpqc_mlkem_lib_objects})
-    target_include_directories(openpqc_mlkem${variant} PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-        $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
-    target_link_libraries(openpqc_mlkem${variant} PUBLIC openpqc_core${variant})
-    set_target_properties(openpqc_mlkem${variant} PROPERTIES LINKER_LANGUAGE CXX)
-endforeach()
+# In FIPS 140-3 mode without the tests, openpqc_mlkem would hold the module's code without its power-on self-tests:
+# it is then an interface library without code on openpqc_core, which stops the compilation of anything that links
+# it (src/Core/CMakeLists.txt)
+if(OPENPQC_FIPS140_3 AND NOT OPENPQC_BUILD_TESTS)
+    add_library(openpqc_mlkem INTERFACE)
+    target_link_libraries(openpqc_mlkem INTERFACE openpqc_core)
+else()
+    foreach(variant "" ${OPENPQC_TESTRNG_VARIANT})   # _testrng only with the tests (top-level CMakeLists.txt)
+        add_library(openpqc_mlkem${variant} STATIC EXCLUDE_FROM_ALL ${_openpqc_mlkem_lib_objects})
+        target_include_directories(openpqc_mlkem${variant} PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src> $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+            $<INSTALL_INTERFACE:${OPENPQC_INSTALL_INCLUDEDIR}>)
+        target_link_libraries(openpqc_mlkem${variant} PUBLIC openpqc_core${variant})
+        set_target_properties(openpqc_mlkem${variant} PROPERTIES LINKER_LANGUAGE CXX)
+    endforeach()
+endif()
 add_library(openpqc::mlkem ALIAS openpqc_mlkem)
 
 # GPU backend: batched ML-KEM on any SYCL device (see sycl/openpqc_mlkem_sycl.h)
@@ -51,4 +60,12 @@ if(OPENPQC_HAVE_SYCL)
     _openpqc_sycl_backend(openpqc_mlkem_sycl sycl/mlkem_sycl.cpp)   # top-level CMakeLists.txt
     add_library(openpqc::mlkem_sycl ALIAS openpqc_mlkem_sycl)
     target_link_libraries(openpqc_mlkem_sycl PUBLIC openpqc_core openpqc_core_sycl)
+    # KeyGen with the pair-wise consistency test of FIPS 140-3 (FIPS 203, Section 7.1, item 4; sycl/mlkem_sycl.cpp)
+    # in FIPS 140-3 mode only, as for the CPU library (top-level CMakeLists.txt): on the backend's objects, which the
+    # libraries openpqc_sycl and openpqc_sycl_testing and the static openpqc_mlkem_sycl are made of (test
+    # gpu_layout, tests/gpu). The backend also turns the test on from OPENPQC_FIPS140_3 itself, which every object of
+    # the mode gets; no library of the ordinary build has it.
+    if(OPENPQC_FIPS140_3)
+        target_compile_definitions(openpqc_mlkem_sycl_objects PRIVATE OPENPQC_MLKEM_KEYGEN_PCT)
+    endif()
 endif()

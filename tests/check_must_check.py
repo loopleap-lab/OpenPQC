@@ -5,12 +5,14 @@
 # (openpqc_status, or int) warns when its result is ignored (OPENPQC_MUST_CHECK, openpqc/common.h,
 # and OPQC_MUST_CHECK, Core/opqc_common.h): the test c_api_must_check (tests/CMakeLists.txt).
 #
-# Usage: python3 -I check_must_check.py --include-root <dir> [--include-root <dir>]... <workdir>
-#                                        [--archive <library>]...
+# Usage: python3 -I check_must_check.py --include-root <dir> [--include-root <dir>]... [--define <NAME=VALUE>]...
+#                                        [--readelf <readelf>] <workdir> [--archive <library>]...
 #
-#   1. Preprocesses the C headers (HEADERS: the schemes', openpqc/common.h, kem.h, sig.h and
+#   1. Preprocesses the C headers (HEADERS: the schemes', openpqc/common.h, kem.h, sig.h, fips.h and
 #      testing.h, the GPU API's openpqc/sycl.h, sycl_experimental.h and sycl_testing.h, Core's, and
-#      the four of the GPU backends, which are internal and plain C) from the include roots as C11, and
+#      the four of the GPU backends, which are internal and plain C) from the include roots as C11, with
+#      the definitions of the build (--define: OPENPQC_FIPS140_3=1 in FIPS 140-3 mode, whose
+#      Core/openpqc_core.h declares opqc_fips_mark_non_approved), and
 #      collects the declaration of every
 #      function with external linkage that a file under an include root makes; the preprocessor's line
 #      markers name the file of each declaration. The declarations are parsed, not matched line by line:
@@ -20,13 +22,18 @@
 #      returns int (STATUS_TYPES) returns a status, except those of NOT_A_STATUS; a family with status
 #      functions must have at least one, so that the check can never pass on none.
 #   3. With archives: every function of an API family that an archive exports (nm: a defined global
-#      text symbol) must be declared; every declared function of a family of which an archive exports
-#      any function must be exported (the libraries of the build implement all of their header); every
+#      text symbol, unless readelf shows it of hidden or internal visibility: the linker makes those
+#      local to the program or library that a static archive is linked into, so they are internal
+#      functions, as the DRBG's and the FIPS state's are in a FIPS build's static test libraries) must
+#      be declared; every declared function of a family of which an archive exports any function must
+#      be exported (the libraries of the build implement all of their header); every
 #      archive must export some function of the APIs; and no archive may export a function that the
 #      application defines (APPLICATION_DEFINED). The functions of DECLARED_ELSEWHERE are exported
 #      but declared outside these C headers. The archives of the build are the library openpqc,
 #      OpenPQC::testing and, with SYCL, OpenPQC::sycl_testing (the GPU API, its testing interfaces and
-#      the backends' functions).
+#      the backends' functions). The reading of the visibility has a positive control: a probe archive
+#      with one hidden and one default function of the Core family, compiled here, must give the
+#      default one only.
 #   4. Writes a translation unit that calls each status function once, each on a line of its own, and
 #      discards the result, and compiles it to an object as C11, C23, C++14 and C++20 with GCC and with
 #      Clang (CONFIGS). Each compilation must give one -Wunused-result warning on the line of each
@@ -49,6 +56,7 @@ HEADERS = [
     "openpqc/common.h",
     "openpqc/kem.h",
     "openpqc/sig.h",
+    "openpqc/fips.h",
     "openpqc/testing.h",
     "openpqc/sycl.h",
     "openpqc/sycl_experimental.h",
@@ -71,6 +79,7 @@ FAMILIES = [
     ("SLH-DSA", re.compile(r"openpqc_slhdsa\w*$"), True),
     ("KEM", re.compile(r"openpqc_kem_\w+$"), True),
     ("signatures", re.compile(r"openpqc_sig_\w+$"), True),
+    ("FIPS", re.compile(r"openpqc_fips_\w+$"), True),
     ("common", re.compile(r"openpqc_\w+$"), True),
     ("ML-KEM GPU backend", re.compile(r"opqc_sycl_mlkem_\w+$"), True),
     ("ML-DSA GPU backend", re.compile(r"opqc_sycl_mldsa_\w+$"), True),
@@ -85,6 +94,7 @@ NOT_A_STATUS = {
     "opqc_sycl_device_count": "the number of SYCL devices",
     "openpqc_gpu_device_count": "the number of SYCL devices",
     "openpqc_gpu_supports": "1 or 0: whether the GPU library has a parameter set",
+    "openpqc_fips_service_approved": "1 or 0: the approved-service indicator (openpqc/fips.h)",
 }
 # functions that the application defines and the library calls (Core/opqc_platform.h)
 APPLICATION_DEFINED = {"opqc_external_randombytes"}
@@ -141,7 +151,13 @@ def skip_literal(text, i):
 
 
 def include_flags(roots):
-    return [a for r in roots for a in ("-I", r)]
+    return [a for r in roots for a in ("-I", r)] + [f"-D{d}" for d in DEFINES]
+
+
+# the definitions of the build (--define), with which the headers are read and the probe compiled
+DEFINES = []
+# readelf, for the visibility of the archives' symbols (--readelf, else the one on the PATH)
+READELF = None
 
 
 def preprocess(roots):
@@ -292,17 +308,59 @@ def declared_functions(roots):
     return found
 
 
+def hidden(archive):
+    """The defined functions of hidden or internal visibility in an ELF archive or object (readelf -s:
+    GNU readelf and llvm-readelf print Num, Value, Size, Type, Bind, Vis, Ndx, Name); empty without
+    readelf or for another format."""
+    if READELF is None:
+        return set()
+    r = subprocess.run([READELF, "-sW", archive], capture_output=True, text=True)
+    if r.returncode != 0:
+        return set()
+    names = set()
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if (len(parts) >= 8 and parts[0].endswith(":") and parts[3] == "FUNC" and parts[4] in ("GLOBAL", "WEAK")
+                and parts[5] in ("HIDDEN", "INTERNAL") and parts[6] != "UND"):
+            names.add(parts[7].split("@")[0])
+    return names
+
+
 def exported(archive):
-    """The functions of the API families that archive exports (defined global text symbols)."""
+    """The functions of the API families that archive exports (defined global text symbols that are not
+    of hidden or internal visibility)."""
     out = subprocess.run(["nm", "-g", "--defined-only", archive], capture_output=True, text=True, check=True).stdout
+    internal = hidden(archive)
     names = set()
     for line in out.splitlines():
         parts = line.split()
         if len(parts) == 3 and parts[1] == "T":
             name = parts[2][1:] if parts[2].startswith("_o") else parts[2]   # Mach-O: a leading underscore
-            if family(name):
+            if family(name) and name not in internal:
                 names.add(name)
     return names
+
+
+def visibility_control(work):
+    """(checked, problem): whether a probe archive could be made, and None if exported() gives its
+    default-visibility function and not its hidden one, else what went wrong."""
+    cc, ar = next((c for c in ("gcc", "clang", "cc") if shutil.which(c)), None), shutil.which("ar")
+    if cc is None or ar is None or READELF is None:
+        return False, None
+    src, obj, lib = (os.path.join(work, f) for f in ("visibility_probe.c", "visibility_probe.o",
+                                                     "libvisibility_probe.a"))
+    with open(src, "w") as f:
+        f.write("__attribute__((visibility(\"hidden\"))) int opqc_visibility_probe_hidden(void) { return 1; }\n"
+                "__attribute__((visibility(\"default\"))) int opqc_visibility_probe_default(void) { return 2; }\n")
+    if os.path.exists(lib):
+        os.remove(lib)
+    for cmd in ([cc, "-c", "-fPIC", "-o", obj, src], [ar, "rcs", lib, obj]):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            return True, f"{' '.join(cmd)}: {r.stderr[:400]}"
+    got = exported(lib)
+    want = {"opqc_visibility_probe_default"}
+    return True, None if got == want else f"the probe archive gives {sorted(got)}, expected {sorted(want)}"
 
 
 def write_tu(path, calls, cast):
@@ -340,16 +398,19 @@ def warnings_per_line(compiler, lang, std, roots, tu):
 
 def main():
     args = sys.argv[1:]
-    archives, roots = [], []
-    for option, values in (("--archive", archives), ("--include-root", roots)):
+    global READELF
+    archives, roots, readelf = [], [], []
+    for option, values in (("--archive", archives), ("--include-root", roots), ("--define", DEFINES),
+                           ("--readelf", readelf)):
         while option in args[:-1]:
             k = args.index(option)
             values.append(args[k + 1])
             del args[k: k + 2]
     if len(args) != 1 or not roots:
-        print("usage: check_must_check.py --include-root <dir> [--include-root <dir>]... <workdir> "
-              "[--archive <library>]...")
+        print("usage: check_must_check.py --include-root <dir> [--include-root <dir>]... [--define <NAME=VALUE>]... "
+              "[--readelf <readelf>] <workdir> [--archive <library>]...")
         return 2
+    READELF = readelf[-1] if readelf else shutil.which("readelf")
     roots, work = [os.path.abspath(r) for r in roots], args[0]
     os.makedirs(work, exist_ok=True)
     ok = True
@@ -380,6 +441,13 @@ def main():
         print(f"  {f:12s} {len(names):3d} declared, {sum(1 for n in names if n in status):3d} returning a status")
 
     if archives:
+        checked, problem = visibility_control(work)
+        if problem:
+            print(f"FAIL: the visibility of the archives' symbols is not read right: {problem}")
+            ok = False
+        else:
+            print(f"functions of hidden or internal visibility in the archives count as not exported (readelf: "
+                  f"{READELF}; the probe archive: {'passed' if checked else 'not made (no compiler, ar or readelf)'})")
         exports = {a: exported(a) for a in archives}
         names = set().union(*exports.values())
         built = {family(n) for n in names}

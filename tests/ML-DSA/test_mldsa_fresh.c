@@ -28,6 +28,15 @@
  * through opqc_set_randombytes that gives the same bytes on every call (0x5a, then all zero: the second also
  * reproduces the _derand outputs); every kind of output must be reported as repeated for every parameter set,
  * and the program exits 0 only if it is. Unregistering the source (NULL) must restore the operating system's.
+ *
+ * FIPS 140-3 mode (OPENPQC_FIPS140_3): the randomness is the module's HMAC_DRBG, and registering a source is
+ * refused (Core/opqc_platform.h). mldsa_fresh then also registers a source that gives the same bytes on every
+ * call: the registration must be refused with OPENPQC_ERR_NOT_APPROVED, the source never called, and the checks
+ * must still find no repeat. The positive control cannot register its constant source in this mode, so it is
+ * linked with the test variant openpqc_mldsa_testrng (the same ML-DSA objects; randomness from the program's
+ * opqc_external_randombytes below, which gives the constant bytes): the refusal is checked there too, every kind
+ * of output must be reported as repeated, and once the generator gives fresh bytes again (a counter through
+ * SplitMix64's mixing function), no repeat.
  */
 
 #include <stddef.h>
@@ -38,6 +47,10 @@
 #include "Core/opqc_platform.h"
 #include "ML/DSA/openpqc_mldsa.h"
 #include "openpqc/testing.h"
+
+#if defined(OPENPQC_FIPS140_3)
+#include "openpqc/common.h" /* OPENPQC_ERR_NOT_APPROVED */
+#endif
 
 #define TRIALS 32
 #define KINDS 5 /* pk, sk, and the signatures of sign, prehash_sign and sign_mu */
@@ -162,18 +175,72 @@ static int check_level(const level_t *L)
     return repeated;
 }
 
-#if defined(OPENPQC_FRESH_CONTROL)
+#if defined(OPENPQC_FRESH_CONTROL) || defined(OPENPQC_FIPS140_3)
+#if defined(OPENPQC_FIPS140_3)
+static unsigned long constant_calls = 0; /* FIPS 140-3 mode: the source is refused, and never called */
+#endif
 /* The same "random" bytes on every call: *(const uint8_t *)ctx */
 static int constant_source(void *source_ctx, uint8_t *out, size_t len)
 {
+#if defined(OPENPQC_FIPS140_3)
+    constant_calls++;
+#endif
     memset(out, *(const uint8_t *)source_ctx, len);
+    return 0;
+}
+#endif
+
+#if defined(OPENPQC_FRESH_CONTROL) && defined(OPENPQC_FIPS140_3)
+/* The generator of the test variant openpqc_mldsa_testrng: the byte external_constant on every call while it is
+ * 0 to 255, fresh bytes otherwise (SplitMix64 of a counter) */
+static int external_constant = -1;
+
+int opqc_external_randombytes(uint8_t *out, size_t len);
+int opqc_external_randombytes(uint8_t *out, size_t len)
+{
+    static uint64_t counter = 0;
+    if (external_constant >= 0) {
+        memset(out, external_constant, len);
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        uint64_t z = (counter += UINT64_C(0x9E3779B97F4A7C15));
+        z = (z ^ (z >> 30)) * UINT64_C(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)) * UINT64_C(0x94D049BB133111EB);
+        out[i] = (uint8_t)((z ^ (z >> 31)) >> 56);
+    }
     return 0;
 }
 #endif
 
 int main(void)
 {
-#if defined(OPENPQC_FRESH_CONTROL)
+#if defined(OPENPQC_FRESH_CONTROL) && defined(OPENPQC_FIPS140_3)
+    static uint8_t constants[] = {0x5a, 0x00};
+    int missed = 0; /* parameter sets whose repeats were not all reported */
+    if (opqc_set_randombytes(constant_source, &constants[0]) != OPENPQC_ERR_NOT_APPROVED) {
+        fail(&levels[0],
+             "FIPS 140-3 mode: registering the constant source is not refused with OPENPQC_ERR_NOT_APPROVED");
+    }
+    for (size_t c = 0; c < sizeof constants; c++) {
+        external_constant = constants[c];
+        for (size_t l = 0; l < sizeof levels / sizeof levels[0]; l++) {
+            const int repeated = check_level(&levels[l]);
+            printf("%s, every random byte 0x%02x (the test variant's generator): %d of %d kinds of output repeated"
+                   " (positive control: all must)\n",
+                   levels[l].name, constants[c], repeated, KINDS);
+            if (repeated != KINDS) missed++;
+        }
+    }
+    external_constant = -1;
+    /* fresh bytes again: the checks find no repeat */
+    if (check_level(&levels[0]) != 0) fail(&levels[0], "repeats after the generator gave fresh bytes again");
+    if (constant_calls != 0) fail(&levels[0], "the refused constant source was called");
+    if (missed) {
+        printf("FAIL: the checks missed repeated random values in %d case(s)\n", missed);
+        errors++;
+    }
+#elif defined(OPENPQC_FRESH_CONTROL)
     static uint8_t constants[] = {0x5a, 0x00};
     int missed = 0; /* parameter sets whose repeats were not all reported */
     for (size_t c = 0; c < sizeof constants; c++) {
@@ -196,12 +263,23 @@ int main(void)
         errors++;
     }
 #else
+#if defined(OPENPQC_FIPS140_3)
+    /* the module refuses a source that would repeat its bytes, and its DRBG stays the source */
+    static uint8_t constant = 0x5a;
+    if (opqc_set_randombytes(constant_source, &constant) != OPENPQC_ERR_NOT_APPROVED) {
+        fail(&levels[0],
+             "FIPS 140-3 mode: registering a constant source is not refused with OPENPQC_ERR_NOT_APPROVED");
+    }
+#endif
     for (size_t l = 0; l < sizeof levels / sizeof levels[0]; l++) {
         const level_t *L = &levels[l];
         if (check_level(L)) fail(L, "random values were reused");
         else printf("%s: %d key pairs and %d signatures of each hedged function, no output repeated\n", L->name, TRIALS,
                     TRIALS);
     }
+#if defined(OPENPQC_FIPS140_3)
+    if (constant_calls != 0) fail(&levels[0], "FIPS 140-3 mode: the refused constant source was called");
+#endif
 #endif
     if (errors) printf("%d check(s) failed\n", errors);
     else printf("all checks passed\n");

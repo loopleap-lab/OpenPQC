@@ -19,6 +19,25 @@
 
 #include "ML/DSA/scheme/ml_dsa.hpp"
 
+#if defined(OPENPQC_FIPS140_3)
+#include "Core/openpqc_core.h" // opqc_fips_mark_non_approved
+#include "openpqc/fips.h"      // openpqc_fips_status
+// FIPS 140-3 mode: the testing interfaces are outside the module and are not approved services. Each reports so
+// through the module's approved-service indicator when it returns, after any service of the module it called
+// (opqc_fips_mark_non_approved, which can only clear the indicator). While the module is in its error state
+// (openpqc_fips_status), none of them computes: each returns OPENPQC_ERR_ERROR_STATE before any other check and
+// writes nothing, as the services of the module and the GPU library's testing interfaces do.
+#define OPENPQC_TESTING_RETURN(...)                                                                              \
+    do {                                                                                                         \
+        const openpqc_status testing_status_ =                                                                   \
+                openpqc_fips_status() == 0 ? (__VA_ARGS__) : OPENPQC_ERR_ERROR_STATE;                            \
+        opqc_fips_mark_non_approved();                                                                           \
+        return testing_status_;                                                                                  \
+    } while (0)
+#else
+#define OPENPQC_TESTING_RETURN(...) return __VA_ARGS__
+#endif
+
 namespace {
 
 using namespace openpqc::mldsa;
@@ -84,26 +103,28 @@ struct Testing {
     openpqc_status openpqc_testing_mldsa##N##_sign_derand(uint8_t* sig, const uint8_t* m, size_t mlen,           \
                                                           const uint8_t* ctx, size_t ctxlen, const uint8_t* rnd, \
                                                           const uint8_t* sk) {                                   \
-        return Testing<params::ML_DSA_##N>::sign_derand(sig, m, mlen, ctx, ctxlen, rnd, sk);                     \
+        OPENPQC_TESTING_RETURN(Testing<params::ML_DSA_##N>::sign_derand(sig, m, mlen, ctx, ctxlen, rnd, sk));    \
     }                                                                                                            \
     openpqc_status openpqc_testing_mldsa##N##_prehash_sign_derand(uint8_t* sig, const uint8_t* m, size_t mlen,   \
                                                                   const uint8_t* ctx, size_t ctxlen, int ph,     \
                                                                   const uint8_t* rnd, const uint8_t* sk) {       \
-        return Testing<params::ML_DSA_##N>::prehash_sign_derand(sig, m, mlen, ctx, ctxlen, ph, rnd, sk);         \
+        OPENPQC_TESTING_RETURN(                                                                                  \
+                Testing<params::ML_DSA_##N>::prehash_sign_derand(sig, m, mlen, ctx, ctxlen, ph, rnd, sk));       \
     }                                                                                                            \
     openpqc_status openpqc_testing_mldsa##N##_sign_mu_derand(uint8_t* sig, const uint8_t* mu,                    \
                                                              const uint8_t* rnd, const uint8_t* sk) {            \
-        return Testing<params::ML_DSA_##N>::sign_mu_derand(sig, mu, rnd, sk);                                    \
+        OPENPQC_TESTING_RETURN(Testing<params::ML_DSA_##N>::sign_mu_derand(sig, mu, rnd, sk));                   \
     }                                                                                                            \
     openpqc_status openpqc_testing_mldsa##N##_sign_internal(uint8_t* sig, const uint8_t* mprime,                 \
                                                             size_t mprimelen, const uint8_t* rnd,                \
                                                             const uint8_t* sk) {                                 \
-        return Testing<params::ML_DSA_##N>::sign_internal(sig, mprime, mprimelen, rnd, sk);                      \
+        OPENPQC_TESTING_RETURN(Testing<params::ML_DSA_##N>::sign_internal(sig, mprime, mprimelen, rnd, sk));     \
     }                                                                                                            \
     openpqc_status openpqc_testing_mldsa##N##_verify_internal(const uint8_t* sig, size_t siglen,                 \
                                                               const uint8_t* mprime, size_t mprimelen,           \
                                                               const uint8_t* pk) {                               \
-        return Testing<params::ML_DSA_##N>::verify_internal(sig, siglen, mprime, mprimelen, pk);                 \
+        OPENPQC_TESTING_RETURN(                                                                                  \
+                Testing<params::ML_DSA_##N>::verify_internal(sig, siglen, mprime, mprimelen, pk));               \
     }
 
 extern "C" {

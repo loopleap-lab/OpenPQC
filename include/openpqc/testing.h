@@ -14,6 +14,15 @@
  * the benchmarks or the examples (OPENPQC_BUILD_TESTS, _BENCHMARKS, _EXAMPLES) and never installed (review finding
  * M13).
  *
+ * In FIPS 140-3 mode (openpqc/fips.h) these functions are not part of the module and are not approved services: each
+ * sets the calling thread's approved-service indicator to 0 when it returns, after any service of the module that it
+ * called, and while the module is in its error state each returns OPENPQC_ERR_ERROR_STATE in place of its result,
+ * its refusals included, and computes and writes nothing (openpqc_testing_sig_sign_derand reads the caller's opts
+ * first). They check the state themselves only when they begin: a call that was already computing when the error
+ * state began returns its result, with the indicator 0, unless a service of the module that it called checks the
+ * state again and returns OPENPQC_ERR_ERROR_STATE (openpqc_testing_sig_keygen_derand runs ML-DSA's
+ * keygen_from_seed, a service of the module).
+ *
  * Every function returns an openpqc_status (openpqc/common.h) and is declared OPENPQC_MUST_CHECK. A NULL where
  * a random value goes (m, rnd, addrnd, seed) gives OPENPQC_ERR_INVALID_ARGUMENT and writes nothing: these
  * functions never pick a value themselves. Everything else (sizes, outputs on failure) is as for the functions of
