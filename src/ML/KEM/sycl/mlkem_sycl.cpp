@@ -31,9 +31,34 @@
 // The noise is stored as PRF output (64 eta bytes per polynomial) rather than as
 // sampled coefficients (512 bytes): SamplePolyCBD then runs in the arithmetic
 // stage, spread over the 32 work-items of the team.
+//
+// FIPS 140-3 mode (OPENPQC_FIPS140_3), as the other two backends and the CPU library do it:
+//  * create runs a known-answer self-test of the context's level on the device (self_test: one
+//    KeyGen, one Encaps, and the Decaps of its ciphertext and of a tampered copy, against the CPU
+//    library's answers) and fails with OPQC_SYCL_MLKEM_SELF_TEST_FAIL if the device computes a wrong
+//    result: FIPS 140-3 asks a module to test an algorithm before it uses it (IG 10.3.A), and the
+//    compilers of device code have been seen to miscompile code like this, some of them at run time on
+//    the machine that runs it. A build outside FIPS mode has no such check (the developer definition
+//    OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST compiles it in for the tests): there, only the tests compare
+//    the device's results with the CPU library's.
+//  * KeyGen tests every key pair it makes, as the CPU library does in this mode: the pair-wise
+//    consistency check of FIPS 203, Section 7.1, Encaps and Decaps of a random m on the device
+//    (keygen_pct). Every pair must be counted as passed: a pair that fails, or a part of the test that
+//    does not run, fails the whole call: every key it made is zeroized, and it returns
+//    OPENPQC_ERR_PCT. Outside FIPS mode only test objects compiled with OPENPQC_MLKEM_KEYGEN_PCT have it.
 
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
+
+// Whether create runs the known-answer self-test (self_test): in FIPS 140-3 mode, and where the developer
+// definition OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST is given (the white-box test test_mlkem_sycl_faults_pct; no
+// target of the libraries defines it). Without it, the self-test and its answers are not compiled at all, so
+// that no library of an ordinary build holds them (test gpu_self_test).
+#if defined(OPENPQC_FIPS140_3) || defined(OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST)
+#define OPQC_MLKEM_SYCL_SELF_TEST 1
+#else
+#define OPQC_MLKEM_SYCL_SELF_TEST 0
+#endif
 
 #include "ML/KEM/sycl/openpqc_mlkem_sycl.h"
 
@@ -64,7 +89,9 @@
 #include "ML/KEM/math/mlkem_sample.h"
 #include "ML/KEM/openpqc_mlkem.h"
 #include "ML/KEM/scheme/parameter_sets.hpp"
+#if OPQC_MLKEM_SYCL_SELF_TEST
 #include "ML/KEM/sycl/mlkem_sycl_self_test.hpp"
+#endif
 
 static_assert(OPQC_SYCL_MLKEM_RNG_FAIL == OPENPQC_ERR_RNG &&
               OPQC_SYCL_MLKEM_INVALID_PK == OPENPQC_ERR_INVALID_PUBLIC_KEY &&
@@ -95,6 +122,19 @@ static_assert(prf_stride<params::ML_KEM_512> == prf_stride_of_level(512) &&
               prf_stride<params::ML_KEM_768> == prf_stride_of_level(768) &&
               prf_stride<params::ML_KEM_1024> == prf_stride_of_level(1024));
 
+// Whether KeyGen tests the pair-wise consistency of every key pair it makes (keygen_pct): in FIPS 140-3 mode,
+// since a module must test every key pair it generates (FIPS 140-3 IG 10.3.A), and in a test object that defines
+// OPENPQC_MLKEM_KEYGEN_PCT itself (the white-box test test_mlkem_sycl_faults_pct; outside FIPS mode the build
+// gives that definition to no library)
+#if defined(OPENPQC_MLKEM_KEYGEN_PCT) || defined(OPENPQC_FIPS140_3)
+constexpr bool KEYGEN_PCT = true;
+#else
+constexpr bool KEYGEN_PCT = false;
+#endif
+// Whether create runs the known-answer self-test (self_test; OPQC_MLKEM_SYCL_SELF_TEST, above), for the tests: the
+// code itself uses the preprocessor's answer
+[[maybe_unused]] constexpr bool CREATE_SELF_TEST = OPQC_MLKEM_SYCL_SELF_TEST != 0;
+
 // The largest launch has TEAM work-items per operation, in work-groups of TEAMS operations: with
 // OPQC_SYCL_MLKEM_MAX_BATCH operations it stays below 2^31 work-items, as the SYCL compilers assume
 // of the index space (DPC++: -fsycl-id-queries-fit-in-int, its default)
@@ -112,21 +152,30 @@ struct Workspace {
     std::uint8_t* hek;        // 32 B per op: H(ek) of Encaps                       public
     std::int32_t* dk_check;   // per op: result of the Section 7.3 check            public
     std::uint8_t* coins;      // 64 B per op: coins of the randomized calls         secret
+    // KeyGen's pair-wise consistency test (keygen_pct; sections of 0 bytes without it)
+    std::uint8_t* pct_ct;     // per op: the test's ciphertext c                    public
+    std::uint8_t* pct_k;      // 32 B per op, twice: K of Encaps, then K' of Decaps (two halves of a launch)  secret
+    std::int32_t* pct_status; // 4 B per op, twice: Encaps' status (then the verdict), Decaps' status        public
     std::uint32_t* zero;      // one word that holds 0: the opaque term of the Decaps mask (encrypt)
+    std::uint32_t* pct_passes;     // the word after it: the key pairs of a launch that passed the test   public
 };
 
 // The sections of the workspace and their sizes in bytes per operation
-enum Section : unsigned { SEEDS, MATRIX, PRF, MSG, KBAR, HEK, DK_CHECK, COINS, SECTIONS };
+enum Section : unsigned { SEEDS, MATRIX, PRF, MSG, KBAR, HEK, DK_CHECK, COINS, PCT_CT, PCT_K, PCT_STATUS, SECTIONS };
 template <class P>
 constexpr std::array<std::size_t, SECTIONS> section_bytes() {
-    constexpr std::size_t k = P::k;
-    return {64, 2 * MLKEM_N * k * k, (2 * k + 1) * prf_stride<P>, 32, 32, 32, 4, 64};
+    constexpr std::size_t k = P::k, pct = KEYGEN_PCT ? 1 : 0;
+    return {64, 2 * MLKEM_N * k * k, (2 * k + 1) * prf_stride<P>, 32, 32, 32, 4, 64,
+            pct * Sizes<P>::ct, pct * 64, pct * 8};
 }
 
-// The secret sections that each operation uses (bit i = section i); COINS is the randomized calls'
+// The secret sections that each operation uses (bit i = section i); COINS is the randomized calls'. The
+// pair-wise consistency test zeroizes those of Encaps and Decaps and every section of its own: c and the
+// verdicts are not secret, but nothing of the test is an output (FIPS 203, Section 3.3).
 constexpr unsigned bit(Section s) { return 1u << s; }
 constexpr unsigned KEYGEN_SECRETS = bit(SEEDS) | bit(PRF), ENCAPS_SECRETS = bit(SEEDS) | bit(PRF),
-                   DECAPS_SECRETS = bit(SEEDS) | bit(PRF) | bit(MSG) | bit(KBAR);
+                   DECAPS_SECRETS = bit(SEEDS) | bit(PRF) | bit(MSG) | bit(KBAR),
+                   PCT_SECTIONS = ENCAPS_SECRETS | DECAPS_SECRETS | bit(PCT_CT) | bit(PCT_K) | bit(PCT_STATUS);
 
 // ------------------------------------------------------------------ launching
 
@@ -700,6 +749,42 @@ void decaps(sycl::queue& q, const Workspace& ws, std::uint8_t* ss, const std::ui
     encrypt<P, true>(q, ws, ek, ws.msg, const_cast<std::uint8_t*>(c), ss, status, n);   // K, status
 }
 
+// The pair-wise consistency check of FIPS 203, Section 7.1, item 4, of the n key pairs at ek and dk, with the
+// random values m (32 bytes per pair): (K, c) <- Encaps_internal(ek, m), K' <- Decaps_internal(dk, c), and the
+// pair passes only if K == K'. The device's Encaps and Decaps also make the checks of Sections 7.2 and 7.3, and a
+// pair whose ek or dk fails one fails the test (its K or K' is zeros then, and its status not 0). The
+// ciphertexts, both keys and the statuses stay in the workspace (pct_ct; pct_k and pct_status in two halves of n
+// operations each, so that the zeroization of n operations' sections after the launch reaches all of them), the
+// verdicts go to pct_status, and the number of pairs that PASSED is added to pct_passes, which the caller has
+// zeroed and compares with n. Every value the verdict reads is set to a failure first (both statuses to
+// OPENPQC_ERR_PCT, K to 0x00 bytes and K' to 0xFF bytes), so that a pair passes only if every kernel of the
+// test ran for it: a kernel that never runs (a device that drops work without an error) leaves a failure, never
+// a pass. Whether a pair passed is public; K and K' are compared without a branch on their bytes.
+template <class P>
+void keygen_pct(sycl::queue& q, const Workspace& ws, const std::uint8_t* ek, const std::uint8_t* dk,
+                const std::uint8_t* m, std::size_t n) {
+    q.fill(ws.pct_status, std::int32_t{OPENPQC_ERR_PCT}, 2 * n);
+    q.memset(ws.pct_k, 0x00, 32 * n);
+    q.memset(ws.pct_k + 32 * n, 0xFF, 32 * n);
+    encaps<P>(q, ws, ws.pct_ct, ws.pct_k, ek, m, ws.pct_status, n);                 // K, c
+    decaps<P>(q, ws, ws.pct_k + 32 * n, ws.pct_ct, dk, ws.pct_status + n, n);      // K'
+    const Workspace w = ws;
+    for_each_item(q, n, [=](std::size_t op) {
+        const std::uint8_t* K = w.pct_k + op * 32;
+        const std::uint8_t* K_prime = w.pct_k + (n + op) * 32;
+        std::uint32_t diff = 0;
+#pragma unroll
+        for (unsigned i = 0; i < 32; i++) diff |= static_cast<std::uint32_t>(K[i] ^ K_prime[i]);
+        const bool passed = diff == 0 && w.pct_status[op] == 0 && w.pct_status[n + op] == 0;
+        w.pct_status[op] = passed ? 0 : std::int32_t{OPENPQC_ERR_PCT};
+        if (passed) {   // the count: an atomic add in device memory
+            sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>(w.pct_passes[0])
+                    .fetch_add(1u);
+        }
+    });
+}
+
 } // namespace
 } // namespace openpqc::mlkem::gpu
 
@@ -865,8 +950,9 @@ int decaps_chunks(opqc_sycl_mlkem* ctx, std::uint8_t* ss, const std::uint8_t* ct
     });
 }
 
-// The randomized calls (Core's with_random_coins): per chunk, coin_bytes x m bytes from the
-// operating system into the context's page-locked host buffer, copied into the workspace and
+// The randomized calls (Core's with_random_coins): per chunk, coin_bytes x m bytes from
+// opqc_randombytes (Core/opqc_platform.h; in FIPS 140-3 mode the module's HMAC_DRBG) into the
+// context's page-locked host buffer, copied into the workspace and
 // wiped on the host at once; run(off, m, coins) queues the derandomized operation on them, and the
 // coins in the workspace are zeroized behind it, whatever happened. Takes the lock (it is held
 // already). Returns 0, -2 or OPQC_SYCL_MLKEM_RNG_FAIL.
@@ -878,8 +964,38 @@ int with_random_coins(opqc_sycl_mlkem* ctx, std::size_t coin_bytes, std::size_t 
                                            });
 }
 
-// KeyGen, derandomized (coins != NULL) or randomized: checks the arguments, queues the work, and
-// zeroizes the outputs if the call fails
+// KeyGen's pair-wise consistency test (gpu::keygen_pct) of the n key pairs at pk and sk, in chunks of at most
+// max_batch pairs, each with its own random m (32 bytes per pair, drawn as the randomized calls draw their
+// coins, with_random_coins: FIPS 203, Section 7.1, item 4, i), so that the derandomized KeyGen needs the RNG
+// too, as the CPU library's KeyGen with the test does. After every chunk, the sections of the test are zeroized
+// (PCT_SECTIONS), and the number of pairs that passed is read back (the copy waits for the test's kernels): it
+// must be the chunk's number of pairs, or the call stops there with OPENPQC_ERR_PCT. A count that cannot be read
+// back counts as no pair passed. Called with the lock held. Returns 0, OPENPQC_ERR_PCT, OPQC_SYCL_MLKEM_RNG_FAIL
+// or -2.
+int pct_call(opqc_sycl_mlkem* ctx, const std::uint8_t* pk, const std::uint8_t* sk, std::size_t n) {
+    const LevelSizes s = sizes_of(ctx->level);
+    return with_random_coins(ctx, 32, n, [&](std::size_t off, std::size_t count, const std::uint8_t* m) {
+        std::uint32_t passed = 0;
+        const int rc = chunked(ctx, count, gpu::PCT_SECTIONS, [&](std::size_t o, std::size_t c) {   // one chunk
+            ctx->queue.memset(ctx->ws.pct_passes, 0, sizeof(std::uint32_t));
+            const std::uint8_t* ek = pk + (off + o) * s.ek;
+            const std::uint8_t* dk = sk + (off + o) * s.dk;
+            const std::uint8_t* m_chunk = m + o * 32;
+            with_level(ctx->level, [&]([[maybe_unused]] auto p) {
+                if constexpr (gpu::KEYGEN_PCT)   // no device code of the test in a build without it
+                    gpu::keygen_pct<decltype(p)>(ctx->queue, ctx->ws, ek, dk, m_chunk, c);
+            });
+            if (openpqc::gpu::copy(ctx, &passed, ctx->ws.pct_passes, sizeof passed, true) != 0) passed = 0;
+            ctx->queue.memset(ctx->ws.pct_passes, 0, sizeof(std::uint32_t));
+        });
+        if (rc != 0) return rc;
+        return passed == count ? 0 : OPENPQC_ERR_PCT;   // count <= max_batch: one chunk
+    });
+}
+
+// KeyGen, derandomized (coins != NULL) or randomized: checks the arguments, queues the work, runs the pair-wise
+// consistency test in a build with it (KEYGEN_PCT), and zeroizes the outputs of all n operations if the call
+// fails, a pair that fails the test included (the call then returns OPENPQC_ERR_PCT)
 int keygen_call(opqc_sycl_mlkem* ctx, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* coins, bool random,
                 std::size_t n) {
     if (!ctx || !count_fits(ctx, n)) return -1;
@@ -894,6 +1010,7 @@ int keygen_call(opqc_sycl_mlkem* ctx, std::uint8_t* pk, std::uint8_t* sk, const 
     } else {
         rc = keygen_chunks(ctx, pk, sk, coins, n);
     }
+    if (gpu::KEYGEN_PCT && rc == 0) rc = pct_call(ctx, pk, sk, n);
     if (rc != 0) fail_closed(ctx, nullptr, n, {{pk, s.ek}, {sk, s.dk}});
     return rc;
 }
@@ -935,7 +1052,8 @@ int encaps_call(opqc_sycl_mlkem* ctx, std::uint8_t* ct, std::uint8_t* ss, const 
     });
 }
 
-// The self-test of create (openpqc_mlkem_sycl.h, Self-test): KeyGen of the inputs of
+#if OPQC_MLKEM_SYCL_SELF_TEST
+// The self-test of create (CREATE_SELF_TEST; openpqc_mlkem_sycl.h, Self-test): KeyGen of the inputs of
 // mlkem_sycl_self_test.hpp, Encaps under its key, and, in one call, the Decaps of the ciphertext and
 // of a tampered copy, on the context's device; the hashes of ek, dk and c and the keys must be the
 // CPU library's answers, and every status 0. Its device memory holds no secret. All of it but the
@@ -1029,6 +1147,7 @@ int self_test(opqc_sycl_mlkem* ctx) {
     ok = ok && st_values[0] == 0 && st_values[1] == 0 && st_values[2] == 0;
     return ok ? 0 : OPQC_SYCL_MLKEM_SELF_TEST_FAIL;
 }
+#endif // OPQC_MLKEM_SYCL_SELF_TEST
 
 // The device of create (openpqc_mlkem_sycl.h): index `device`, or for -1 the index that
 // OPENPQC_SYCL_DEVICE names, or SYCL's default device when it is unset or empty. The variable must
@@ -1054,8 +1173,10 @@ bool resolve_device(int device, sycl::device& out) {
 }
 
 // create, on the device with index `device` (opqc_sycl_mlkem_create) or on the device `given`, in the SYCL
-// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp)
-// The workspace's extra bytes, after the 256-byte aligned sections: the zero word of the Decaps mask
+// context `app` if it is not nullptr (the GPU API, Core/sycl/opqc_sycl_backends.hpp), with the self-test in a
+// build with it (CREATE_SELF_TEST)
+// The workspace's extra bytes, after the 256-byte aligned sections: the zero word of the Decaps mask, then the
+// pair-wise consistency test's count of passes
 constexpr std::size_t EXTRA_BYTES = openpqc::gpu::WORKSPACE_ALIGN;
 
 // The arguments that create takes: a level of FIPS 203 and 1 to OPQC_SYCL_MLKEM_MAX_BATCH operations per launch
@@ -1085,7 +1206,7 @@ int create_context(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int 
                 new opqc_sycl_mlkem(dev, level, max_batch, app), [](opqc_sycl_mlkem* c) { openpqc::gpu::destroy(c); });
         std::array<std::size_t, gpu::SECTIONS> per_op{};
         with_level(level, [&](auto p) { per_op = gpu::section_bytes<decltype(p)>(); });
-        // 256-byte aligned sections, then the zero word of the Decaps mask
+        // 256-byte aligned sections, then the zero word of the Decaps mask and the test's count
         std::uint8_t* extra = ctx->allocate(per_op, EXTRA_BYTES);
         if (!extra) return -1;
         const auto at = [&](Section s) { return ctx->section(s); };
@@ -1097,9 +1218,15 @@ int create_context(opqc_sycl_mlkem** out, int level, std::size_t max_batch, int 
                             at(gpu::HEK),
                             reinterpret_cast<std::int32_t*>(at(gpu::DK_CHECK)),
                             at(gpu::COINS),
-                            reinterpret_cast<std::uint32_t*>(extra)};
+                            at(gpu::PCT_CT),
+                            at(gpu::PCT_K),
+                            reinterpret_cast<std::int32_t*>(at(gpu::PCT_STATUS)),
+                            reinterpret_cast<std::uint32_t*>(extra),
+                            reinterpret_cast<std::uint32_t*>(extra) + 1};
+#if OPQC_MLKEM_SYCL_SELF_TEST
         const int rc = self_test(ctx.get());
         if (rc != 0) return rc;
+#endif
         *out = ctx.release();
         return 0;
     });

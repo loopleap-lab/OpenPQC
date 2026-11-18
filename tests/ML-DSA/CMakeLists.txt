@@ -25,10 +25,16 @@ add_test(NAME mldsa_differential COMMAND test_mldsa_differential)
 
 #   mldsa_pct        the library built with the pair-wise consistency test after KeyGen
 #                    (OPENPQC_MLDSA_KEYGEN_PCT, FIPS 140-3), so that this configuration is compiled
-#                    and its KeyGen exercised
+#                    and its KeyGen exercised (a copy of the library that the test compiles, in every
+#                    build; mldsa_pct_library, below, runs the same test against the library of FIPS
+#                    140-3 mode)
 #   mldsa_pct_fail   the same with OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST, which breaks the test: KeyGen
 #                    must fail with OPENPQC_ERR_PCT and zeroize both keys. This shows that the
 #                    test is compiled in and that its result is used, which mldsa_pct alone cannot show.
+#   In FIPS 140-3 mode a failed test puts the module (the state in the tests' libraries) in its
+#   error state for good: mldsa_pct_fail and mldsa_pct_odr run each KeyGen of each set in a process
+#   of its own, and after the failure (indicator 0) both KeyGens must return OPENPQC_ERR_ERROR_STATE
+#   without writing; mldsa_pct ends with the module still operational.
 foreach(variant pct pct_fail)
     add_library(openpqc_mldsa_${variant}_objects OBJECT ${OPENPQC_MLDSA_SOURCES})
     target_include_directories(openpqc_mldsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
@@ -74,9 +80,20 @@ add_test(NAME mldsa_sk_check COMMAND test_mldsa_sk_check)
 #                        with xi = 0, the deterministic signature)
 #   mldsa_fresh_control  the same checks with a source registered through opqc_set_randombytes that gives the
 #                        same bytes on every call: they must report every repeat
+#   In FIPS 140-3 mode, where every registration is refused, mldsa_fresh also checks that a constant source is
+#   refused and never called, and mldsa_fresh_control runs against the test variant openpqc_mldsa_testrng (the
+#   same ML-DSA objects), whose generator, the program's opqc_external_randombytes, gives the constant bytes
+set(_mldsa_fresh_control_library openpqc_mldsa)
+if(OPENPQC_FIPS140_3)
+    set(_mldsa_fresh_control_library openpqc_mldsa_testrng)
+endif()
 foreach(variant fresh fresh_control)
     add_executable(test_mldsa_${variant} test_mldsa_fresh.c)
-    target_link_libraries(test_mldsa_${variant} PRIVATE openpqc_mldsa openpqc_strict_warnings)
+    if(variant STREQUAL "fresh_control")
+        target_link_libraries(test_mldsa_${variant} PRIVATE ${_mldsa_fresh_control_library} openpqc_strict_warnings)
+    else()
+        target_link_libraries(test_mldsa_${variant} PRIVATE openpqc_mldsa openpqc_strict_warnings)
+    endif()
     set_target_properties(test_mldsa_${variant} PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
                                                            C_EXTENSIONS OFF)
     add_test(NAME mldsa_${variant} COMMAND test_mldsa_${variant})
@@ -402,16 +419,20 @@ else()
                    "disabled")
 endif()
 
-# In a build with the CMake option OPENPQC_MLDSA_KEYGEN_PCT (CMakeLists.txt) the library's own KeyGen runs the
-# pair-wise consistency test:
-#   mldsa_pct_library   the test of mldsa_pct against the library as built (openpqc_mldsa): keypair and
-#                       keypair_derand of every parameter set through the test, and keys that sign and verify
+# In FIPS 140-3 mode, and only there, the library's own KeyGen runs the pair-wise consistency test (the
+# top-level CMakeLists.txt gives the library's objects OPENPQC_MLDSA_KEYGEN_PCT):
+#   mldsa_pct_library   the test of mldsa_pct against the library as built (openpqc_mldsa, the module's ML-DSA
+#                       objects): keypair and keypair_derand of every parameter set through the test, and keys
+#                       that sign and verify
 #   mldsa_thread_stack  in optimized builds, compares KeyGen's stack with the documented size of KeyGen with the
 #                       test, and requires more than the size of KeyGen without it: the test signs inside KeyGen
-# In optimized builds the second fails when the option does not reach the library (mldsa_pct_library passes
-# against a library without the test, since the test draws no randomness and changes no result); unoptimized
-# builds need more stack than the header documents, and there it compares nothing.
-if(OPENPQC_MLDSA_KEYGEN_PCT)
+# In optimized builds the second fails when the mode's definition does not reach the library (mldsa_pct_library
+# passes against a library without the test, since the test draws no randomness and changes no result);
+# unoptimized builds need more stack than the header documents, and there it compares nothing. The tests that
+# compile copies of the library with the test themselves (mldsa_pct, mldsa_pct_fail, mldsa_pct_odr,
+# mldsa_thread_stack_pct) run in every build: the scheme layer's test is the code that the mode compiles into the
+# module.
+if(OPENPQC_FIPS140_3)
     add_executable(test_mldsa_pct_library test_mldsa_pct.c)
     target_link_libraries(test_mldsa_pct_library PRIVATE openpqc_mldsa openpqc_strict_warnings)
     set_target_properties(test_mldsa_pct_library PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON

@@ -24,6 +24,9 @@
  *   Operating system (Core/opqc_platform.h), in the library openpqc:
  *     opqc_randombytes(out, len), opqc_zeroize(p, len),
  *     opqc_set_randombytes(fn, ctx)              (the source of randomness)
+ *   FIPS 140-3 mode only (a library built with the CMake option
+ *   OPENPQC_FIPS140_3, whose objects are compiled with OPENPQC_FIPS140_3=1):
+ *     opqc_fips_mark_non_approved()              (below)
  *
  * Preconditions and errors. The incremental sponge follows FIPS 202's order:
  * opqc_sponge_init with a rate that is a multiple of 8 from 8 to 192 (the
@@ -58,9 +61,12 @@
  * not call opqc_randombytes itself, and stays valid, with its ctx, until no
  * draw that may have read it can still be running, which can be after the
  * next registration has returned (Core/opqc_platform.h has the whole
- * contract). In a module that FIPS 140-3 validates, the source is the
- * module's approved random bit generator (FIPS 203, Section 3.3; FIPS 204,
- * Section 3.6.1; FIPS 205, Section 3.1).
+ * contract). The schemes' randomness must come from an approved random bit
+ * generator (FIPS 203, Section 3.3; FIPS 204, Section 3.6.1; FIPS 205,
+ * Section 3.1): in FIPS 140-3 mode that is the module's own HMAC_DRBG, and
+ * every registration is refused; an ordinary build that must meet the
+ * requirement registers an approved generator, or links one as
+ * opqc_external_randombytes.
  *
  * The test variants. The libraries openpqc_core_testrng,
  * openpqc_mlkem_testrng, openpqc_mldsa_testrng and openpqc_slhdsa_testrng are
@@ -97,5 +103,18 @@
 #include "opqc_platform.h"
 #include "opqc_sha2.h"
 #include "opqc_sha3.h"
+
+#if defined(OPENPQC_FIPS140_3)
+OPQC_EXTERN_C_BEGIN
+/*
+ * Sets the calling thread's approved-service indicator (openpqc/fips.h) to 0.
+ * For code outside the module that performs a service with the module's
+ * functions, such as the GPU library (openpqc/sycl.h), whose services are not
+ * approved: it calls this when such a service returns. It can only clear the
+ * indicator; nothing outside the module can set it to 1.
+ */
+OPENPQC_API void opqc_fips_mark_non_approved(void);
+OPQC_EXTERN_C_END
+#endif
 
 #endif /* !OPENPQC_CORE_H */

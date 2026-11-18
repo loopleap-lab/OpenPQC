@@ -59,7 +59,7 @@ int main(void)
     uint8_t ss_enc[OPENPQC_MLKEM_BYTES], ss_dec[OPENPQC_MLKEM_BYTES];
     int result = 1;
 
-    if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||         /* randomness from the operating system */
+    if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||         /* randomness from the OS, or FIPS mode's DRBG */
         openpqc_mlkem768_encaps(ct, ss_enc, pk) != OPENPQC_OK || /* checks pk first (FIPS 203, Section 7.2) */
         openpqc_mlkem768_decaps(ss_dec, ct, sk) != OPENPQC_OK) {
         goto cleanup;                                             /* use none of pk, sk, ct, ss_enc, ss_dec */

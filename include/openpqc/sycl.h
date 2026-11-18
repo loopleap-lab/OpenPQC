@@ -26,7 +26,8 @@
  * and writes nothing. The randomness is drawn on the host through Core's opqc_randombytes (Core/opqc_platform.h):
  * from the source that the application registered with opqc_set_randombytes, else, in a library built with
  * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes, else from the operating system's
- * RNG (the default). Randomness that the caller chooses is for testing only, in openpqc/sycl_testing.h
+ * RNG (the default); in FIPS 140-3 mode, from the module's HMAC_DRBG, which refuses registrations (FIPS 140-3
+ * mode, below). Randomness that the caller chooses is for testing only, in openpqc/sycl_testing.h
  * (OpenPQC::sycl_testing, not installed). openpqc/sycl.hpp is a C++ layer over this API (host staging, RAII
  * buffers, results), and openpqc/sycl/device.hpp has hash functions for an application's own kernels.
  *
@@ -56,8 +57,9 @@
  *                                     outside [-eta, eta] (Private keys, below; zeros)
  *   OPENPQC_ERR_INVALID_SIGNATURE     verification: the signature is not valid
  *   OPENPQC_ERR_SIGNING_LIMIT         ML-DSA: no signature within 821 attempts (FIPS 204, Appendix C; zeros)
- *   OPENPQC_ERR_PCT                   ML-DSA KeyGen in a build with the pair-wise consistency test on the
- *                                     device (OPENPQC_MLDSA_KEYGEN_PCT): the pair failed it (zeros)
+ *   OPENPQC_ERR_PCT                   ML-DSA KeyGen in FIPS 140-3 mode, which tests every key pair on the
+ *                                     device: the pair failed the test, or the test did not show that the
+ *                                     pairs of its launch passed (zeros)
  *   OPENPQC_ERR_INVALID_ARGUMENT      the operation's message lies outside its buffer (Messages; zeros)
  *   OPENPQC_ERR_NOT_COMPUTED          no result: the call was refused or failed, or the device failed before the
  *                                     operation's last kernel
@@ -76,11 +78,21 @@
  *   OPENPQC_ERR_UNSUPPORTED       the call is not one of the context's parameter set (above)
  *   OPENPQC_ERR_DEVICE            the SYCL runtime or the device failed, now or before (Device failures)
  *   OPENPQC_ERR_RNG               the RNG failed
- *   OPENPQC_ERR_PCT               ML-DSA KeyGen: some key pairs failed the pair-wise consistency test; their
- *                                 entries say which, and the others are results
+ *   OPENPQC_ERR_PCT               KeyGen in FIPS 140-3 mode, which tests every key pair on the device (no
+ *                                 other build has the test). A pair passes only when every kernel of its test
+ *                                 has run and shown it consistent: a part of the test that the device does not
+ *                                 run counts as a failure. ML-DSA: some key pairs failed the test; their
+ *                                 entries say which, and the others are results. ML-KEM (FIPS 203, Section
+ *                                 7.1: Encaps and Decaps of a random m) and SLH-DSA (a signature of the empty
+ *                                 message that must verify): a key pair failed the test, and the whole call
+ *                                 fails, as after the failures below: every key of the call is zeros and every
+ *                                 entry OPENPQC_ERR_NOT_COMPUTED
+ *   OPENPQC_ERR_ERROR_STATE       FIPS 140-3 mode: the module (libopenpqc) is in its error state (FIPS 140-3
+ *                                 mode, below); nothing is queued and nothing is written, status included
  * After any other failure, every status entry is OPENPQC_ERR_NOT_COMPUTED and the outputs of all n operations
  * are zeros, as far as the device still accepts work, and the call has waited for these writes: it leaves no
- * write into the caller's buffers behind it. The checks come in one order: a NULL context
+ * write into the caller's buffers behind it. The checks come in one order: in FIPS 140-3 mode, the module's
+ * error state (OPENPQC_ERR_ERROR_STATE, before any other check); a NULL context
  * (OPENPQC_ERR_INVALID_ARGUMENT); a call that the parameter set does not have (OPENPQC_ERR_UNSUPPORTED); n = 0,
  * which returns OPENPQC_OK (OPENPQC_ERR_DEVICE on a context that has failed) without looking at the buffers; a
  * context that has failed (OPENPQC_ERR_DEVICE, whatever else is wrong); the arguments
@@ -119,13 +131,25 @@
  *
  * Calls are asynchronous: they return once the work is queued, and openpqc_gpu_sync waits for it -- except
  * ML-DSA signing, which waits for each round of its rejection loop, and the randomized calls, which wait for the
- * copy of each launch's coins. Take results only when the call, openpqc_gpu_sync and the copy back all returned
- * OPENPQC_OK. A call with more than max_batch operations runs in launches of max_batch.
+ * copy of each launch's coins. In FIPS 140-3 mode every call that runs an algorithm also waits for its work before
+ * it returns (the second check of the module's state, FIPS 140-3 mode below). Take results only when the call,
+ * openpqc_gpu_sync and the copy back all returned OPENPQC_OK. A call with more than max_batch operations runs in
+ * launches of max_batch.
  *
- * Self-test. openpqc_gpu_create of ML-KEM and ML-DSA runs a known-answer test on the device (one KeyGen, one
- * Encaps or deterministic signature, and the Decaps or verification of its result and of a tampered copy) and
- * compares the results with the CPU library's: a device that computes a wrong result gets no context
- * (OPENPQC_ERR_SELF_TEST). SLH-DSA's contexts have none.
+ * Self-test. In FIPS 140-3 mode, or with the developer definitions below, openpqc_gpu_create runs a known-answer test
+ * of the context's parameter set on the device for all three schemes (ML-KEM: one KeyGen, one Encaps, and the Decaps of
+ * its ciphertext and of a tampered copy; ML-DSA and SLH-DSA: one KeyGen, one deterministic signature, and the
+ * verification of it and of a tampered copy) and compares the results with the CPU library's: a device that computes a
+ * wrong result gets no context (OPENPQC_ERR_SELF_TEST). FIPS 140-3 asks a module to test an algorithm before it uses it
+ * (IG 10.3.A), and the compilers of device code have been seen to miscompile such code, some at run time. A
+ * known-answer test of an SLH-DSA "s" set costs some 2.5 to 4 million hash calls once per context; the "f" sets well
+ * under one million. An ordinary build (outside FIPS 140-3 mode, without these definitions) runs none and holds none,
+ * so an ordinary GPU build has no known-answer check of the device at all, and only the project's tests compare the
+ * device's results with the CPU library's. The developer definitions OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST,
+ * OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST and OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST are compile definitions for the
+ * project's tests, not CMake options, and no target of the libraries gives them: the white-box tests compile the
+ * backends with them, and a build that gives them to every object (CMAKE_CXX_FLAGS) has the self-tests in its GPU
+ * libraries too.
  *
  * Device failures. Most device errors (a kernel that faults, a lost device) are found after the call that
  * caused them has returned: by a later call, by openpqc_gpu_sync, or by a copy that waits. From then on the
@@ -143,6 +167,32 @@
  * the device still accepts work. openpqc_gpu_free overwrites what it frees with zeros. The coins go to the device
  * from page-locked host memory that the context wipes at once after each copy; NVIDIA's driver has been seen to
  * keep copies of such small transfers in memory of its own, out of the library's reach.
+ *
+ * FIPS 140-3 mode (a build with OPENPQC_FIPS140_3). The module is the CPU library, libopenpqc; the GPU library
+ * is outside its boundary, and its services are not approved services. Every call that runs an algorithm
+ * (openpqc_gpu_create, openpqc_gpu_create_on, the KEM and signature calls, and the testing interfaces of
+ * openpqc/sycl_testing.h) sets the calling thread's approved-service indicator to 0 when it returns
+ * (openpqc_fips_service_approved, openpqc/fips.h), also when it fails or is refused. A call that begins while the
+ * module is in its error state (openpqc_fips_status() returns OPENPQC_ERR_ERROR_STATE) returns
+ * OPENPQC_ERR_ERROR_STATE before any other check and queues and writes nothing (create also sets *gpu to NULL). A
+ * call that runs checks the state again once its work is done: it waits for its kernels first, so in this mode these
+ * calls are not asynchronous, and if the module entered its error state meanwhile (another thread's failure, or the
+ * call's own draw from the module's DRBG) it returns OPENPQC_ERR_ERROR_STATE with all its outputs zeroed and its
+ * status entries OPENPQC_ERR_NOT_COMPUTED; create then returns it with no context (the context it made is destroyed,
+ * which zeroizes it). A result returned with OPENPQC_OK was complete while the module was operational at that check.
+ * A call refused before any work (a NULL context, an unsupported call, n = 0, a failed context, refused arguments)
+ * writes no output and keeps its own code. A failed self-test at create gives OPENPQC_ERR_SELF_TEST and no context,
+ * and does not put the module into its error state. The functions that run no algorithm (the device and context
+ * queries, openpqc_gpu_supports, openpqc_gpu_workspace_bytes, sync, malloc, free, the copies and destroy) leave the
+ * indicator alone and still work in the error state, so that an application can take its buffers back and
+ * destroy its contexts, which zeroizes them. KeyGen tests every key pair it makes, on the device (Results of
+ * calls: OPENPQC_ERR_PCT); a failed test fails the call and does not put the module into its error state
+ * either (the GPU library, outside the boundary, cannot enter it). The state is not checked by sync, the copies,
+ * free or destroy. The backends' own C functions (opqc_sycl_*) are outside this contract: they do not check the
+ * module's state, and leave the indicator as the module's last
+ * service set it (for the randomized ones, its draw of randomness). In this mode only the test library
+ * OpenPQC::sycl_testing exports them: the GPU library is shared, and keeps them local (cmake/openpqc_sycl.map), as
+ * configuring refuses a static one (OPENPQC_SYCL_SHARED=OFF) in this mode.
  *
  * Threads. A context may be used from several host threads: their calls take turns. openpqc_gpu_destroy must
  * not run while another call uses the context. Threads that need more throughput than one context gives should
@@ -199,22 +249,24 @@ OPENPQC_API const char *openpqc_gpu_implementation(void);
  * those of openpqc_alg_list (openpqc/common.h). */
 OPENPQC_API int openpqc_gpu_supports(openpqc_alg alg);
 /* The device memory, in bytes, of the workspace that openpqc_gpu_create allocates for alg with max_batch
- * operations per launch (0: the default of openpqc_gpu_config), without a device or a context: OPENPQC_OK and
- * *bytes; OPENPQC_ERR_UNSUPPORTED for an alg that openpqc_gpu_supports does not have; OPENPQC_ERR_INVALID_ARGUMENT
- * for a NULL bytes, or a max_batch that create refuses whatever the device (too many work-items in a launch, or
- * more than size_t holds). *bytes is written only with OPENPQC_OK. The workspace grows with max_batch, by about
- * the same amount per operation; besides it, a context holds a few small host objects, create's self-test uses a
- * little device memory while it runs (ML-KEM and ML-DSA: under 20 KiB), and openpqc_gpu_malloc and _malloc_host
- * take what they are asked for. An application that bounds its device memory can choose max_batch with this. */
+ * operations per launch (0: the default of openpqc_gpu_config), without a device or a context: OPENPQC_OK and *bytes;
+ * OPENPQC_ERR_UNSUPPORTED for an alg that openpqc_gpu_supports does not have; OPENPQC_ERR_INVALID_ARGUMENT for a NULL
+ * bytes, or a max_batch that create refuses whatever the device (too many work-items in a launch, or more than size_t
+ * holds). *bytes is written only with OPENPQC_OK. The workspace grows with max_batch, by about the same amount per
+ * operation; besides it, a context holds a few small host objects, create's self-test (FIPS 140-3 mode, or the
+ * developer definitions: Self-test, above) uses a little device memory while it runs (ML-KEM and ML-DSA: under
+ * 20 KiB), and openpqc_gpu_malloc and _malloc_host take what they are asked for. An application that bounds its
+ * device memory can choose max_batch with this. */
 OPENPQC_MUST_CHECK OPENPQC_API openpqc_status openpqc_gpu_workspace_bytes(openpqc_alg alg, size_t max_batch,
                                                                          size_t *bytes);
 
-/* Creates a context for alg on the device of cfg (NULL: the default device and max_batch), runs the self-test,
- * and returns OPENPQC_OK and the context in *gpu, or an error and *gpu = NULL: OPENPQC_ERR_UNSUPPORTED for an
- * alg that this build does not contain (SLH-DSA: also a set left out by the development option
- * OPENPQC_SLHDSA_SYCL_SETS), OPENPQC_ERR_INVALID_ARGUMENT for a device that does not exist, a max_batch the
- * device cannot hold (too large, or more device memory than is available), or a device without enough local
- * memory (SLH-DSA), OPENPQC_ERR_SELF_TEST, or OPENPQC_ERR_DEVICE. */
+/* Creates a context for alg on the device of cfg (NULL: the default device and max_batch), in FIPS 140-3 mode (or with
+ * the developer definitions of Self-test, above) runs the self-test, and returns OPENPQC_OK and the context in *gpu, or
+ * an error and *gpu = NULL: OPENPQC_ERR_UNSUPPORTED for an alg that this build does not contain (SLH-DSA: also a set
+ * left out by the development option OPENPQC_SLHDSA_SYCL_SETS), OPENPQC_ERR_INVALID_ARGUMENT for a device that does not
+ * exist, a max_batch the device cannot hold (too large, or more device memory than is available), or a device without
+ * enough local memory (SLH-DSA), OPENPQC_ERR_SELF_TEST (where the self-test runs), OPENPQC_ERR_DEVICE, or, in FIPS
+ * 140-3 mode, OPENPQC_ERR_ERROR_STATE. */
 OPENPQC_MUST_CHECK OPENPQC_API openpqc_status openpqc_gpu_create(openpqc_gpu **gpu, openpqc_alg alg,
                                                                 const openpqc_gpu_config *cfg);
 /* Waits for the context's work, frees what openpqc_gpu_malloc and _malloc_host gave out and was not freed

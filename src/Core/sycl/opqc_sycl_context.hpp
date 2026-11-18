@@ -617,7 +617,8 @@ int chunked(Context<Sections>* ctx, std::size_t n, unsigned mask, F f, Wipe wipe
 // The randomized calls: for every chunk of at most max_batch operations, coin_bytes x m bytes from
 // opqc_randombytes (Core/opqc_platform.h: the source registered with opqc_set_randombytes if there is one,
 // else the application's opqc_external_randombytes in a build with OPENPQC_EXTERNAL_RANDOMBYTES, else the
-// operating system's generator, the default) into the context's page-locked host buffer (coin_buffer),
+// operating system's generator, the default; in FIPS 140-3 mode only the module's HMAC_DRBG, which refuses
+// every registration) into the context's page-locked host buffer (coin_buffer),
 // copied to `coins` in the workspace (waiting for the copy) and wiped on the host at once; then f(off, m,
 // coins) runs the derandomized operation on them, and wipe_coins(m) queues the zeroization of the coins in
 // the workspace, whatever happened: randomness is as secret as what it becomes (FIPS 204, Section 3.6.1;

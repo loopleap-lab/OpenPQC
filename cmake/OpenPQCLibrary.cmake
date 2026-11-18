@@ -11,7 +11,8 @@
 #   libraries). NO_CXX_RUNTIME, for the CPU schemes' C++: no exceptions and no RTTI. The code throws nothing
 #   and uses no RTTI or heap; without them it needs nothing of the C++ runtime (no __gxx_personality_v0,
 #   _Unwind_Resume or __cxa_*), so that a C program links the library with the C compiler alone (review
-#   finding S018). The GPU backends keep both: they catch the SYCL runtime's exceptions.
+#   finding S018). The GPU backends keep both: they catch the SYCL runtime's exceptions. The compilers by their
+#   CMake IDs: DPClang is the intel/llvm (DPC++) Clang as CMake 4.5 and later name it (Clang before).
 function(openpqc_library_objects target)
     cmake_parse_arguments(_openpqc_lo "NO_CXX_RUNTIME" "" "" ${ARGN})
     set_target_properties(${target} PROPERTIES
@@ -24,7 +25,7 @@ function(openpqc_library_objects target)
     endif()
     if(_openpqc_lo_NO_CXX_RUNTIME)
         target_compile_options(${target} PRIVATE
-            $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang,IntelLLVM>:-fno-exceptions -fno-rtti>)
+            $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang,IntelLLVM,DPClang>:-fno-exceptions -fno-rtti>)
     endif()
 endfunction()
 

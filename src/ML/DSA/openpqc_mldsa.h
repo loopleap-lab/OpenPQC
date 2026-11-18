@@ -46,7 +46,8 @@
  *
  *   keygen, keygen_from_seed   pk and sk unchanged: no randomness for xi (keygen, OPENPQC_ERR_RNG); pk and sk zero:
  *                              the key pair was generated and failed its pair-wise consistency test
- *                              (OPENPQC_ERR_PCT; only in a library built with OPENPQC_MLDSA_KEYGEN_PCT)
+ *                              (OPENPQC_ERR_PCT; only in a library built with OPENPQC_MLDSA_KEYGEN_PCT, which
+ *                              FIPS 140-3 mode gives its objects and no other build has)
  *   every signing function     sig unchanged: ctx longer than 255 bytes or an unknown ph
  *                              (OPENPQC_ERR_INVALID_ARGUMENT), or no randomness for rnd (the hedged functions,
  *                              OPENPQC_ERR_RNG); sig zero: Sign_internal (Algorithm 7) failed, for a malformed sk
@@ -78,8 +79,56 @@
  *
  * Randomness. The randomized functions take their randomness from opqc_randombytes (Core/opqc_platform.h): from the
  * source that the application registered with opqc_set_randombytes, or else from the operating system, or, in a library
- * built with the CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes. The
+ * built with the CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes. In FIPS
+ * 140-3 mode (below) the source is the module's own HMAC_DRBG, and registering another one is refused. The
  * implementation is ML/DSA/mldsa.cpp, with the algorithms in ML/DSA/scheme.
+ *
+ * FIPS 140-3 mode. A library built with the CMake option OPENPQC_FIPS140_3 is a FIPS 140-3 module, the shared
+ * library openpqc (docs/FIPS-140-3.md; not a validated module), and each function above is one of its services. They
+ * are approved services (FIPS 204: KeyGen, keygen_from_seed, Sign and its deterministic variant, Verify, HashML-DSA,
+ * and Algorithms 7 and 8 with mu computed apart, as Algorithm 7, line 6 allows), except HashML-DSA with a pre-hash
+ * weaker than the parameter set (below) and the key checks: check_sk and check_keypair regenerate the key with the
+ * steps of Algorithm 6 and compute as in every build, but FIPS 204 defines no key check (its Section 3.5 refers to SP
+ * 800-89 for the assurances about keys), so they are services that are not approved. keygen_from_seed imports a key
+ * pair in its seed format: ML-DSA.KeyGen_internal(xi) (Algorithm 6) on a seed xi that an approved random bit
+ * generator of a cryptographic module generated (Section 3.6.1), this module's or another's. NIST's PQC FAQ (the
+ * answer on KeyGen seeds as a key format, last revised on 2026-06-16) allows "generating the seed in one cryptographic
+ * module and then importing or exporting it into another cryptographic module", and says that
+ * ML-DSA.KeyGen_internal(xi) "can be accessed for this purpose". The module cannot check where a seed came from, and
+ * keygen does not give its own seed out. The pair-wise consistency test is always compiled in (this mode gives the
+ * library's objects OPENPQC_MLDSA_KEYGEN_PCT; there is no CMake option for it). Each function:
+ *   - first checks the module's state: in the error state, which a failed self-test, pair-wise consistency test or
+ *     random bit generator puts the module in, it returns OPENPQC_ERR_ERROR_STATE and writes nothing;
+ *   - checks the state again when its computation ends: if the module entered its error state meanwhile (another
+ *     thread's failed pair-wise consistency test, or a failure of the entropy source or of the DRBG on any thread,
+ *     this call's own draw included), it zeroizes its outputs and returns OPENPQC_ERR_ERROR_STATE, so that a call
+ *     whose own draw fails returns OPENPQC_ERR_ERROR_STATE, not OPENPQC_ERR_RNG. A result returned with OPENPQC_OK
+ *     was complete while the module was operational; an error state that begins after this second check does not
+ *     reach it;
+ *   - sets the calling thread's approved-service indicator last (openpqc_fips_service_approved, openpqc/fips.h): 1
+ *     if the service is approved and returned OPENPQC_OK, 0 otherwise; a call that fails, a signature it rejects
+ *     included, gives no output of the approved service and reports 0;
+ *   - keygen and keygen_from_seed: when the key pair fails its own pair-wise consistency test, the call returns
+ *     OPENPQC_ERR_PCT with pk and sk zeroized, and the module enters its error state, so that every service returns
+ *     OPENPQC_ERR_ERROR_STATE until the module is loaded again (openpqc/fips.h).
+ * HashML-DSA keeps the strength of the parameter set only with a pre-hash of at least lambda bits of classical
+ * security strength against collision and second-preimage attacks (FIPS 204, Section 5.4; lambda is 128, 192 and 256
+ * for ML-DSA-44, -65 and -87). With a weaker one the prehash_* functions sign and verify as in every build, but as a
+ * service that is not approved: the indicator reports 0. The strengths (FIPS 202, Table 4; SHAKE128 and SHAKE256 with
+ * outputs of 256 and 512 bits):
+ *
+ *   OPENPQC_PREHASH_*                              strength   ML-DSA-44   ML-DSA-65   ML-DSA-87
+ *   SHA2_224, SHA2_512_224, SHA3_224                    112   no          no          no
+ *   SHA2_256, SHA2_512_256, SHA3_256, SHAKE128          128   approved    no          no
+ *   SHA2_384, SHA3_384                                  192   approved    approved    no
+ *   SHA2_512, SHA3_512, SHAKE256                        256   approved    approved    approved
+ *
+ * The testing interfaces (openpqc/testing.h, OpenPQC::testing) are not part of the module and are not approved
+ * services; in the module's error state they return OPENPQC_ERR_ERROR_STATE and compute nothing. The C++ API
+ * (ML/DSA/mldsa.hpp) is compiled into the application: its calls are calls of the functions above, and the
+ * indicator then reports theirs. The scheme templates (ML/DSA/scheme, in the source tree) compiled into an
+ * application are the application's own code, outside the module: no self-test, state or indicator of the module
+ * applies to them, and they are not approved services.
  *
  * Private keys. sk must come from keygen or keygen_from_seed, or from storage or a party that is trusted: FIPS 204
  * decodes sk without checking it and runs skDecode only on input from a trusted source (Section 7.2). The signing

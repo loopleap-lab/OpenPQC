@@ -21,15 +21,33 @@
 #include "openpqc/sig.h"
 #include "openpqc/testing.h"
 
+#if defined(OPENPQC_FIPS140_3)
+#include "Core/openpqc_core.h" /* opqc_fips_mark_non_approved */
+#include "openpqc/fips.h"      /* openpqc_fips_status */
+/* FIPS 140-3 mode: the testing interfaces are outside the module and are not approved services. Each reports so
+ * through the module's approved-service indicator when it returns, after any service of the module it called (the
+ * keygen_from_seed of ML-DSA below is one): opqc_fips_mark_non_approved, which can only clear it. While the module
+ * is in its error state (openpqc_fips_status), each returns OPENPQC_ERR_ERROR_STATE instead of its result, its
+ * refusals included, and calls nothing that computes or writes: every return below goes through TESTING_RETURN,
+ * which evaluates x only when the module is operational. */
+static openpqc_status not_approved(openpqc_status status) {
+    opqc_fips_mark_non_approved();
+    return status;
+}
+#define TESTING_RETURN(x) return not_approved(openpqc_fips_status() == 0 ? (x) : OPENPQC_ERR_ERROR_STATE)
+#else
+#define TESTING_RETURN(x) return (x)
+#endif
+
 /* --- ML-KEM --------------------------------------------------------------------------------------------------- */
 
 openpqc_status openpqc_testing_kem_encaps_derand(openpqc_alg alg, uint8_t *ct, uint8_t *ss, const uint8_t *pk,
                                                  const uint8_t *m) {
     switch (alg) {
-    case OPENPQC_ML_KEM_512: return openpqc_testing_mlkem512_encaps_derand(ct, ss, pk, m);
-    case OPENPQC_ML_KEM_768: return openpqc_testing_mlkem768_encaps_derand(ct, ss, pk, m);
-    case OPENPQC_ML_KEM_1024: return openpqc_testing_mlkem1024_encaps_derand(ct, ss, pk, m);
-    default: return OPENPQC_ERR_UNSUPPORTED;
+    case OPENPQC_ML_KEM_512: TESTING_RETURN(openpqc_testing_mlkem512_encaps_derand(ct, ss, pk, m));
+    case OPENPQC_ML_KEM_768: TESTING_RETURN(openpqc_testing_mlkem768_encaps_derand(ct, ss, pk, m));
+    case OPENPQC_ML_KEM_1024: TESTING_RETURN(openpqc_testing_mlkem1024_encaps_derand(ct, ss, pk, m));
+    default: TESTING_RETURN(OPENPQC_ERR_UNSUPPORTED);
     }
 }
 
@@ -104,34 +122,34 @@ static const sig_testing_impl *find_sig(openpqc_alg alg) {
 
 openpqc_status openpqc_testing_sig_keygen_derand(openpqc_alg alg, uint8_t *pk, uint8_t *sk, const uint8_t *seed) {
     const sig_testing_impl *s = find_sig(alg);
-    return s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->keygen_derand(pk, sk, seed);
+    TESTING_RETURN(s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->keygen_derand(pk, sk, seed));
 }
 
 openpqc_status openpqc_testing_sig_sign_derand(openpqc_alg alg, uint8_t *sig, const uint8_t *m, size_t mlen,
                                                const openpqc_sign_opts *opts, const uint8_t *rnd, const uint8_t *sk) {
     const sig_testing_impl *s = find_sig(alg);
-    if (s == NULL) return OPENPQC_ERR_UNSUPPORTED;
-    if (opts == NULL) return s->sign_derand(sig, m, mlen, NULL, 0, rnd, sk);
-    if (opts->flags != 0) return OPENPQC_ERR_INVALID_ARGUMENT; /* the randomness is rnd */
-    if (opts->prehash == 0) return s->sign_derand(sig, m, mlen, opts->ctx, opts->ctxlen, rnd, sk);
-    return s->prehash_sign_derand(sig, m, mlen, opts->ctx, opts->ctxlen, opts->prehash, rnd, sk);
+    if (s == NULL) TESTING_RETURN(OPENPQC_ERR_UNSUPPORTED);
+    if (opts == NULL) TESTING_RETURN(s->sign_derand(sig, m, mlen, NULL, 0, rnd, sk));
+    if (opts->flags != 0) TESTING_RETURN(OPENPQC_ERR_INVALID_ARGUMENT); /* the randomness is rnd */
+    if (opts->prehash == 0) TESTING_RETURN(s->sign_derand(sig, m, mlen, opts->ctx, opts->ctxlen, rnd, sk));
+    TESTING_RETURN(s->prehash_sign_derand(sig, m, mlen, opts->ctx, opts->ctxlen, opts->prehash, rnd, sk));
 }
 
 openpqc_status openpqc_testing_sig_sign_mu_derand(openpqc_alg alg, uint8_t *sig, const uint8_t *mu,
                                                   const uint8_t *rnd, const uint8_t *sk) {
     const sig_testing_impl *s = find_sig(alg);
-    if (s == NULL || s->sign_mu_derand == NULL) return OPENPQC_ERR_UNSUPPORTED;
-    return s->sign_mu_derand(sig, mu, rnd, sk);
+    if (s == NULL || s->sign_mu_derand == NULL) TESTING_RETURN(OPENPQC_ERR_UNSUPPORTED);
+    TESTING_RETURN(s->sign_mu_derand(sig, mu, rnd, sk));
 }
 
 openpqc_status openpqc_testing_sig_sign_internal(openpqc_alg alg, uint8_t *sig, const uint8_t *mprime,
                                                  size_t mprimelen, const uint8_t *rnd, const uint8_t *sk) {
     const sig_testing_impl *s = find_sig(alg);
-    return s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->sign_internal(sig, mprime, mprimelen, rnd, sk);
+    TESTING_RETURN(s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->sign_internal(sig, mprime, mprimelen, rnd, sk));
 }
 
 openpqc_status openpqc_testing_sig_verify_internal(openpqc_alg alg, const uint8_t *sig, size_t siglen,
                                                    const uint8_t *mprime, size_t mprimelen, const uint8_t *pk) {
     const sig_testing_impl *s = find_sig(alg);
-    return s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->verify_internal(sig, siglen, mprime, mprimelen, pk);
+    TESTING_RETURN(s == NULL ? OPENPQC_ERR_UNSUPPORTED : s->verify_internal(sig, siglen, mprime, mprimelen, pk));
 }

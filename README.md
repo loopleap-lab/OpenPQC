@@ -25,7 +25,8 @@ compare their behavior and performance across hardware platforms.
   application demos, and CPU/GPU benchmarks.
 
 <a id="maturity-and-scope"></a><a id="security-notes"></a>
-**Research-grade.** OpenPQC is not FIPS 140-3 validated and not yet hardened for production. Read
+**Research-grade.** OpenPQC is not FIPS 140-3 validated and not yet hardened for production; its opt-in
+[FIPS 140-3 mode](docs/FIPS-140-3.md) is designed for FIPS 140-3; not validated. Read
 [SECURITY.md](SECURITY.md) and the [security notes](docs/SECURITY-NOTES.md) before you use it, and use a
 validated module for production and FIPS deployments.
 
@@ -118,7 +119,7 @@ scheme. Batches on a GPU are in a second library, `openpqc_sycl` (`OpenPQC::sycl
 uint8_t pk[OPENPQC_MLKEM768_PUBLICKEYBYTES], sk[OPENPQC_MLKEM768_SECRETKEYBYTES];
 uint8_t ct[OPENPQC_MLKEM768_CIPHERTEXTBYTES], ss[OPENPQC_MLKEM_BYTES], ss2[OPENPQC_MLKEM_BYTES];
 
-if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||       /* randomness from the operating system */
+if (openpqc_mlkem768_keygen(pk, sk) != OPENPQC_OK ||       /* randomness from the OS, or FIPS mode's DRBG */
     openpqc_mlkem768_encaps(ct, ss, pk) != OPENPQC_OK ||   /* checks pk first (FIPS 203, Section 7.2) */
     openpqc_mlkem768_decaps(ss2, ct, sk) != OPENPQC_OK)    /* on success ss2 equals ss */
     return -1;                                             /* use none of pk, sk, ct, ss, ss2 */
@@ -152,7 +153,7 @@ chosen at run time, the GPU API, and the installed package (`find_package`, pkg-
 | [tutorial/](tutorial/README.md)               | Interactive Jupyter walkthrough and Docker environment                                              |
 | [tests/](tests/README.md)                     | What is tested and how to run it: labels, GPU tests, CI presets                                     |
 | [bench/](bench/README.md)                     | CPU/GPU benchmarks, plotting tools, and the [HiPerGator results](bench/hipergator/README.md)        |
-| [docs/](docs/README.md)                       | Building, security notes, the GPU design and its measurements, primitives                           |
+| [docs/](docs/README.md)                       | Building, security notes, the FIPS 140-3 mode, the GPU design and its measurements, primitives      |
 | [reference/](reference/README.md)             | Vendored upstream implementations, unmodified, and their provenance: test oracles and CPU baselines |
 | [scripts/](scripts/), [cmake/](cmake/)        | Scripts that refresh the vendored references and check the documentation; build helpers             |
 | [SECURITY.md](SECURITY.md)                    | Reporting a vulnerability, tested configurations, maturity, known issues                            |
@@ -167,7 +168,8 @@ Pass options to CMake as `-DNAME=value`; without `CMAKE_BUILD_TYPE` the build is
 | `OPENPQC_SYCL` | `AUTO` | Build the GPU library when DPC++ or AdaptiveCpp is found; `ON` requires it, `OFF` disables it |
 | `OPENPQC_BUILD_TESTS`, `_BENCHMARKS`, `_EXAMPLES` | `ON` at top level | Build the tests, the benchmarks, and the examples and demos |
 | `OPENPQC_WERROR` | `ON` at top level | Treat warnings in OpenPQC code as errors |
-| `BUILD_SHARED_LIBS` | `OFF` | Build the library `openpqc` as a shared library |
+| `BUILD_SHARED_LIBS` | `OFF` (`ON` in FIPS 140-3 mode) | Build the library `openpqc` as a shared library |
+| `OPENPQC_FIPS140_3` | `OFF` | FIPS 140-3 mode: the shared library is built as a module designed for FIPS 140-3; not validated ([docs/FIPS-140-3.md](docs/FIPS-140-3.md)) |
 | `OPENPQC_WITH_MLKEM`, `_MLDSA`, `_SLHDSA` | `ON` | The schemes the libraries contain |
 | `OPENPQC_NATIVE` | `ON` | Enable supported SIMD/assembly backends in the mlkem-native reference |
 

@@ -40,15 +40,6 @@
     {"name": "gcc-asan-ubsan", "displayName": "GCC, AddressSanitizer and UndefinedBehaviorSanitizer (-O1)", "inherits": ["asan-ubsan", "gcc"]},
     {"name": "clang-asan-ubsan", "displayName": "Clang, AddressSanitizer and UndefinedBehaviorSanitizer (-O1)", "inherits": ["asan-ubsan", "clang"]},
     {
-      "name": "pct",
-      "hidden": true,
-      "description": "the CPU libraries of ML-KEM and ML-DSA built with their pair-wise consistency tests after KeyGen (FIPS 140-3), as a validated module needs them: OPENPQC_MLKEM_KEYGEN_PCT and OPENPQC_MLDSA_KEYGEN_PCT, Release (-O3)",
-      "inherits": "base",
-      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "OPENPQC_MLKEM_KEYGEN_PCT": "ON", "OPENPQC_MLDSA_KEYGEN_PCT": "ON"}
-    },
-    {"name": "gcc-release-pct", "displayName": "GCC, Release (-O3), ML-KEM and ML-DSA with the pair-wise consistency tests after KeyGen", "inherits": ["pct", "gcc"]},
-    {"name": "clang-release-pct", "displayName": "Clang, Release (-O3), ML-KEM and ML-DSA with the pair-wise consistency tests after KeyGen", "inherits": ["pct", "clang"]},
-    {
       "name": "ct-O0",
       "hidden": true,
       "description": "the constant-time tests (valgrind) at -O0: Debug",
@@ -126,8 +117,6 @@
     {"name": "clang-release", "configurePreset": "clang-release"},
     {"name": "gcc-asan-ubsan", "configurePreset": "gcc-asan-ubsan"},
     {"name": "clang-asan-ubsan", "configurePreset": "clang-asan-ubsan"},
-    {"name": "gcc-release-pct", "configurePreset": "gcc-release-pct"},
-    {"name": "clang-release-pct", "configurePreset": "clang-release-pct"},
     {
       "name": "ct",
       "hidden": true,
@@ -195,15 +184,6 @@
     {"name": "gcc-asan-ubsan", "inherits": "sanitizers", "configurePreset": "gcc-asan-ubsan"},
     {"name": "clang-asan-ubsan", "inherits": "sanitizers", "configurePreset": "clang-asan-ubsan"},
     {
-      "name": "pct",
-      "hidden": true,
-      "description": "the quick offline tests of ML-KEM and ML-DSA against their libraries built with the pair-wise consistency tests (mlkem_pct_library and mldsa_pct_library run against them); the reference's own tests and the constant-time tests, which compile the code themselves, are left out",
-      "inherits": "common",
-      "filter": {"include": {"name": "^(test_)?(mlkem|mldsa)"}, "exclude": {"label": "network|slow", "name": "_ct$"}}
-    },
-    {"name": "gcc-release-pct", "inherits": "pct", "configurePreset": "gcc-release-pct"},
-    {"name": "clang-release-pct", "inherits": "pct", "configurePreset": "clang-release-pct"},
-    {
       "name": "ct",
       "hidden": true,
       "description": "the constant-time tests of the schemes under valgrind, at the preset's level (Core's core_*_ct run at every level in every build)",
@@ -231,8 +211,6 @@
     {"name": "gcc-release", "steps": [{"type": "configure", "name": "gcc-release"}, {"type": "build", "name": "gcc-release"}, {"type": "test", "name": "gcc-release"}]},
     {"name": "clang-release", "steps": [{"type": "configure", "name": "clang-release"}, {"type": "build", "name": "clang-release"}, {"type": "test", "name": "clang-release"}]},
     {"name": "gcc-asan-ubsan", "steps": [{"type": "configure", "name": "gcc-asan-ubsan"}, {"type": "build", "name": "gcc-asan-ubsan"}, {"type": "test", "name": "gcc-asan-ubsan"}]},
-    {"name": "clang-asan-ubsan", "steps": [{"type": "configure", "name": "clang-asan-ubsan"}, {"type": "build", "name": "clang-asan-ubsan"}, {"type": "test", "name": "clang-asan-ubsan"}]},
-    {"name": "gcc-release-pct", "steps": [{"type": "configure", "name": "gcc-release-pct"}, {"type": "build", "name": "gcc-release-pct"}, {"type": "test", "name": "gcc-release-pct"}]},
-    {"name": "clang-release-pct", "steps": [{"type": "configure", "name": "clang-release-pct"}, {"type": "build", "name": "clang-release-pct"}, {"type": "test", "name": "clang-release-pct"}]}
+    {"name": "clang-asan-ubsan", "steps": [{"type": "configure", "name": "clang-asan-ubsan"}, {"type": "build", "name": "clang-asan-ubsan"}, {"type": "test", "name": "clang-asan-ubsan"}]}
   ]
 }

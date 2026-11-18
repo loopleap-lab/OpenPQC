@@ -18,6 +18,25 @@
 
 #include "ML/KEM/scheme/ml_kem.hpp"
 
+#if defined(OPENPQC_FIPS140_3)
+#include "Core/openpqc_core.h" // opqc_fips_mark_non_approved
+#include "openpqc/fips.h"      // openpqc_fips_status
+// FIPS 140-3 mode: the testing interfaces are outside the module and are not approved services. Each reports so
+// through the module's approved-service indicator when it returns, after any service of the module it called
+// (opqc_fips_mark_non_approved, which can only clear the indicator). While the module is in its error state
+// (openpqc_fips_status), none of them computes: each returns OPENPQC_ERR_ERROR_STATE before any other check and
+// writes nothing, as the services of the module and the GPU library's testing interfaces do.
+#define OPENPQC_TESTING_RETURN(...)                                                                              \
+    do {                                                                                                         \
+        const openpqc_status testing_status_ =                                                                   \
+                openpqc_fips_status() == 0 ? (__VA_ARGS__) : OPENPQC_ERR_ERROR_STATE;                            \
+        opqc_fips_mark_non_approved();                                                                           \
+        return testing_status_;                                                                                  \
+    } while (0)
+#else
+#define OPENPQC_TESTING_RETURN(...) return __VA_ARGS__
+#endif
+
 namespace {
 
 using namespace openpqc::mlkem;
@@ -42,13 +61,13 @@ openpqc_status encaps_m(std::uint8_t* ct, std::uint8_t* ss, const std::uint8_t* 
 
 extern "C" {
 openpqc_status openpqc_testing_mlkem512_encaps_derand(uint8_t* ct, uint8_t* ss, const uint8_t* pk, const uint8_t* m) {
-    return encaps_m<params::ML_KEM_512>(ct, ss, pk, m);
+    OPENPQC_TESTING_RETURN(encaps_m<params::ML_KEM_512>(ct, ss, pk, m));
 }
 openpqc_status openpqc_testing_mlkem768_encaps_derand(uint8_t* ct, uint8_t* ss, const uint8_t* pk, const uint8_t* m) {
-    return encaps_m<params::ML_KEM_768>(ct, ss, pk, m);
+    OPENPQC_TESTING_RETURN(encaps_m<params::ML_KEM_768>(ct, ss, pk, m));
 }
 openpqc_status openpqc_testing_mlkem1024_encaps_derand(uint8_t* ct, uint8_t* ss, const uint8_t* pk,
                                                        const uint8_t* m) {
-    return encaps_m<params::ML_KEM_1024>(ct, ss, pk, m);
+    OPENPQC_TESTING_RETURN(encaps_m<params::ML_KEM_1024>(ct, ss, pk, m));
 }
 }

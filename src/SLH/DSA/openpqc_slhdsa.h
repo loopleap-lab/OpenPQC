@@ -41,7 +41,8 @@
  *
  *   keygen                  pk and sk unchanged: no randomness for the seeds (OPENPQC_ERR_RNG); pk and sk zero:
  *                           the key pair was generated and failed its pair-wise consistency test (OPENPQC_ERR_PCT;
- *                           only in a library built with OPENPQC_SLHDSA_KEYGEN_PCT)
+ *                           only in a library built with OPENPQC_SLHDSA_KEYGEN_PCT, which FIPS 140-3 mode gives
+ *                           its objects and no other build has)
  *   every signing function  sig unchanged: ctx longer than 255 bytes or an unknown ph
  *                           (OPENPQC_ERR_INVALID_ARGUMENT), or no randomness for addrnd (sign and prehash_sign,
  *                           OPENPQC_ERR_RNG)
@@ -100,9 +101,52 @@
  * Randomness. keygen draws the three seeds with one call of 3n bytes, in the order SK.seed, SK.prf, PK.seed, and sign
  * and prehash_sign draw addrnd, from opqc_randombytes (Core/opqc_platform.h): from the source that the application
  * registered with opqc_set_randombytes, or else from the operating system, or, in a library built with the CMake option
- * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes. The set ids OPENPQC_SLHDSA_<SET>
+ * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes. In FIPS 140-3 mode (below) the source
+ * is the module's own HMAC_DRBG, and registering another one is refused. The set ids OPENPQC_SLHDSA_<SET>
  * number the parameter sets in the order of Table 2; they are the low byte of the sets' openpqc_alg values
  * (openpqc/common.h). The implementation is SLH/DSA/slhdsa.cpp, with the algorithms in SLH/DSA/scheme.
+ *
+ * FIPS 140-3 mode. A library built with the CMake option OPENPQC_FIPS140_3 is a FIPS 140-3 module, the shared
+ * library openpqc (docs/FIPS-140-3.md; not a validated module), and each function above is one of its services. They
+ * are approved services (FIPS 205: slh_keygen, slh_sign and its deterministic variant, slh_verify, HashSLH-DSA, and
+ * the assurance of private-key possession via regeneration of Section 3.1), except HashSLH-DSA with a pre-hash weaker
+ * than the parameter set (below). The module has no seed import for SLH-DSA: key generation from seeds that the
+ * caller gives (openpqc_testing_slhdsa_S_keygen_derand) is a testing interface (Testing interfaces, above). keygen
+ * always runs its pair-wise consistency test (OPENPQC_SLHDSA_KEYGEN_PCT is given to the library's objects in this
+ * mode, and in no other build), with the stack it needs (Stack, above). Each function:
+ *   - first checks the module's state: in the error state, which a failed self-test, pair-wise consistency test or
+ *     random bit generator puts the module in, it returns OPENPQC_ERR_ERROR_STATE and writes nothing;
+ *   - checks the state again when its computation ends: if the module entered its error state meanwhile (another
+ *     thread's failed pair-wise consistency test, or a failure of the entropy source or of the DRBG on any thread,
+ *     this call's own draw included), it zeroizes its outputs and returns OPENPQC_ERR_ERROR_STATE, so that a call
+ *     whose own draw fails returns OPENPQC_ERR_ERROR_STATE, not OPENPQC_ERR_RNG. A result returned with OPENPQC_OK
+ *     was complete while the module was operational; an error state that begins after this second check does not
+ *     reach it;
+ *   - sets the calling thread's approved-service indicator last (openpqc_fips_service_approved, openpqc/fips.h): 1
+ *     if the service is approved and returned OPENPQC_OK, 0 otherwise; a call that fails, a signature it rejects
+ *     included, gives no output of the approved service and reports 0;
+ *   - keygen: when the key pair fails its own pair-wise consistency test, the call returns OPENPQC_ERR_PCT with pk
+ *     and sk zeroized, and the module enters its error state, so that every service returns OPENPQC_ERR_ERROR_STATE
+ *     until the module is loaded again (openpqc/fips.h).
+ * HashSLH-DSA keeps the strength of the parameter set only with a pre-hash of at least 8n bits of classical security
+ * strength against collision and second-preimage attacks (FIPS 205, Section 10.2; 8n is 128, 192 and 256 for the
+ * sets of security category 1, 3 and 5), and Section 10.2.2 adds that SHA-256 and SHAKE128 are appropriate only for
+ * category 1. With a weaker one the prehash_* functions sign and verify as in every build, but as a service that is
+ * not approved: the indicator reports 0. The strengths (FIPS 202, Table 4; SHAKE128 and SHAKE256 with outputs of 256
+ * and 512 bits):
+ *
+ *   OPENPQC_PREHASH_*                              strength   *_128s, *_128f   *_192s, *_192f   *_256s, *_256f
+ *   SHA2_224, SHA2_512_224, SHA3_224                    112   no               no               no
+ *   SHA2_256, SHA2_512_256, SHA3_256, SHAKE128          128   approved         no               no
+ *   SHA2_384, SHA3_384                                  192   approved         approved         no
+ *   SHA2_512, SHA3_512, SHAKE256                        256   approved         approved         approved
+ *
+ * The testing interfaces (openpqc/testing.h, OpenPQC::testing) are not part of the module and are not approved
+ * services; in the module's error state they return OPENPQC_ERR_ERROR_STATE and compute nothing. The C++ API
+ * (SLH/DSA/slhdsa.hpp) is compiled into the application: its calls are calls of the functions above, and the
+ * indicator then reports theirs. The scheme templates (SLH/DSA/scheme, in the source tree) compiled into an
+ * application are the application's own code, outside the module: no self-test, state or indicator of the module
+ * applies to them, and they are not approved services.
  *
  * Linking. The functions are in the library openpqc: OpenPQC::openpqc in CMake (find_package(OpenPQC), or
  * add_subdirectory), openpqc for pkg-config. Its C++ code is compiled without exceptions and RTTI and needs nothing

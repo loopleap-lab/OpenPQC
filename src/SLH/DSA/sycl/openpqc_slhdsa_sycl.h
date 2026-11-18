@@ -87,13 +87,14 @@
  *
  * Randomness. opqc_sycl_slhdsa_keypair, _sign and _prehash_sign (and their _one_key
  * forms) draw the seeds or addrnd on the host from Core's opqc_randombytes
- * (Core/opqc_platform.h: a source that the application registered with
+ * (Core/opqc_platform.h: in FIPS 140-3 mode the module's HMAC_DRBG, which refuses
+ * every other source; otherwise a source that the application registered with
  * opqc_set_randombytes, or else the default, the operating system's RNG unless the
  * libraries are built with OPENPQC_EXTERNAL_RANDOMBYTES; FIPS 205, Section 3.1: the
- * module, not the caller, generates them) and return OPENPQC_ERR_RNG if
- * it fails. They go to the device from page-locked host memory that the context holds
- * and wipes at once after each launch's copy (a copy from pageable memory would leave
- * them in a staging buffer of the driver); even so, NVIDIA's CUDA driver has been seen
+ * module, not the caller, generates them) and return OPENPQC_ERR_RNG if it fails. They
+ * go to the device from page-locked host memory that the context holds and wipes at
+ * once after each launch's copy (a copy from pageable memory would leave them in a
+ * staging buffer of the driver); even so, NVIDIA's CUDA driver has been seen
  * to keep copies of such small host-to-device transfers in memory of its own (mappings
  * of /dev/nvidiactl), after the call and after destroy, where the library cannot reach
  * them.
@@ -130,12 +131,15 @@
  * before it, and a call that is refused or fails waits as Status says. All
  * functions return 0 on success, -1 for invalid arguments (memcpy: also a NULL dst or
  * src), -2 for an exception of the SYCL runtime, a context that has failed (below) or,
- * for the randomized calls, page-locked host memory that cannot be allocated, or
- * OPENPQC_ERR_RNG. (The GPU's -1 and -2 are not the CPU library's OPENPQC_ERR_INVALID_SIGNATURE
- * and OPENPQC_ERR_INVALID_ARGUMENT, of the same values, as for ML-DSA's backend.) Every function
- * that returns a status is declared OPQC_MUST_CHECK (Core/opqc_common.h), as those of the
- * CPU library are: the compiler warns about a call whose result is not used, because the
- * outputs of a call that did not return 0 are not results.
+ * for the randomized calls, page-locked host memory that cannot be allocated,
+ * OPENPQC_ERR_RNG, or, in FIPS 140-3 mode, OPENPQC_ERR_PCT from KeyGen and
+ * OPENPQC_ERR_SELF_TEST from create (FIPS 140-3 mode or the developer definition of the
+ * self-test, below). (The GPU's -1 and -2 are
+ * not the CPU library's OPENPQC_ERR_INVALID_SIGNATURE and OPENPQC_ERR_INVALID_ARGUMENT,
+ * of the same values, as for ML-DSA's backend.) Every function that returns a status is
+ * declared OPQC_MUST_CHECK (Core/opqc_common.h), as those of the CPU library are: the
+ * compiler warns about a call whose result is not used, because the outputs of a call
+ * that did not return 0 are not results.
  *
  * Device failures. Most device errors (a kernel that faults, a lost device) are found
  * after the call that caused them has returned 0: by a later call, by sync, or by a
@@ -169,7 +173,43 @@
  * Secret intermediate values kept in device memory between the stages of a call are
  * zeroized when the call ends, also when it fails part way (as far as the device still
  * accepts work), and so are those of verification (FIPS 205, Section 3.1); local
- * memory is cleared before every team kernel ends.
+ * memory is cleared before every team kernel ends. KeyGen's pair-wise consistency test
+ * zeroizes its signatures and verdicts after every launch, and create zeroizes the
+ * whole workspace after its self-test (FIPS 140-3 mode, below).
+ *
+ * FIPS 140-3 mode (OPENPQC_FIPS140_3; the ordinary build has neither test, so it has
+ * no known-answer check of the device, and no CMake option turns them on there: only the
+ * developer definitions OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST (the self-test) and
+ * OPENPQC_SLHDSA_KEYGEN_PCT (the pair-wise test), compile definitions for the project's
+ * tests that no target of the libraries gives, compile them in: the white-box test
+ * slhdsa_sycl_faults compiles the backend with both, and a build that gives the first to
+ * every object (CMAKE_CXX_FLAGS) has the self-test in its libraries too), as the other
+ * two backends and the CPU library do it:
+ *   Self-test of create. opqc_sycl_slhdsa_create runs a known-answer test of the
+ *   context's parameter set on its device, through the calls' own paths: KeyGen of fixed
+ *   seeds, the deterministic signature of a fixed 100-byte message with a 5-byte
+ *   context string, and the verification of that signature and of a copy with one bit
+ *   flipped. SHA3-256 of pk, sk and the signature and both verdicts must be the CPU
+ *   library's answers. The test's device memory holds a pattern wherever the kernels
+ *   are to write, so that a launch that does not run fails it, and is wiped and freed on
+ *   every way out. A device that computes a wrong result, or skips part of the test,
+ *   gets no context and OPENPQC_ERR_SELF_TEST (-7); a device error, -2. It costs one
+ *   KeyGen, one signature and two verifications at create (on an RTX 3050 about 7 ms
+ *   for SLH-DSA-SHA2-128s, 71 ms for SLH-DSA-SHAKE-256f).
+ *   Pair-wise consistency test. keypair and keypair_derand test every key pair they
+ *   make, on the device: the pair signs the empty message with the empty context
+ *   string, deterministically (M' = 0 || 0, opt_rand = PK.seed: Algorithms 22 and 19),
+ *   which reads every part of sk, and the signature must verify under pk (Algorithm
+ *   24). The verdicts are set to "invalid" before the verification runs, the test's
+ *   last kernel counts the pairs that passed, and a launch passes only when that count,
+ *   read back, is its number of pairs (a count that cannot be read back counts as none):
+ *   a pair whose test did not run, in part or at all, fails. If one pair of the call
+ *   fails, the keys of all n operations (those of earlier launches of keypair too) are
+ *   overwritten with zeros, waited for, and the call returns OPENPQC_ERR_PCT (-6); which
+ *   pair failed is not reported, and the context has not failed. Another error of KeyGen
+ *   (-2, OPENPQC_ERR_RNG) leaves the keys of the launches that completed before it in
+ *   pk and sk. The test adds |SIG| + 8 bytes per operation to the workspace, and costs
+ *   about one signature and one verification per key pair.
  *
  * Threads. A context may be used from several host threads: their calls take turns
  * (each holds the context's lock while it queues its work). opqc_sycl_slhdsa_destroy
@@ -201,10 +241,13 @@ typedef struct opqc_sycl_slhdsa opqc_sycl_slhdsa;
  * launches of max_batch operations. Per operation (opqc_sycl_slhdsa_workspace_bytes):
  * 1.97 MiB (128s), 104 KiB (128f), 6.46 MiB (192s), 222 KiB (192f), 11.07 MiB
  * (256s) and 587 KiB (256f), the same for SHA2 and SHAKE within 96 bytes; mostly
- * the FORS leaves and the WOTS+ chain ends of a signature. Returns -1 for a parameter
- * set that this build does not contain (the development option
- * OPENPQC_SLHDSA_SYCL_SETS), a device without enough local memory, or device memory
- * that cannot be allocated.
+ * the FORS leaves and the WOTS+ chain ends of a signature (in FIPS 140-3 mode |SIG| + 8
+ * bytes more, for KeyGen's pair-wise consistency test). In FIPS 140-3 mode, or with the
+ * developer definition OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST, create runs the self-test
+ * above first. Returns -1 for a parameter set that this build does not contain (the
+ * development option OPENPQC_SLHDSA_SYCL_SETS), a device without enough local memory, or
+ * device memory that cannot be allocated, and, where the self-test runs,
+ * OPENPQC_ERR_SELF_TEST if it fails; no context then.
  */
 OPQC_MUST_CHECK OPENPQC_API int opqc_sycl_slhdsa_create(opqc_sycl_slhdsa **ctx, int param_set, size_t max_batch,
                                                         int device);

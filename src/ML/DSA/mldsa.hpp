@@ -28,7 +28,16 @@
 // through Core's opqc_randombytes (Core/opqc_platform.h): from the source that the
 // application registered with opqc_set_randombytes, else, in a library built with the
 // CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
-// opqc_external_randombytes, else from the operating system (the default).
+// opqc_external_randombytes, else from the operating system (the default). In FIPS
+// 140-3 mode they come from the module's own HMAC_DRBG, and registering another
+// source is refused.
+//
+// In FIPS 140-3 mode (openpqc_mldsa.h, "FIPS 140-3 mode") this C++ API is not part
+// of the module: it is compiled into the application, and each of its functions is
+// one call of one service of the C API, so the approved-service indicator
+// (openpqc_fips_service_approved, openpqc/fips.h) read right after it is that
+// service's. The pre-hash functions named below (prehash, prehash_oid,
+// prehash_bytes) run as the application's own code, outside the module.
 #pragma once
 
 #include <array>

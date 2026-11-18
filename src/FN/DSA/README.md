@@ -22,7 +22,7 @@ Ring Z_q[x]/(x^n + 1), q = 12289 (complete NTT for n ≤ 1024).
 | Primitive | Group |
 |---|---|
 | SHAKE256, incremental (μ, tr, HashToPoint, sampler PRNG) | **Core**: `opqc_shake256_inc_*` exists. A buffered byte-wise reader (`next_u8/u16/u64`) belongs to FN-DSA |
-| Randomness, constant-time masks/selects, zeroize | **Core**: `opqc_randombytes` (`Core/opqc_platform.h`: a source registered with `opqc_set_randombytes`, else the application's `opqc_external_randombytes` in a build with `OPENPQC_EXTERNAL_RANDOMBYTES`, else the operating system's generator), `Core/opqc_ct.h` (8- and 32-bit masks and selects; FN-DSA needs 64-bit ones too), `opqc_zeroize` and `Core/zeroize.hpp` |
+| Randomness, constant-time masks/selects, zeroize | **Core**: `opqc_randombytes` (`Core/opqc_platform.h`: a source registered with `opqc_set_randombytes`, else the application's `opqc_external_randombytes` in a build with `OPENPQC_EXTERNAL_RANDOMBYTES`, else the operating system's generator; in FIPS 140-3 mode the module's HMAC_DRBG), `Core/opqc_ct.h` (8- and 32-bit masks and selects; FN-DSA needs 64-bit ones too), `opqc_zeroize` and `Core/zeroize.hpp` |
 | μ framing (domain separator, context, pre-hash OIDs), the same as FIPS 204 | **Core**: `Core/prehash.hpp` (pre-hash functions, OIDs, the 255-byte context limit) and `Core/openpqc_prehash.h`, shared by HashML-DSA and HashSLH-DSA; the two-byte prefix (domain separator, \|ctx\|) is written at each scheme's call site |
 | NTT mod 12289 (n = 512/1024, 9/10 layers), Montgomery-style reduction, pointwise multiplication and **division** in NTT domain | Core (pattern) |
 | HashToPoint (16-bit SHAKE256 chunks < 5q, reduced mod q) | Core (pattern), rejection sampling |

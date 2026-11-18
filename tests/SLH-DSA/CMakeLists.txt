@@ -59,11 +59,19 @@ if(_openpqc)
 
     #   slhdsa_pct   the library built with the pair-wise consistency test after KeyGen
     #                (OPENPQC_SLHDSA_KEYGEN_PCT, FIPS 140-3), so that this configuration is compiled
-    #                and its KeyGen exercised
+    #                and its KeyGen exercised: a copy of the library that the test compiles, in every
+    #                build, since the scheme layer's test is the code that FIPS 140-3 mode compiles into
+    #                the module (the top-level CMakeLists.txt; the ordinary build's library has no test)
     #   slhdsa_pct_fail   the same with OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST, which breaks the
     #                     signature inside the test: KeyGen must fail with OPENPQC_ERR_PCT and
     #                     zeroize both keys. This shows that the test is compiled in and that its
     #                     result is used, which slhdsa_pct alone cannot show.
+    #   In FIPS 140-3 mode a failed test of keygen puts the module (the state in the tests' libraries)
+    #   in its error state for good: slhdsa_pct_fail and slhdsa_pct_odr run each KeyGen of each f set
+    #   in a process of its own; after keygen's failure (indicator 0) keygen must return
+    #   OPENPQC_ERR_ERROR_STATE without writing, and keygen_derand of the testing interfaces (outside
+    #   the module) must fail as above and report the indicator 0; slhdsa_pct ends with the module
+    #   still operational.
     foreach(variant pct pct_fail)
         add_library(openpqc_slhdsa_${variant}_objects OBJECT ${OPENPQC_SLHDSA_SOURCES})
         target_include_directories(openpqc_slhdsa_${variant}_objects PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
@@ -101,12 +109,27 @@ if(_openpqc)
     #                  equals its _derand function on the bytes drawn
     #   slhdsa_fresh_control   the same checks with sources that give the same bytes on every call (registered
     #                  with opqc_set_randombytes()): they must report the repeats
+    #   In FIPS 140-3 mode, where every registration is refused: slhdsa_fresh checks that the recording source
+    #   is refused and never called (the DRBG stays the source) in place of the draws; slhdsa_fresh_control and
+    #   slhdsa_fresh_draws (the draws of slhdsa_fresh above) run against the test variant openpqc_slhdsa_testrng
+    #   (the same SLH-DSA objects), whose generator, the program's opqc_external_randombytes, gives the constant
+    #   bytes or records what it gives (test_slhdsa_fresh_testrng); each also checks that its source is refused
     add_executable(test_slhdsa_fresh test_slhdsa_fresh.c)
     target_link_libraries(test_slhdsa_fresh PRIVATE openpqc_slhdsa openpqc_strict_warnings)
     set_target_properties(test_slhdsa_fresh PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON
                                                        C_EXTENSIONS OFF)
     add_test(NAME slhdsa_fresh COMMAND test_slhdsa_fresh)
-    add_test(NAME slhdsa_fresh_control COMMAND test_slhdsa_fresh control)
+    if(OPENPQC_FIPS140_3)
+        add_executable(test_slhdsa_fresh_testrng test_slhdsa_fresh.c)
+        target_link_libraries(test_slhdsa_fresh_testrng PRIVATE openpqc_slhdsa_testrng openpqc_strict_warnings)
+        target_compile_definitions(test_slhdsa_fresh_testrng PRIVATE OPENPQC_TEST_EXTERNAL)
+        set_target_properties(test_slhdsa_fresh_testrng PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11
+                                                                   C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+        add_test(NAME slhdsa_fresh_control COMMAND test_slhdsa_fresh_testrng control)
+        add_test(NAME slhdsa_fresh_draws COMMAND test_slhdsa_fresh_testrng draws)
+    else()
+        add_test(NAME slhdsa_fresh_control COMMAND test_slhdsa_fresh control)
+    endif()
 
     #   slhdsa_stack   no secret intermediate values left on the stack after KeyGen, Sign and Verify
     #                  (FIPS 205, Section 3.1), also in the byte-swapped word images of SHA-2's message

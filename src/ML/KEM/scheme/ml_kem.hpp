@@ -7,12 +7,14 @@
 // input checks. They wrap the internal algorithms of Section 6
 // (mlkem_internal.hpp), adding
 //
-//   - the random values d, z (KeyGen) and m (Encaps) from the system RNG,
+//   - the random values d, z (KeyGen) and m (Encaps) from Core's opqc_randombytes
+//     (the system RNG by default; in FIPS 140-3 mode the module's HMAC_DRBG),
 //   - the encapsulation key check of Section 7.2 in Encaps,
 //   - the decapsulation key check of Section 7.3 in Decaps,
 //   - optionally (OPENPQC_MLKEM_KEYGEN_PCT), the pair-wise consistency check of
-//     Section 7.1 after KeyGen, as FIPS 140-3 asks of validated modules. It
-//     draws a random m, so keygen_derand then needs the RNG too (see there).
+//     Section 7.1 after KeyGen, as FIPS 140-3 asks of validated modules: the
+//     library has it in FIPS 140-3 mode only (OPENPQC_FIPS140_3). It draws a
+//     random m, so keygen_derand then needs the RNG too (see there).
 //
 // The type checks of Sections 7.2 and 7.3 (the lengths of ek, dk and c) hold by
 // construction: the arguments are fixed-size spans.
@@ -155,9 +157,9 @@ OPENPQC_MLKEM_NOINLINE Status call_below_padding(Args... args) {
 
 // The configuration. Two settings change the bodies of the templates below:
 //   - the pair-wise consistency check after KeyGen, which keygen_derand and keygen run only where this
-//     header is compiled with OPENPQC_MLKEM_KEYGEN_PCT (mlkem.cpp, for a FIPS 140-3 module; the CMake
-//     option of that name), and which fails on purpose with OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST (tests
-//     only);
+//     header is compiled with OPENPQC_MLKEM_KEYGEN_PCT (mlkem.cpp in FIPS 140-3 mode, in which the
+//     top-level CMakeLists.txt gives the library's objects that definition; and the tests' own copies),
+//     and which fails on purpose with OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST (tests only);
 //   - the stack burn after every operation, which burn_stack leaves out where this header is compiled with
 //     OPENPQC_MLKEM_NO_STACK_BURN (mlkem.cpp; the CMake option OPENPQC_MLKEM_STACK_BURN=OFF).
 // Each translation unit that uses these templates for a parameter set has its own copy of them, and the

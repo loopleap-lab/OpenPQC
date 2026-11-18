@@ -361,7 +361,7 @@ benchmarks of §6 and the profilers. The rest of this report names them where it
 const openpqc_alg_info *a = openpqc_alg_info_get(OPENPQC_ML_KEM_768);      /* the sizes */
 openpqc_gpu *gpu;
 if (openpqc_gpu_create(&gpu, OPENPQC_ML_KEM_768, NULL) != OPENPQC_OK)      /* default device, max_batch 4096 */
-    return -1;                                    /* no such device, no memory, or the self-test failed */
+    return -1;                         /* no such device, no memory, or (FIPS 140-3 mode) the self-test failed */
 uint8_t *pk = openpqc_gpu_malloc(gpu, n * a->public_key_bytes);           /* ... likewise sk, ct, ss, ss2 */
 int32_t *kg_st = openpqc_gpu_malloc(gpu, n * sizeof(int32_t));            /* ... likewise enc_st, dec_st */
 openpqc_status rc = openpqc_gpu_kem_keygen(gpu, pk, sk, kg_st, n);        /* coins from opqc_randombytes, on the host */
@@ -396,12 +396,31 @@ openpqc::sycl::Results r = gpu.sign(std::span(sig), std::span<const std::span<co
   `OPENPQC_SYCL_DEVICE=<index>` names, else SYCL's default; a value that is not a decimal index is refused), and
   `max_batch`, the operations per launch for which device memory is allocated (0: ML-KEM 4096, ML-DSA 1024, SLH-DSA
   256 for the f sets and 32 for the s sets); NULL takes both defaults. A call with more operations runs in launches of
-  `max_batch`. `openpqc_gpu_create` of ML-KEM and ML-DSA runs a known-answer self-test on the device (for ML-KEM a
-  KeyGen, an Encaps and the Decaps of its ciphertext and of a tampered copy) and gives a device that computes a wrong
-  result no context (`OPENPQC_ERR_SELF_TEST`); SLH-DSA's contexts run none. A call that the context's parameter set
-  does not have (a KEM call on a signature context, ...) returns `OPENPQC_ERR_UNSUPPORTED` and writes nothing.
-  `openpqc_gpu_create_on` (`openpqc/sycl/interop.hpp`) creates a context on a device of the application's own SYCL
-  context, whose USM memory the calls then accept.
+  `max_batch`. In FIPS 140-3 mode, or with the developer definitions named below, `openpqc_gpu_create` runs a
+  known-answer self-test on the device for all three schemes (ML-KEM: a KeyGen, an Encaps and the Decaps of its
+  ciphertext and of a tampered copy; ML-DSA and SLH-DSA: a KeyGen, a deterministic signature and the verification of it
+  and of a tampered copy, for SLH-DSA of the context's own set, about 7 ms more per create for SLH-DSA-SHA2-128s and 71
+  ms for SHAKE-256f on the RTX 3050 under DPC++, indicative) and gives a device that computes a wrong result no context
+  (`OPENPQC_ERR_SELF_TEST`). An ordinary build runs none and holds neither their code nor their answers (test
+  `gpu_self_test`), so, by the maintainers' decision of 2026-11-17, **an ordinary GPU build has no known-answer check of
+  the device**: only the project's tests compare the device's results with the CPU library's, which shares the math
+  core. Outside the mode only the developer definitions `OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST`,
+  `OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST` and `OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST` compile the self-tests in: compile
+  definitions for the project's tests, not CMake options, which no target of the libraries gives; the white-box tests
+  compile the backends with them, and a build that gives them to every object (`CMAKE_CXX_FLAGS`) has the self-tests in
+  its GPU libraries too. In FIPS 140-3 mode the GPU library is outside the module, and its services are not approved:
+  each call that runs an algorithm (create, the KEM and signature calls) reports the indicator 0, and in the module's
+  error state returns `OPENPQC_ERR_ERROR_STATE`; such a call also waits for its work and checks the state again before
+  it returns, so in this mode these calls are not asynchronous (`openpqc/sycl.h`). The calls that run none (the device
+  and context queries, `openpqc_gpu_supports`, `_workspace_bytes`, the memory functions, `_sync`, `_destroy`) do
+  neither. In FIPS 140-3 mode, and only there, the batched KeyGen tests every key pair it generates (ML-KEM: Encaps and
+  Decaps of a random m, FIPS 203 §7.1; ML-DSA and SLH-DSA: a signature that must verify); the CMake options
+  `OPENPQC_MLKEM_KEYGEN_PCT` and `OPENPQC_MLDSA_KEYGEN_PCT`, which gave an ordinary build this test, no longer exist,
+  and configuring stops when either is given. A part of the test that the device does not run fails it, and ML-KEM and
+  SLH-DSA then fail the whole call with every key zeroed. A call that the context's parameter set does not have (a KEM
+  call on a signature context, ...) returns `OPENPQC_ERR_UNSUPPORTED` and writes nothing. `openpqc_gpu_create_on`
+  (`openpqc/sycl/interop.hpp`) creates a context on a device of the application's own SYCL context, whose USM memory the
+  calls then accept.
 - **Buffers** are USM memory of the context's SYCL context: device memory from `openpqc_gpu_malloc`, page-locked host
   memory from `openpqc_gpu_malloc_host` (for transfers), or, for a context of `openpqc_gpu_create_on`, the
   application's own. They are 8-byte aligned and status buffers 4-byte aligned (messages and ML-DSA signatures may
@@ -450,7 +469,8 @@ openpqc::sycl::Results r = gpu.sign(std::span(sig), std::span<const std::span<co
   that the SYCL runtime gives to the SYCL context's handler instead of the queue's, a failure inside the runtime
   itself and, on AdaptiveCpp's OpenMP host device, a buffer in another GPU's device memory).
 - **Randomness.** The randomized calls draw the coins on the host through Core's `opqc_randombytes` (a source the
-  application registered with `opqc_set_randombytes`, or else the operating system) into page-locked memory that the
+  application registered with `opqc_set_randombytes`, or else the operating system; in FIPS 140-3 mode the module's
+  HMAC_DRBG, which refuses every other source) into page-locked memory that the
   context holds, copy them into the workspace and wipe them on the host at once and in the workspace after the launch.
   `openpqc_gpu_kem_keygen_from_seed` expands seeds d ‖ z (64 bytes per operation) stored in place of the decapsulation
   keys (FIPS 203 §3.3), as the CPU library's `keygen_from_seed` does. Encapsulation with an m that the caller chooses
@@ -619,18 +639,20 @@ CPU library on every SYCL device of the machine, for each parameter set, with ra
 - randomized KeyGen and Encaps on the GPU, decapsulated by the CPU, with fresh coins across operations, chunks and
   calls (no repeated or all-zero seed);
 - the status and error contract, with every output and status buffer filled with a pattern before each call:
-  NULL, misaligned and pageable buffers and a NULL status refused, the status pre-fill, the self-test's answers;
+  NULL, misaligned and pageable buffers and a NULL status refused, the status pre-fill, the self-test's answers, against
+  the CPU library in every build (an ordinary build, whose create runs no self-test, says so by name);
 - two host threads on one context;
 - once in a single launch and once in chunks of 100 with a ragged last chunk.
 
 [`tests/gpu/test_mlkem_sycl_faults.cpp`](../tests/gpu/test_mlkem_sycl_faults.cpp) (`mlkem_sycl_faults`) compiles the
 backend itself and makes its work fail part way by fault injection: the status entries and all outputs must read as
 failed and zero, the workspace must be zeroized, the context must stay failed, and an RNG failure must be reported;
-and a create that fails (a wrong self-test answer, a refused launch, a lock that throws, and on GPUs a workspace too
-large for the device) must free all the device memory it allocated, its workspace included. The test counts the USM
-allocations that Core's helpers hold (a count compiled into tests only, `OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS`), so it
-sees a leaked workspace or buffer of any size on every device, the OpenMP host included; where a GPU's runtime reports
-its free memory, the test checks that it has not shrunk by the size of the leaked workspaces as well.
+and a create that fails (a wrong self-test answer, in the variants that have the self-test: `mlkem_sycl_faults_pct`, and
+in FIPS 140-3 mode both; a refused launch, a lock that throws, and on GPUs a workspace too large for the device) must
+free all the device memory it allocated, its workspace included. The test counts the USM allocations that Core's helpers
+hold (a count compiled into tests only, `OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS`), so it sees a leaked workspace or buffer
+of any size on every device, the OpenMP host included; where a GPU's runtime reports its free memory, the test checks
+that it has not shrunk by the size of the leaked workspaces as well.
 
 | SYCL implementation | Devices that passed |
 |---|---|
@@ -1433,11 +1455,14 @@ states the contract):
   3050 and 22–28 µs on the Iris Xe. Signing reads its counters back after every round and stops at the first round that
   finds the context failed or incomplete, so that it can neither loop for ever nor return 0 without signatures after a
   fault. A KeyGen call that fails zeroes pk and sk of all n operations.
-- **Self-test and pair-wise consistency test.** `create` runs a KeyGen, a deterministic signature and two
-  verifications of fixed inputs and refuses a device that miscomputes (`OPQC_SYCL_MLDSA_SELF_TEST_FAIL`, -7), and then
-  zeroizes the whole workspace, so that a new context holds none of the self-test's values. The CMake option
-  `OPENPQC_MLDSA_KEYGEN_PCT` (which also reaches the CPU libraries) makes the batched KeyGen sign and verify with every
-  key pair (2.4–4.6 KiB more workspace per operation, KeyGen about as costly as KeyGen, Sign and Verify together).
+- **Self-test and pair-wise consistency test, in FIPS 140-3 mode** (the self-test also with the developer definition
+  `OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST`). There `create` runs a KeyGen, a deterministic signature and two verifications
+  of fixed inputs and refuses a device that miscomputes (`OPQC_SYCL_MLDSA_SELF_TEST_FAIL`, -7), and then zeroizes the
+  whole workspace, so that a new context holds none of the self-test's values; and the batched KeyGen signs and verifies
+  with every key pair (2.4–4.6 KiB more workspace per operation, KeyGen about as costly as KeyGen, Sign and Verify
+  together). An ordinary build has neither, and so no known-answer check of the device; the CMake option
+  `OPENPQC_MLDSA_KEYGEN_PCT` that gave it the pair-wise test no longer exists. The developer definition is a compile
+  definition for the project's tests, not a CMake option, which no target of the libraries gives (§4.2).
 - **Inputs.** Every buffer of a call with n > 0 must be memory of the context: NULL, misaligned and pageable buffers
   are refused with -1 before anything is queued, with the gaps of ML-KEM's backend (§4.2): freed buffers pass under
   DPC++'s Level Zero and on the OpenMP host device, the OpenMP host device takes any pointer (pageable host memory
@@ -1594,8 +1619,11 @@ memory are refused with -1, as in ML-DSA's backend, with the same gaps: freed bu
 device memory there ends the process, even as the status buffer of a verification on a failed context), and under
 DPC++ and AdaptiveCpp the device memory of the other platform of the same Intel GPU, from which the kernels computed
 wrong results while the calls returned 0), and the tests check fresh coins, the refusals and the failure paths
-(`slhdsa_sycl_faults`). None of this has been timed. The SLH-DSA context runs no self-test at creation, and its
-KeyGen has no pair-wise consistency test.
+(`slhdsa_sycl_faults`). None of this has been timed. In the ordinary build the SLH-DSA context runs no self-test at
+creation and its KeyGen has no pair-wise consistency test (only the developer definition
+`OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST` of the project's tests compiles the self-test in outside the mode, §4.2); in FIPS
+140-3 mode it has both (`openpqc_slhdsa_sycl.h`): create runs a known-answer test of the context's own set, and KeyGen
+tests every key pair, fails closed and fails the whole call with every key zeroed.
 
 ### 12.1 What has to be accelerated
 

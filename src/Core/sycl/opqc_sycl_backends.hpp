@@ -42,11 +42,14 @@ struct Handle {
 };
 
 // Where a signing call's randomness comes from: the caller (rnd or addrnd, n values in device memory: the
-// testing interfaces), the operating system's RNG (hedged signing), or nowhere (the deterministic variant)
+// testing interfaces), opqc_randombytes (hedged signing: Core/opqc_platform.h; in FIPS 140-3 mode the module's
+// HMAC_DRBG), or nowhere (the deterministic variant)
 enum class Coins { given, random, none };
 
 // Creation of a context for a parameter set on device dev, in the application's SYCL context app (nullptr: a
-// SYCL context of the backend's own), with its self-test; the arguments as the C functions' _create take them
+// SYCL context of the backend's own), with its self-test in FIPS 140-3 mode or with the developer definition
+// OPENPQC_<SCHEME>_SYCL_CREATE_SELF_TEST (no self-test in an ordinary build); the arguments as the C functions'
+// _create take them
 int mlkem_create(opqc_sycl_mlkem** out, int level, std::size_t max_batch, const sycl::device& dev,
                  const sycl::context* app);
 int mldsa_create(opqc_sycl_mldsa** out, int level, std::size_t max_batch, const sycl::device& dev,

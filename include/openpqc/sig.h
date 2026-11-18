@@ -31,8 +31,10 @@
  *   flags         OPENPQC_SIGN_DETERMINISTIC: the deterministic variant (ML-DSA: rnd = {0}^32, FIPS 204,
  *                 Section 3.4; SLH-DSA: opt_rand = PK.seed, FIPS 205, Section 9.2), which FIPS 204 says "should
  *                 not be used on platforms where side-channel attacks are a concern and where they cannot be
- *                 otherwise mitigated"; 0: hedged, with randomness from the operating system. Ignored by
- *                 openpqc_sig_verify. Any other bit gives OPENPQC_ERR_INVALID_ARGUMENT.
+ *                 otherwise mitigated"; 0: hedged, with randomness from opqc_randombytes (Core/opqc_platform.h:
+ *                 by default the operating system's; in FIPS 140-3 mode the module's HMAC_DRBG, seeded from
+ *                 the operating system). Ignored by openpqc_sig_verify. Any other bit gives
+ *                 OPENPQC_ERR_INVALID_ARGUMENT.
  *
  * Signing with randomness that the caller chooses and the internal functions are for testing (FIPS 204, Section 6;
  * FIPS 205, Section 9), in openpqc/testing.h. ML-DSA's external mu (external_mu, sign_mu, verify_mu) is in

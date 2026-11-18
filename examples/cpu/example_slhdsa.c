@@ -197,12 +197,12 @@ static int demo_hedged_deterministic(const uint8_t *pk, const uint8_t *sk)
     openpqc_status rc;
 
     /*
-     * Hedged signing, the default, draws a fresh n-byte addrnd from the operating system
-     * (Algorithm 22, lines 4-7) and uses it as opt_rand in R = PRF_msg(SK.prf, opt_rand, M')
-     * (Algorithm 19, line 3). R is the first n bytes of the signature and, through H_msg, picks
-     * the FORS key and the hypertree leaf that sign, so two signatures of the same message differ
-     * almost everywhere. Both are valid: the verifier reads R from the signature and never needs
-     * addrnd.
+     * Hedged signing, the default, draws a fresh n-byte addrnd from opqc_randombytes (the operating
+     * system's RNG; in FIPS 140-3 mode the module's HMAC_DRBG), Algorithm 22, lines 4-7, and uses
+     * it as opt_rand in R = PRF_msg(SK.prf, opt_rand, M') (Algorithm 19, line 3). R is the first n
+     * bytes of the signature and, through H_msg, picks the FORS key and the hypertree leaf that
+     * sign, so two signatures of the same message differ almost everywhere. Both are valid: the
+     * verifier reads R from the signature and never needs addrnd.
      */
     printf("hedged and deterministic signing of the same message\n");
     rc = openpqc_slhdsa_sha2_128f_sign(sig1, message, MESSAGE_LEN, ctx, CTX_LEN, sk);
@@ -538,7 +538,7 @@ int main(int argc, char **argv)
 
     printf("SLH-DSA-SHA2-128f (FIPS 205), C API\n");
     printf("  public key %d bytes, secret key %d bytes, signature %d bytes\n", PK_BYTES, SK_BYTES, SIG_BYTES);
-    rc = openpqc_slhdsa_sha2_128f_keygen(pk, sk); /* SK.seed, SK.prf and PK.seed come from the operating system */
+    rc = openpqc_slhdsa_sha2_128f_keygen(pk, sk); /* SK.seed, SK.prf and PK.seed come from opqc_randombytes */
     if (rc != OPENPQC_OK) {
         opqc_zeroize(sk, sizeof sk);
         return failed("keygen", rc);

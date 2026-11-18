@@ -21,6 +21,13 @@
  *       the Monte Carlo test of ACVP's SHA-2 (VERSION standard or alternate), SHA-3 (standard)
  *       or SHAKE (standard; output lengths from MINBYTES to MAXBYTES), started from SEED: one
  *       line per outer iteration. MINBYTES and MAXBYTES are 0 for SHA-2 and SHA-3.
+ *   LDT TCID CONTENT FULLBYTES                   R TCID 0 MD
+ *       ACVP's large data test of SHA-2 and SHA-3: MD = H(M), where M is the hexadecimal
+ *       CONTENT repeated until it is FULLBYTES bytes long (expansionTechnique "repeating"; the
+ *       last repetition cut short if FULLBYTES is not a multiple of its length), FULLBYTES up
+ *       to MAX_LDT. M is never held in memory: the incremental functions (opqc_sha256_absorb,
+ *       opqc_sha512_absorb, opqc_sponge_absorb) take it in chunks of about 1 MiB, so that the
+ *       messages of 1 to 8 GiB of the ACVP files need 1 MiB of memory.
  *
  * Hexadecimal output is in capitals. Anything else on standard input (an unknown kind or
  * version, a malformed number or hexadecimal string, a length out of range, a line longer
@@ -40,27 +47,33 @@
 #define MAX_OUT 8192         /* bytes of a SHAKE output */
 #define MCT_OUTER 100        /* results of a Monte Carlo test */
 #define MCT_INNER 1000       /* hash calls per result */
+#define MAX_LDT (UINT64_C(1) << 34) /* bytes of a large-data message: 16 GiB (ACVP's largest is 8 GiB) */
+#define LDT_CHUNK (1 << 20)  /* bytes of the message given to absorb at a time, at most */
 
 typedef struct {
     const char *name;
     size_t digest; /* bytes; 0 for an extendable-output function */
     void (*hash)(uint8_t *out, const uint8_t *in, size_t inlen);
     void (*xof)(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen);
+    /* the incremental form, for the large data test: SHA-2's init function (one of the two), or SHA-3's rate */
+    void (*init256)(opqc_sha256_state *s);
+    void (*init512)(opqc_sha512_state *s);
+    unsigned rate;
 } algorithm;
 
 static const algorithm algorithms[] = {
-    {"SHA2-224", OPQC_SHA224_BYTES, opqc_sha224, NULL},
-    {"SHA2-256", OPQC_SHA256_BYTES, opqc_sha256, NULL},
-    {"SHA2-384", OPQC_SHA384_BYTES, opqc_sha384, NULL},
-    {"SHA2-512", OPQC_SHA512_BYTES, opqc_sha512, NULL},
-    {"SHA2-512/224", OPQC_SHA512_224_BYTES, opqc_sha512_224, NULL},
-    {"SHA2-512/256", OPQC_SHA512_256_BYTES, opqc_sha512_256, NULL},
-    {"SHA3-224", 28, opqc_sha3_224, NULL},
-    {"SHA3-256", 32, opqc_sha3_256, NULL},
-    {"SHA3-384", 48, opqc_sha3_384, NULL},
-    {"SHA3-512", 64, opqc_sha3_512, NULL},
-    {"SHAKE-128", 0, NULL, opqc_shake128},
-    {"SHAKE-256", 0, NULL, opqc_shake256},
+    {"SHA2-224", OPQC_SHA224_BYTES, opqc_sha224, NULL, opqc_sha224_init, NULL, 0},
+    {"SHA2-256", OPQC_SHA256_BYTES, opqc_sha256, NULL, opqc_sha256_init, NULL, 0},
+    {"SHA2-384", OPQC_SHA384_BYTES, opqc_sha384, NULL, NULL, opqc_sha384_init, 0},
+    {"SHA2-512", OPQC_SHA512_BYTES, opqc_sha512, NULL, NULL, opqc_sha512_init, 0},
+    {"SHA2-512/224", OPQC_SHA512_224_BYTES, opqc_sha512_224, NULL, NULL, opqc_sha512_224_init, 0},
+    {"SHA2-512/256", OPQC_SHA512_256_BYTES, opqc_sha512_256, NULL, NULL, opqc_sha512_256_init, 0},
+    {"SHA3-224", 28, opqc_sha3_224, NULL, NULL, NULL, OPQC_SHA3_224_RATE},
+    {"SHA3-256", 32, opqc_sha3_256, NULL, NULL, NULL, OPQC_SHA3_256_RATE},
+    {"SHA3-384", 48, opqc_sha3_384, NULL, NULL, NULL, OPQC_SHA3_384_RATE},
+    {"SHA3-512", 64, opqc_sha3_512, NULL, NULL, NULL, OPQC_SHA3_512_RATE},
+    {"SHAKE-128", 0, NULL, opqc_shake128, NULL, NULL, 0},
+    {"SHAKE-256", 0, NULL, opqc_shake256, NULL, NULL, 0},
 };
 
 static _Noreturn void fail(const char *what, const char *tc)
@@ -216,6 +229,54 @@ static void mct_shake(const algorithm *a, const char *tc, const uint8_t *seed, s
     }
 }
 
+/*
+ * The large data test of ACVP's SHA-2 and SHA-3 (expansionTechnique "repeating"): MD = H(M) for M = content
+ * repeated to `full` bytes, given to the incremental functions in chunks of whole repetitions of the content (so
+ * that every chunk starts at the start of the content), the last chunk cut short.
+ */
+static void ldt(const algorithm *a, const char *tc, const uint8_t *content, size_t clen, uint64_t full)
+{
+    static uint8_t buf[LDT_CHUNK];
+    uint8_t md[64];
+    if (a->hash == NULL || clen == 0 || clen > LDT_CHUNK)
+        fail("LDT: SHA-2 and SHA-3 only, with content of 1 to LDT_CHUNK bytes", tc);
+    const size_t chunk = LDT_CHUNK / clen * clen;
+    for (size_t i = 0; i < chunk; i++) buf[i] = content[i % clen];
+    opqc_sha256_state s256;
+    opqc_sha512_state s512;
+    opqc_sponge sponge;
+    int status = 0;
+    if (a->init256 != NULL) a->init256(&s256);
+    else if (a->init512 != NULL) a->init512(&s512);
+    else status |= opqc_sponge_init(&sponge, a->rate);
+    for (uint64_t left = full; left > 0;) {
+        const size_t n = left < chunk ? (size_t)left : chunk;
+        if (a->init256 != NULL) opqc_sha256_absorb(&s256, buf, n);
+        else if (a->init512 != NULL) opqc_sha512_absorb(&s512, buf, n);
+        else status |= opqc_sponge_absorb(&sponge, buf, n);
+        left -= n;
+    }
+    if (a->init256 != NULL) {
+        status |= opqc_sha256_finalize(&s256, md, (unsigned)a->digest);
+    } else if (a->init512 != NULL) {
+        status |= opqc_sha512_finalize(&s512, md, (unsigned)a->digest);
+    } else {
+        status |= opqc_sponge_finalize(&sponge, OPQC_SHA3_SUFFIX);
+        status |= opqc_sponge_squeeze(&sponge, md, a->digest);
+    }
+    if (status != 0) fail("LDT: an incremental function refused a call", tc);
+    result(tc, 0, md, a->digest);
+}
+
+static uint64_t number64(const char *s, uint64_t max, const char *tc)
+{
+    if (s == NULL || s[0] < '0' || s[0] > '9') fail("missing or malformed number", tc);
+    char *end;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (*end != '\0' || v > max) fail("number out of range", tc);
+    return (uint64_t)v;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) fail("usage: acvp_hash_driver ALGORITHM < cases", NULL);
@@ -259,6 +320,10 @@ int main(int argc, char **argv)
             } else {
                 mct_sha3(a, tc, msg, len);
             }
+        } else if (strcmp(kind, "LDT") == 0) {
+            const size_t len = from_hex(msg, field(&cursor), tc);
+            const uint64_t full = number64(field(&cursor), MAX_LDT, tc);
+            ldt(a, tc, msg, len, full);
         } else {
             fail("unknown kind of test case", tc);
         }

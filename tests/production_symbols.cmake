@@ -6,11 +6,14 @@
 # Section 3.3, FIPS 204, Section 6, and FIPS 205, Section 9, keep for testing). They are in OpenPQC::testing,
 # which is the positive control: the same search must find them there. The test production_symbols
 # (tests/CMakeLists.txt).
+# The search covers every symbol the library defines, the local ones too (nm --defined-only, from its symbol table):
+# in FIPS 140-3 mode the module is linked with the list of its exports (cmake/OpenPQCFips.cmake), which makes every
+# other symbol local, so a testing interface linked into it would no longer be exported but would still be in it.
 #
 #   cmake -DNM=<nm> -DLIBRARY=<the library openpqc> -DTESTING=<the library openpqc_testing> -P production_symbols.cmake
 
 function(c_api_symbols library out_all out_testing)
-    execute_process(COMMAND ${NM} -g --defined-only ${library} OUTPUT_VARIABLE listing RESULT_VARIABLE rc
+    execute_process(COMMAND ${NM} --defined-only ${library} OUTPUT_VARIABLE listing RESULT_VARIABLE rc
                     ERROR_VARIABLE err)
     if(NOT rc EQUAL 0)
         message(FATAL_ERROR "${NM} ${library} failed (${rc}): ${err}")
@@ -19,8 +22,8 @@ function(c_api_symbols library out_all out_testing)
     set(all "")
     set(testing "")
     foreach(line IN LISTS lines)
-        # a defined global symbol of the C APIs (C++ symbols are mangled: _Z...)
-        if(line MATCHES "^[0-9a-fA-F]* [A-Z] (openpqc_[A-Za-z0-9_]+)$")
+        # a defined symbol of the C APIs, global or local (C++ symbols are mangled: _Z...)
+        if(line MATCHES "^[0-9a-fA-F]* [A-Za-z] (openpqc_[A-Za-z0-9_]+)$")
             set(name ${CMAKE_MATCH_1})   # (a MATCHES below sets CMAKE_MATCH_1 again)
             list(APPEND all ${name})
             if(name MATCHES "^openpqc_testing_" OR name MATCHES "_(derand|internal)$")

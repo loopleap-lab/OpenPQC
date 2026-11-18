@@ -9,13 +9,18 @@
 // the backend itself (src/ML/DSA/sycl/mldsa_sycl.cpp), with its kernel launches -- Core's for_each_item and
 // for_each_team, through which every stage kernel is queued -- renamed to versions that count them and can leave
 // one, or one and all later ones, out (kernels that never run, as when the device faults part way through a call),
+// run one over all but the last of its operations (a kernel that computes every pair of a chunk but one),
 // throw instead (a launch that the SYCL runtime refuses), or have an asynchronous error reported first, the way the
 // runtimes report a device fault that a wait finds (DPC++: a host task that throws; AdaptiveCpp: an error registered
 // with its runtime, as it registers a failed kernel or copy), and with its lock (Lock) renamed to one that can throw
 // std::system_error on a chosen construction, as std::recursive_mutex::lock does when the system refuses the lock.
 // It is built twice: test_mldsa_sycl_faults with the pair-wise consistency test after KeyGen
-// (OPENPQC_MLDSA_KEYGEN_PCT), and test_mldsa_sycl_faults_nopct (OPENPQC_TEST_FAULTS_NO_PCT) without it, as the
-// library is built by default, so that the wipes of KeyGen and of a failed RNG are tested in both configurations.
+// (OPENPQC_MLDSA_KEYGEN_PCT) and the self-test of create (the developer definition
+// OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST), as FIPS 140-3 mode builds the library, and test_mldsa_sycl_faults_nopct
+// (OPENPQC_TEST_FAULTS_NO_PCT) without either definition, as the library is built, so that the wipes of KeyGen and
+// of a failed RNG are tested in both configurations: in an ordinary build without either test (the cases that need
+// them say by name that they do not apply); in FIPS 140-3 mode with OPENPQC_FIPS140_3 alone, which must turn both on
+// (the test fails if it does not), and it runs the pct and self-test cases on it.
 // Core is compiled with its test-only count of the USM allocations its helpers hold
 // (OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS), which must be 0 again after every case. The test provides the
 // opqc_external_randombytes() of the library's randomized calls (it links openpqc_core_testrng): a generator whose
@@ -29,7 +34,8 @@
 //              of the operations (so that no coins are left out, reused or replaced by zeros, within a chunk or
 //              across chunks); after every call every secret section of the workspace is zero (FIPS 204, Section
 //              3.6.3), after every signing call (and KeyGen, whose pair-wise consistency test signs) also mu's
-//              section, every slot, and the copy of the context string, which come from the message, and after
+//              section, the challenges c and the result flags of the attempts (every slot), and the copy of the
+//              context string, which come from the message, and after
 //              KeyGen and every verification also every other section that verification writes, but A^;
 //              verification with status NULL is refused, and
 //              a refused verification has set every status entry to "invalid" when it returns; sign_stats reports
@@ -49,27 +55,39 @@
 //   throw      signing whose second launch of the first round throws: -2, the workspace zero, the next call -2
 //              without a launch
 //   rng        randomized keypair and sign whose randomness fails for chunk 2: OPENPQC_ERR_RNG, the
-//              coins and every secret section zero, and nothing of chunk 1's signing (mu, the context string)
-//              left; the context has not failed (the next call gives the CPU's
+//              coins and every secret section zero, and nothing of chunk 1's signing (mu, c, the flags, the
+//              context string) left; the context has not failed (the next call gives the CPU's
 //              keys); a refused randomized call draws no randomness; signing whose randomness fails for chunk 1
 //              (no launch) reports 0 rounds and 0 attempts
 //   pct        (with the pair-wise consistency test only) KeyGen whose computation of tr (H(pk), into sk) is left
 //              out for chunk 1: OPENPQC_ERR_PCT, pk and sk of operations 0 and 1 zero, the others the
-//              CPU's; randomized, the same, with every chunk computed
+//              CPU's; randomized, the same, with every chunk computed; KeyGen whose computation of tr runs for
+//              operation 0 of chunk 1 only (one bad pair beside a good one of its chunk): OPENPQC_ERR_PCT, pk and
+//              sk of operation 1 zero, the others the CPU's, derandomized and randomized; and KeyGen whose test's
+//              last kernel (the one that zeroes the failed pairs and counts failures and passes) never runs for
+//              chunk 1, its keys intact: no pair of chunk 1 counts as tested, so OPENPQC_ERR_PCT with operations
+//              0 and 1 zero
 //   limit      the end of the signing loop (FIPS 204, Appendix C), with the loop's bound lowered to one attempt
 //              (Schedule::bound, which the C API never changes; the CPU library's tests do the same with
 //              sign_mu<P, 1>): 16 signatures, most of which reach it, and one under a private key whose s1 has a
 //              coefficient out of range (Algorithm 25, line 3): all-zero signatures and
 //              OPENPQC_ERR_SIGNING_LIMIT or OPENPQC_ERR_INVALID_SECRET_KEY in status where the CPU library has
 //              them; a call without status returns OPENPQC_ERR_INVALID_SECRET_KEY, before the limit, and
-//              OPENPQC_ERR_SIGNING_LIMIT once the malformed key is replaced; the secret sections, mu and
-//              the context string zero after these calls, which return an error code
+//              OPENPQC_ERR_SIGNING_LIMIT once the malformed key is replaced; the secret sections, mu, c,
+//              the flags and the context string zero after these calls, which return an error code
 //   self-test  create with one launch of its self-test left out: OPQC_SYCL_MLDSA_SELF_TEST_FAIL, and no context;
 //              create whose self-test's lock throws after it has allocated its device memory: -2, no context, and
 //              Core's count of USM allocations as before; create: the whole workspace of the new context is zero
-//              (no value of its self-test is left in it)
+//              (no value of its self-test is left in it). Without the self-test (_nopct in an ordinary build):
+//              create launches no kernel and its workspace is zero; the other cases do not apply (the test says so)
 //
 // Usage: test_mldsa_sycl_faults[_nopct] [devices: all (default) or indices, e.g. 2 or 0,3]
+//        test_mldsa_sycl_faults[_nopct] layout: the workspace bytes of this build of the backend, for every level
+//        and the max_batch values of test_gpu_layout.c (no device; test gpu_layout compares them with the GPU
+//        library's); in FIPS 140-3 mode it fails if the backend has no pair-wise consistency test or no self-test
+//        of create
+//        test_mldsa_sycl_faults answers present|absent <file>...: whether the files (the GPU libraries) hold the
+//        self-test's answers (no device; test gpu_self_test, tests/gpu/self_test_answers.hpp)
 // Exit code 0 if every check passed, 1 if one failed, 2 for malformed arguments, 77 (CTest: skipped) if there is
 // no SYCL device.
 
@@ -118,32 +136,38 @@ inline void inject_asynchronous_error([[maybe_unused]] sycl::queue& q) {
 }
 
 // The backend's kernel launches since reset(). skip_from > 0: that launch and every later one is left out (the
-// kernel never runs); skip_at > 0: that launch only; throw_at > 0: that launch throws instead, as the SYCL runtime
-// does when it refuses one; inject_at > 0: an asynchronous error is reported before that launch, which runs.
+// kernel never runs); skip_at > 0: that launch only; shrink_at > 0: that launch runs over all but the last of its
+// n work-items or teams (in KeyGen's hash_pk one per operation, so that the chunk's last operation gets no tr and
+// the others do); throw_at > 0: that launch throws instead, as the SYCL runtime does when it refuses one;
+// inject_at > 0: an asynchronous error is reported before that launch, which runs. admit(q, n) says whether the
+// launch runs, and sets n to the work-items or teams it runs over.
 struct Launches {
     static inline long count = 0;
     static inline long skip_from = 0;
     static inline long skip_at = 0;
+    static inline long shrink_at = 0;
     static inline long throw_at = 0;
     static inline long inject_at = 0;
-    static void reset() { count = skip_from = skip_at = throw_at = inject_at = 0; }
-    static bool admit(sycl::queue& q) {
+    static void reset() { count = skip_from = skip_at = shrink_at = throw_at = inject_at = 0; }
+    static bool admit(sycl::queue& q, std::size_t& n) {
         ++count;
         if (inject_at > 0 && count == inject_at) inject_asynchronous_error(q);
         if (throw_at > 0 && count == throw_at) throw std::runtime_error("injected: the runtime refuses a launch");
         if (skip_at > 0 && count == skip_at) return false;
-        return skip_from <= 0 || count < skip_from;
+        if (skip_from > 0 && count >= skip_from) return false;
+        if (shrink_at > 0 && count == shrink_at && n > 1) n--;
+        return true;
     }
 };
 
 template <unsigned GroupSize = 128, class F>
 void counted_for_each_item(sycl::queue& q, std::size_t n, F f) {
-    if (Launches::admit(q)) for_each_item<GroupSize>(q, n, f);
+    if (Launches::admit(q, n)) for_each_item<GroupSize>(q, n, f);
 }
 
 template <class Word, unsigned TeamSize, unsigned TeamsPerGroup, class F>
 void counted_for_each_team(sycl::queue& q, std::size_t n, std::size_t local_words, F f) {
-    if (Launches::admit(q)) for_each_team<Word, TeamSize, TeamsPerGroup>(q, n, local_words, f);
+    if (Launches::admit(q, n)) for_each_team<Word, TeamSize, TeamsPerGroup>(q, n, local_words, f);
 }
 
 // The backend's lock (its Lock): the constructions since reset(); construction number throw_at > 0 throws
@@ -171,9 +195,53 @@ private:
 
 } // namespace openpqc::gpu
 
-// The backend with KeyGen's pair-wise consistency test, or (_nopct) as the library is built by default
+// Whether the build gives every object the developer definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST (the library's
+// too), before this test defines it itself
+#if defined(OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST)
+#define TEST_BUILD_SELF_TEST 1
+#else
+#define TEST_BUILD_SELF_TEST 0
+#endif
+// Whether the build's GPU libraries must have the self-test of create: in FIPS 140-3 mode, and with the developer
+// definition given to every object (test gpu_self_test, "answers expected")
+#if TEST_BUILD_SELF_TEST || defined(OPENPQC_FIPS140_3)
+#define BUILD_HAS_SELF_TEST true
+#else
+#define BUILD_HAS_SELF_TEST false
+#endif
+// The variant that compiles the backend as the library is built, in an ordinary build: the backend must have
+// neither of the tests that only FIPS 140-3 mode turns on (KeyGen's pair-wise consistency test, and create's
+// self-test unless the build gives every object its developer definition); "layout" fails otherwise (test
+// gpu_layout), and so does the test
+#if !defined(OPENPQC_FIPS140_3) && defined(OPENPQC_TEST_FAULTS_NO_PCT)
+#define TEST_ORDINARY_AS_BUILT 1
+#else
+#define TEST_ORDINARY_AS_BUILT 0
+#endif
+// How this test names a FIPS-only test that the backend as compiled here lacks: not applicable where that is what
+// the build promises (TEST_ORDINARY_AS_BUILT), MISSING elsewhere, where FIPS 140-3 mode or the test's own
+// definitions turn it on (a failure, which main checks, and so does the self-test case where create has none)
+#if TEST_ORDINARY_AS_BUILT
+#define TEST_ABSENT "not applicable"
+#define TEST_NO_SELF_TEST                                                                \
+    "not applicable, the backend has no self-test of create (an ordinary build without " \
+    "OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST)"
+#elif defined(OPENPQC_FIPS140_3)
+#define TEST_ABSENT "MISSING in FIPS 140-3 mode (a failure)"
+#define TEST_NO_SELF_TEST "MISSING, the backend has no self-test of create in FIPS 140-3 mode (a failure)"
+#else
+#define TEST_ABSENT "MISSING although this test defines it (a failure)"
+#define TEST_NO_SELF_TEST                                                           \
+    "MISSING, the backend has no self-test of create although this test defines " \
+    "OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST (a failure)"
+#endif
+// The backend with KeyGen's pair-wise consistency test and the self-test of create, as FIPS 140-3 mode builds the
+// library, or (_nopct) as the library is built
 #if !defined(OPENPQC_TEST_FAULTS_NO_PCT)
 #define OPENPQC_MLDSA_KEYGEN_PCT 1
+#if !defined(OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST)
+#define OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST 1
+#endif
 #endif
 #define for_each_item counted_for_each_item
 #define for_each_team counted_for_each_team
@@ -185,6 +253,7 @@ private:
 
 #include "ML/DSA/openpqc_mldsa.h"
 #include "openpqc/testing.h"
+#include "self_test_answers.hpp"
 
 // The randomness of the library (openpqc_core_testrng calls opqc_external_randombytes): a deterministic generator,
 // which fails on call number fail_at (counted from the last reset) when that is set, and keeps every byte it gives
@@ -421,18 +490,21 @@ struct Fixture {
         return left.empty() ? "none" : left;
     }
     // What a signing call leaves of the message in the workspace (FIPS 204, Section 3.6.3): the nonzero bytes of
-    // mu's section, every slot, and of the copy of the context string, as "MU <n> B, context <n> B"; ok if both 0
+    // mu's section, of the challenges c and the result flags of its attempts (sections C and FLAGS, every slot),
+    // and of the copy of the context string, as "MU <n> B, C <n> B, FLAGS <n> B, context <n> B"; ok if all 0
     std::string signing_left(bool& ok) {
         const Bytes w = workspace();
         const auto nonzero = [&](std::size_t at, std::size_t n) {
             return std::count_if(w.begin() + static_cast<std::ptrdiff_t>(at),
                                  w.begin() + static_cast<std::ptrdiff_t>(at + n), [](std::uint8_t v) { return v != 0; });
         };
-        const auto mu_bytes = nonzero(ctx->offset[gpu_ns::MU], ctx->bytes[gpu_ns::MU] * ctx->max_batch);
+        const auto section = [&](gpu_ns::Section s) { return nonzero(ctx->offset[s], ctx->bytes[s] * ctx->max_batch); };
+        const auto mu_bytes = section(gpu_ns::MU), c_bytes = section(gpu_ns::C), flag_bytes = section(gpu_ns::FLAGS);
         const auto ctx_bytes =
                 nonzero(static_cast<std::size_t>(ctx->ws.ctx - ctx->mem), openpqc::gpu::MAX_CONTEXT_BYTES);
-        ok = mu_bytes == 0 && ctx_bytes == 0;
-        return "MU " + std::to_string(mu_bytes) + " B, context " + std::to_string(ctx_bytes) + " B";
+        ok = mu_bytes == 0 && c_bytes == 0 && flag_bytes == 0 && ctx_bytes == 0;
+        return "MU " + std::to_string(mu_bytes) + " B, C " + std::to_string(c_bytes) + " B, FLAGS " +
+               std::to_string(flag_bytes) + " B, context " + std::to_string(ctx_bytes) + " B";
     }
     std::string signing_left() {
         bool ok = false;
@@ -847,11 +919,54 @@ void pct(int device, const Oracle& o) {
     const int next = opqc_sycl_mldsa_keypair_derand(f.ctx, f.pk, f.sk, f.seeds, OPS);
     CHECK(rc == OPENPQC_ERR_PCT && derand && left == "none");
     CHECK(rrc == OPENPQC_ERR_PCT && randomized && Rng::calls == 3 && next == 0);
+    // one bad pair beside a good one of its chunk: chunk 1's hash_pk over operation 0 only, so that operation 1's
+    // tr keeps the pattern; the test must fail operation 1 alone (zeroed) and keep operation 0 and the other chunks
+    f.raw_put(f.sk, Bytes(SK * OPS, 0xA5));
+    Launches::reset();
+    Launches::shrink_at = KEYGEN_LAUNCHES;
+    const int mrc = opqc_sycl_mldsa_keypair_derand(f.ctx, f.pk, f.sk, f.seeds, OPS);
+    Launches::reset();
+    const bool mixed = records(f.raw_get(f.pk, PK * OPS), o.pk, PK, {1}) &&
+                       records(f.raw_get(f.sk, SK * OPS), o.sk, SK, {1});
+    const std::string mleft = f.secrets_left();
+    f.raw_put(f.sk, Bytes(SK * OPS, 0xA5));
+    Rng::reset();
+    Launches::shrink_at = KEYGEN_LAUNCHES;
+    const int mrrc = opqc_sycl_mldsa_keypair(f.ctx, f.pk, f.sk, OPS);
+    Launches::reset();
+    Bytes mxi = Rng::given, mpk, msk;
+    mxi.resize(32 * OPS);
+    cpu_keys(mxi, mpk, msk);
+    const bool mixed_random = records(f.raw_get(f.pk, PK * OPS), mpk, PK, {1}) &&
+                              records(f.raw_get(f.sk, SK * OPS), msk, SK, {1});
+    CHECK(mrc == OPENPQC_ERR_PCT && mixed && mleft == "none");
+    CHECK(mrrc == OPENPQC_ERR_PCT && mixed_random);
+    // the test's last kernel of chunk 1 (discard_failed_pairs) never runs: the launches of a call of chunk 1 alone
+    // (the same keys, so the same signing rounds) end with it
+    Launches::reset();
+    const int rc_one = opqc_sycl_mldsa_keypair_derand(f.ctx, f.pk, f.sk, f.seeds, BATCH);
+    const long chunk1 = Launches::count;
+    f.raw_put(f.sk, Bytes(SK * OPS, 0xA5));
+    Launches::reset();
+    Launches::skip_at = chunk1;
+    const int drc = opqc_sycl_mldsa_keypair_derand(f.ctx, f.pk, f.sk, f.seeds, OPS);
+    Launches::reset();
+    const bool dropped = records(f.raw_get(f.pk, PK * OPS), o.pk, PK, {0, 1}) &&
+                         records(f.raw_get(f.sk, SK * OPS), o.sk, SK, {0, 1});
+    const std::string dleft = f.secrets_left();
+    CHECK(rc_one == 0 && chunk1 > KEYGEN_LAUNCHES && drc == OPENPQC_ERR_PCT && dropped && dleft == "none");
     report(device, "pct", before,
            "keypair_derand " + std::to_string(rc) + ", pairs 0 and 1 zero and the others the CPU's: " +
                    (derand ? "yes" : "NO") + ", secrets left: " + left + "; keypair " + std::to_string(rrc) +
                    ", the same: " + (randomized ? "yes" : "NO") + " (" + std::to_string(Rng::calls) +
-                   " RNG calls); next keypair_derand " + std::to_string(next));
+                   " RNG calls); next keypair_derand " + std::to_string(next) +
+                   "; operation 1 without tr beside a good operation 0: keypair_derand " + std::to_string(mrc) +
+                   ", keypair " + std::to_string(mrrc) + ", operation 1 zero and the others the CPU's: " +
+                   (mixed && mixed_random ? "yes" : "NO") + ", secrets left: " + mleft +
+                   "; the test's last launch of chunk " +
+                   "1 (" + std::to_string(chunk1) + ") left out: " + std::to_string(drc) +
+                   ", pairs 0 and 1 zero and the others the CPU's: " + (dropped ? "yes" : "NO") +
+                   ", secrets left: " + dleft);
 }
 
 // The end of the signing loop (FIPS 204, Appendix C) with the bound lowered to one attempt (Schedule::bound, which
@@ -969,6 +1084,35 @@ void self_test(int device) {
     using openpqc::gpu::usm_allocations;
     const int before = failures;
     const long usm = usm_allocations();
+    if (!openpqc::mldsa::gpu::CREATE_SELF_TEST) {
+        // The backend as an ordinary build compiles it: create runs no self-test, so it launches no kernel, and
+        // the workspace of the new context is as its allocation left it, zero
+        opqc_sycl_mldsa* plain = nullptr;
+        Launches::reset();
+        const int rc_plain = opqc_sycl_mldsa_create(&plain, 44, BATCH, device);
+        const long launched_plain = Launches::count;
+        Launches::reset();
+        CHECK(rc_plain == 0 && plain != nullptr && launched_plain == 0);
+        bool zero_plain = false;
+        if (plain) {
+            Bytes w(plain->mem_bytes, 0xEE);
+            CHECK(raw_copy(plain, w.data(), plain->mem, w.size()));
+            zero_plain = all_zero(w.data(), w.size());
+            CHECK(zero_plain);
+            opqc_sycl_mldsa_destroy(plain);
+        }
+        CHECK(usm_allocations() == usm);
+        // A backend without create's self-test is what the build promises only in the variant that compiles it as
+        // an ordinary build does (TEST_NO_SELF_TEST: not applicable); elsewhere it is MISSING, a failed check here
+        // too (main checks it as well), so that this line reads FAILED
+        CHECK(TEST_ORDINARY_AS_BUILT);
+        report(device, "self-test", before,
+               "create " + std::to_string(rc_plain) + " (" + std::to_string(launched_plain) +
+                       " launches: no self-test in this build), its workspace " + (zero_plain ? "zero" : "NOT zero") +
+                       "; create with a launch of its self-test left out, and with its lock thrown: "
+                       TEST_NO_SELF_TEST);
+        return;
+    }
     opqc_sycl_mldsa* ctx = nullptr;
     Launches::reset();
     Launches::skip_at = 2;   // ExpandA of KeyGen: a key pair of another matrix
@@ -1026,10 +1170,65 @@ bool parse_list(const char* s, long lo, long hi, std::vector<int>& out) {
     }
 }
 
+// "layout": the workspace that create allocates in this build of the backend (its sections, so that KeyGen's
+// pair-wise consistency test shows as the sections of its own), for every level and the max_batch values of
+// test_gpu_layout.c, in that program's form; test gpu_layout (tests/gpu/gpu_layout.cmake) requires the GPU
+// library's to be the same. In FIPS 140-3 mode the backend must have the test: exit code 1 otherwise.
+int layout() {
+    const struct {
+        int level;
+        openpqc_alg alg;
+    } levels[] = {{44, OPENPQC_ML_DSA_44}, {65, OPENPQC_ML_DSA_65}, {87, OPENPQC_ML_DSA_87}};
+    for (const auto& l : levels) {
+        for (const std::size_t b : {std::size_t{1}, std::size_t{3}, std::size_t{64}})
+            std::printf("alg 0x%04x max_batch %zu workspace %zu\n", static_cast<unsigned>(l.alg), b,
+                        openpqc::gpu::mldsa_workspace_bytes(l.level, b));
+    }
+    const bool pct_on = openpqc::mldsa::gpu::KEYGEN_PCT, self_test_on = openpqc::mldsa::gpu::CREATE_SELF_TEST;
+    std::printf("ML-DSA backend: KeyGen's pair-wise consistency test %s, create's self-test %s\n",
+                pct_on ? "on" : "off", self_test_on ? "on" : "off");
+#if defined(OPENPQC_FIPS140_3)
+    if (!pct_on || !self_test_on) {
+        std::fprintf(stderr, "FIPS 140-3 mode: the backend lacks KeyGen's pair-wise consistency test or create's "
+                             "self-test\n");
+        return 1;
+    }
+#endif
+#if TEST_ORDINARY_AS_BUILT
+    if (pct_on || (self_test_on && !TEST_BUILD_SELF_TEST)) {
+        std::fprintf(stderr, "an ordinary build: the backend as the library is built has a test that only FIPS 140-3 "
+                             "mode turns on\n");
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+// "answers present|absent <file>...": whether the files hold the 9 answers of the self-test of create
+// (mldsa_sycl_self_test.hpp: three per level), with the expectation that the caller gives (test gpu_self_test:
+// "present" in FIPS 140-3 mode, and in a build that gives every object OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST;
+// "absent" otherwise). Only the build that compiles the self-test has the answers to look for.
+int answers(int argc, char** argv) {
+#if OPQC_MLDSA_SYCL_SELF_TEST
+    std::vector<self_test_answers::Answer> all;
+    for (const auto& a : openpqc::mldsa::gpu::self_test::answers)
+        for (const auto* v : {&a.pk, &a.sk, &a.sig}) all.push_back(*v);
+    return self_test_answers::check("ML-DSA", BUILD_HAS_SELF_TEST, argc, argv, all);
+#else
+    (void)argc;
+    (void)argv;
+    std::fprintf(stderr,
+                 "answers: this build of the backend has no self-test of create (use test_mldsa_sycl_faults)\n");
+    return 2;
+#endif
+}
+
 } // namespace faults_test
 
 int main(int argc, char** argv) {
     using namespace faults_test;
+    if (argc == 2 && std::strcmp(argv[1], "layout") == 0) return layout();
+    if (argc > 1 && std::strcmp(argv[1], "answers") == 0) return answers(argc - 2, argv + 2);
     const int count = opqc_sycl_device_count();
     if (argc > 2) {
         std::fprintf(stderr, "usage: test_mldsa_sycl_faults[_nopct] [devices: all or indices, e.g. 0,3]\n");
@@ -1048,6 +1247,25 @@ int main(int argc, char** argv) {
     }
     if (devices.empty())
         for (int d = 0; d < count; d++) devices.push_back(d);
+#if defined(OPENPQC_FIPS140_3)
+    // FIPS 140-3 mode turns KeyGen's pair-wise consistency test and the self-test of create on: here the backend
+    // has OPENPQC_FIPS140_3 alone (_nopct) or with the tests' own definitions
+    CHECK(openpqc::mldsa::gpu::KEYGEN_PCT && openpqc::mldsa::gpu::CREATE_SELF_TEST);
+    std::printf("FIPS 140-3 mode: KeyGen's pair-wise consistency test %s, create's self-test %s\n",
+                openpqc::mldsa::gpu::KEYGEN_PCT ? "on" : "OFF (FAILED)",
+                openpqc::mldsa::gpu::CREATE_SELF_TEST ? "on" : "OFF (FAILED)");
+#endif
+    std::printf("the backend as compiled here: KeyGen's pair-wise consistency test %s, create's self-test %s%s\n",
+                openpqc::mldsa::gpu::KEYGEN_PCT ? "on" : "off (the pct case: " TEST_ABSENT ")",
+                openpqc::mldsa::gpu::CREATE_SELF_TEST ? "on" : "off (create's self-test cases: " TEST_ABSENT ")",
+                TEST_BUILD_SELF_TEST ? "; the build gives every object OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST" : "");
+#if TEST_ORDINARY_AS_BUILT
+    // an ordinary build: the backend as the library is built has neither FIPS-only test
+    CHECK(!openpqc::mldsa::gpu::KEYGEN_PCT && (!openpqc::mldsa::gpu::CREATE_SELF_TEST || TEST_BUILD_SELF_TEST));
+#elif !defined(OPENPQC_FIPS140_3)
+    // the variant with the test's own definitions: they turn both on
+    CHECK(openpqc::mldsa::gpu::KEYGEN_PCT && openpqc::mldsa::gpu::CREATE_SELF_TEST);
+#endif
     const Oracle o;
     long held = 0;   // Core's count of USM allocations after a case: every case frees what it allocated
     const auto freed = [&] {
@@ -1072,17 +1290,20 @@ int main(int argc, char** argv) {
             pct(d, o);
             freed();
         } else {
-            std::printf("  device %d %-9s %s\n", d, "pct", "not run: this build has no pair-wise consistency test");
+            std::printf("  device %d %-9s %s\n", d, "pct",
+                        TEST_ABSENT ": this build of the backend has no pair-wise consistency test");
         }
         limit(d, o);
         freed();
         self_test(d);
         freed();
     }
-    std::printf("result: %s, ML-DSA-44 (%s) on %zu device(s), %d failed check(s); USM allocations held after the "
-                "cases: %ld\n",
+    std::printf("result: %s, ML-DSA-44 (%s, %s) on %zu device(s), %d failed check(s); USM allocations held after "
+                "the cases: %ld\n",
                 failures ? "FAIL" : "PASS",
-                openpqc::mldsa::gpu::KEYGEN_PCT ? "with KeyGen's pair-wise consistency test" : "the default build",
+                openpqc::mldsa::gpu::KEYGEN_PCT ? "with KeyGen's pair-wise consistency test"
+                                                : "without KeyGen's pair-wise consistency test",
+                openpqc::mldsa::gpu::CREATE_SELF_TEST ? "with create's self-test" : "without create's self-test",
                 devices.size(), failures, held);
     return failures ? 1 : 0;
 }

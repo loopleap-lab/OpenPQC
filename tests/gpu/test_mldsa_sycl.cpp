@@ -42,7 +42,11 @@
 //                    key for all (sign_one_key_derand, sign_one_key) under a malformed key
 // Each batch runs once in one launch and once in chunks with a ragged last chunk. Also:
 //   self-test:       the answers of the self-test of create (ML/DSA/sycl/mldsa_sycl_self_test.hpp)
-//                    are the CPU library's
+//                    are the CPU library's. The library's create runs that self-test in FIPS 140-3
+//                    mode only (and in a build that gives every object the developer definition
+//                    OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST); otherwise the test says by name that it
+//                    does not apply to the library, and checks the answers all the same (the
+//                    white-box test test_mldsa_sycl_faults runs the self-test with them)
 // (The end of the signing loop, Appendix C, is tested by test_mldsa_sycl_faults with the loop's
 // bound lowered: no private key that the CPU library signs with -- s1 and s2 in range -- makes
 // every attempt fail, so the real bound of 821 attempts cannot be reached from the C API.)
@@ -84,6 +88,14 @@
 #include "ML/DSA/scheme/mldsa_internal.hpp"
 #include "ML/DSA/sycl/mldsa_sycl_self_test.hpp"
 #include "ML/DSA/sycl/openpqc_mldsa_sycl.h"
+
+// Whether the library's create runs the known-answer self-test: in FIPS 140-3 mode, and in a build that gives
+// every object (this test's too) the developer definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST
+#if defined(OPENPQC_FIPS140_3) || defined(OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST)
+constexpr bool LIBRARY_SELF_TEST = true;
+#else
+constexpr bool LIBRARY_SELF_TEST = false;
+#endif
 
 namespace {
 
@@ -803,8 +815,11 @@ void check_self_test_values() {
         }
         CHECK(found);
     }
-    std::printf("self-test answers (ML/DSA/sycl/mldsa_sycl_self_test.hpp): %s\n",
-                failures ? "NOT the CPU library's" : "the CPU library's");
+    std::printf("self-test answers (ML/DSA/sycl/mldsa_sycl_self_test.hpp): %s; %s\n",
+                failures ? "NOT the CPU library's" : "the CPU library's",
+                LIBRARY_SELF_TEST ? "this build's create runs the self-test"
+                                  : "not applicable to this build's library: an ordinary build's create runs no "
+                                    "self-test (no OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST)");
 }
 
 bool nvidia(int device) {

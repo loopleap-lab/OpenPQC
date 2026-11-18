@@ -8,13 +8,16 @@
 // HashML-DSA.Sign and HashML-DSA.Verify (Algorithms 4 and 5). They wrap the
 // internal algorithms of Section 6 (mldsa_internal.hpp), adding
 //
-//   - the random values xi (KeyGen) and rnd (hedged signing) from the system RNG,
+//   - the random values xi (KeyGen) and rnd (hedged signing) from Core's
+//     opqc_randombytes (the system RNG by default; in FIPS 140-3 mode the
+//     module's HMAC_DRBG),
 //   - the formatted message M' = 0 || |ctx| || ctx || M, or for HashML-DSA
 //     M' = 1 || |ctx| || ctx || OID || PH(M), which separates the two domains,
 //   - the checks of the context string (at most 255 bytes) and of the signature
 //     length (Section 3.6.2),
 //   - optionally (OPENPQC_MLDSA_KEYGEN_PCT), a pair-wise consistency test after
-//     KeyGen, as FIPS 140-3 asks of validated modules,
+//     KeyGen, as FIPS 140-3 asks of validated modules: the library has it in
+//     FIPS 140-3 mode only (OPENPQC_FIPS140_3),
 //   - checks of a private key or a key pair from storage or from another party
 //     (check_secret_key, check_key_pair), which FIPS 204 does not define.
 //
@@ -55,8 +58,9 @@ using openpqc::prehash_oid;
 // --- key generation ------------------------------------------------------------------
 
 // The configuration of key generation. keygen_derand and keygen run the pair-wise consistency
-// test only where this header is compiled with OPENPQC_MLDSA_KEYGEN_PCT (mldsa.cpp, for a
-// FIPS 140-3 module), and the test fails on purpose with OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST
+// test only where this header is compiled with OPENPQC_MLDSA_KEYGEN_PCT (mldsa.cpp in FIPS 140-3
+// mode, in which the top-level CMakeLists.txt gives the library's objects that definition; and the
+// tests' own copies), and the test fails on purpose with OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST
 // (tests only). Each translation unit that uses these templates for a parameter set has its own
 // copy of them, and the linker keeps one copy per name. Under one name for every configuration,
 // the copy of an application compiled without the test could take the place of the library's
@@ -201,7 +205,7 @@ Status sign_derand(std::span<std::uint8_t, Sizes<P>::sig> sigma, std::span<const
     return internal::sign<P>(sigma, sk, {domain, ctx, M}, rnd);                    // 11-12
 }
 
-// Algorithm 2: ML-DSA.Sign(sk, M, ctx) -> sigma (hedged: rnd from the system RNG)
+// Algorithm 2: ML-DSA.Sign(sk, M, ctx) -> sigma (hedged: rnd from opqc_randombytes)
 template <ParameterSet P>
 Status sign(std::span<std::uint8_t, Sizes<P>::sig> sigma, std::span<const std::uint8_t, Sizes<P>::sk> sk,
             std::span<const std::uint8_t> M, std::span<const std::uint8_t> ctx) {
@@ -305,7 +309,7 @@ Status sign_mu_derand(std::span<std::uint8_t, Sizes<P>::sig> sigma, std::span<co
     return internal::sign_mu<P>(sigma, sk, mu, rnd);
 }
 
-// Algorithm 7 with mu given, hedged (rnd from the system RNG, as in Algorithm 2, lines 5-8)
+// Algorithm 7 with mu given, hedged (rnd from opqc_randombytes, as in Algorithm 2, lines 5-8)
 template <ParameterSet P>
 Status sign_mu(std::span<std::uint8_t, Sizes<P>::sig> sigma, std::span<const std::uint8_t, Sizes<P>::sk> sk,
                std::span<const std::uint8_t, 64> mu) {

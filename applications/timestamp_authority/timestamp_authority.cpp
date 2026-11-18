@@ -74,7 +74,8 @@
  *               random sample of 512.
  *
  * Signing is randomized everywhere: hedged signing (FIPS 205, Sections 9.2 and 10.2), with addrnd
- * drawn from the operating system's RNG, on the CPU and on the device alike. A TSA has an RNG, so
+ * drawn from opqc_randombytes (the operating system's RNG, or in FIPS 140-3 mode the module's
+ * HMAC_DRBG), on the CPU and on the device alike. A TSA has an RNG, so
  * it has no use for the deterministic variant (OPENPQC_SIGN_DETERMINISTIC), which FIPS 205 offers
  * for platforms without one. The TSA's secret key goes to the device once, through
  * page-locked memory that is wiped immediately after the copy. The device buffer is overwritten
@@ -252,7 +253,7 @@ struct SecretBytes : std::vector<std::uint8_t> {
 };
 
 // A generator for the choices that are not secret (document lengths, arrival times, which tokens
-// are forged and which clients check), seeded once from the operating system
+// are forged and which clients check), seeded once from opqc_randombytes
 std::mt19937_64 seeded_generator() {
     std::uint8_t b[8];
     check(opqc_randombytes(b, sizeof b), "opqc_randombytes");
@@ -581,7 +582,8 @@ std::size_t launch_size(const ParameterSet& s, std::size_t n) {
 }
 
 // A context of the GPU API (openpqc/sycl.h) for the parameter set, with up to max_batch operations
-// per launch. SLH-DSA's contexts have no self-test.
+// per launch. SLH-DSA's contexts run a known-answer self-test at creation only in FIPS 140-3 mode, or
+// with the developer definition OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST (openpqc/sycl.h, Self-test).
 class Context {
 public:
     Context(const ParameterSet& s, std::size_t max_batch, int device) {

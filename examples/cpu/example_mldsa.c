@@ -393,7 +393,8 @@ int main(int argc, char **argv)
     printf("ML-DSA-65 (FIPS 204), C API\n");
     printf("  public key %d bytes, secret key %d bytes, signature %d bytes\n", OPENPQC_MLDSA65_PUBLICKEYBYTES,
            OPENPQC_MLDSA65_SECRETKEYBYTES, OPENPQC_MLDSA65_BYTES);
-    rc = openpqc_mldsa65_keygen(pk, sk); /* the seed xi comes from the operating system */
+    rc = openpqc_mldsa65_keygen(pk, sk); /* the seed xi comes from opqc_randombytes (the operating system's RNG;
+                                            in FIPS 140-3 mode the module's HMAC_DRBG) */
     if (rc != OPENPQC_OK) {
         opqc_zeroize(sk, sizeof sk);
         return failed("keygen", rc);

@@ -2,8 +2,9 @@
 # Copyright (c) The OpenPQC project authors
 # SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 """Runs NIST's ACVP test vectors of SHA-2 (FIPS 180-4), SHA-3 and SHAKE (FIPS 202) through the
-one-shot functions of OpenPQC Core (acvp_hash_driver), from vector files pinned by SHA-256 and
-number of test cases: the tests core_hash_acvp and core_hash_acvp_control (tests/CMakeLists.txt).
+functions of OpenPQC Core (acvp_hash_driver), from vector files pinned by SHA-256 and number of
+test cases: the tests core_hash_acvp and core_hash_acvp_control (tests/CMakeLists.txt), and
+core_hash_acvp_ldt (tests/Core/CMakeLists.txt).
 
 The vectors are the internalProjection.json files (inputs and expected results) of 14 vector sets
 of usnistgov/ACVP-Server at commit 975de31e, the commit that tests/ML-KEM/pinned_vectors.py pins
@@ -14,12 +15,29 @@ What runs, 5,294 cases:
   - AFT (algorithm functional test) and VOT (SHAKE's variable output test): every case whose
     message is a whole number of bytes, 4,258 and 1,024;
   - MCT (Monte Carlo test), one per vector set of revisions 1.0 and 2.0: 100 results, each of
-    1,000 chained calls (the SHA-2 test in its standard or alternate version, as the file says).
-What does not run, counted and pinned like the rest:
-  - 7,980 AFT cases whose message length in bits is not a multiple of 8: Core's functions take
-    byte strings (FIPS 180-4 and FIPS 202 define the functions on bit strings);
+    1,000 chained calls (the SHA-2 test in its standard or alternate version, as the file says);
+  - and, as a check of the driver's large-data form (below) that needs no large message: SHA-2
+    and SHA-3 of contents of 8 and 3 bytes repeated to 0 to 3 MiB, against Python's hashlib (a
+    function that the Python at hand lacks is reported as not checked).
+
+What does not run here, counted and pinned like the rest:
+  - 7,980 AFT cases whose message length in bits is not a multiple of 8 ("bit-oriented"). FIPS
+    180-4 and FIPS 202 define the functions on bit strings, and these vector sets were generated
+    from registrations of every bit length: messageLength with an increment of 1 for SHA2-224,
+    SHA2-384, SHA2-512/224 and SHA3-224 to SHA3-512, and inBit true for SHAKE revision 1.0 (the
+    registration.json of each set at the same commit). Core's functions take byte strings, so
+    these cases cannot run without a bit-level interface, which OpenPQC does not add: a module
+    whose functions take bytes registers byte-oriented capabilities with the ACVP server
+    (messageLength with an increment of 8, inBit false), as the sets SHA2-256, SHA2-512,
+    SHA2-512/256 and SHAKE revision FIPS202 here were registered, and the server then generates
+    no such case. They are counted per vector set and pinned (433 + 892 + 878 for SHA2-224,
+    SHA2-384, SHA2-512/224; 1,095 + 1,043 + 820 + 596 for SHA3-224 to SHA3-512; 1,218 + 1,005
+    for SHAKE-128 and SHAKE-256 revision 1.0);
   - 40 LDT (large data test) cases, four in each of the 10 vector sets of SHA-2 (6) and SHA-3 (4),
-    with messages of 1, 2, 4 and 8 GiB repeated from 8 bytes: 150 GiB to hash per run.
+    with messages of 1, 2, 4 and 8 GiB repeated from 8 bytes: 150 GiB to hash per run. --ldt runs
+    them (core_hash_acvp_ldt, labels "slow" and "network"): the driver streams each message
+    through Core's incremental functions in chunks of 1 MiB, and the script prints the time each
+    vector set took.
 
 The rules are those of tests/ML-KEM/pinned_vectors.py:
   - the files are downloaded once into --cache and checked against their SHA-256 and their number
@@ -40,10 +58,13 @@ byte. The files write that last byte in one of two ways, pinned per vector set b
 1.0 keeps the bits in place ("low"), revision FIPS202 moves them to the high-order end ("high"),
 in their order; the other bits of the byte are zero.
 
-usage: acvp_hash.py --driver PATH --cache DIR [--controls]
+usage: acvp_hash.py --driver PATH --cache DIR [--controls | --ldt]
 --controls runs the positive controls instead, on SHA3-512's vector set: a cached file with one
 byte changed, a driver run that writes to stderr, one killed by a signal, one result dropped and
 one bit of one digest changed must each be reported; the test passes only if all five are.
+--ldt runs the 40 LDT cases instead, with the same rules (a driver run that fails, crashes or
+writes to stderr, a count other than four per vector set of SHA-2 and SHA-3, or a wrong digest
+fails the test).
 """
 
 import argparse
@@ -96,7 +117,14 @@ PINNED = {
 }
 RUN = 5294            # cases run: AFT 4,258, VOT 1,024, MCT 12
 BIT_ORIENTED = 7980   # AFT cases with a message that is not a whole number of bytes
-LDT = 40
+LDT = 40              # four per vector set of SHA-2 and SHA-3 (--ldt)
+LDT_PER_SET = 4
+# Python's names of the functions, for the check of the driver's large-data form
+HASHLIB = {"SHA2-224": "sha224", "SHA2-256": "sha256", "SHA2-384": "sha384", "SHA2-512": "sha512",
+           "SHA2-512/224": "sha512_224", "SHA2-512/256": "sha512_256", "SHA3-224": "sha3_224",
+           "SHA3-256": "sha3_256", "SHA3-384": "sha3_384", "SHA3-512": "sha3_512"}
+LDT_CHECK_CONTENTS = (bytes.fromhex("12735C605F3D270C"), b"abc")
+LDT_CHECK_LENGTHS = (0, 1, 7, 8, 9, 1 << 20, (1 << 20) + 13, 3 * (1 << 20) + 5)
 DIGEST_BYTES = {"SHA2-224": 28, "SHA2-256": 32, "SHA2-384": 48, "SHA2-512": 64, "SHA2-512/224": 28,
                 "SHA2-512/256": 32, "SHA3-224": 28, "SHA3-256": 32, "SHA3-384": 48, "SHA3-512": 64}
 MCT_RESULTS = 100
@@ -163,18 +191,36 @@ def message(tc, name):
     return text or "-"
 
 
-def plan(name, data):
-    """The driver's input for one vector set, and what each case must give.
-    Returns (lines, expected, not_run): expected maps tcId to (test type, [(md, outLen in bits)]).
+def pinned_run(name, ldt):
+    """The cases of each test type that a run of the vector set name must pass."""
+    if ldt:
+        return {"LDT": LDT_PER_SET} if name.startswith("SHA2-") or name.startswith("SHA3-") else {}
+    return PINNED[name][3]
+
+
+def plan(name, data, ldt=False):
+    """The driver's input for one vector set, and what each case must give: the LDT cases with ldt,
+    the others without. Returns (lines, expected, not_run): expected maps tcId to (test type,
+    [(md, outLen in bits)]).
     """
-    algorithm, run, partial = PINNED[name][1], PINNED[name][3], PINNED[name][4]
+    algorithm, run, partial = PINNED[name][1], pinned_run(name, ldt), PINNED[name][4]
     lines, expected, not_run = [], {}, collections.Counter()
     for tg in data["testGroups"]:
         tt = tg["testType"]
         for tc in tg["tests"]:
             tcid = str(tc["tcId"])
             if tt == "LDT":
-                not_run["LDT"] += 1
+                if not ldt:
+                    not_run["LDT"] += 1
+                    continue
+                big = tc["largeMsg"]
+                if (big["expansionTechnique"] != "repeating" or big["contentLength"] % 8 or big["fullLength"] % 8
+                        or len(big["content"]) != big["contentLength"] // 4):
+                    raise Refused(f"{name} tcId {tcid}: a large message the driver does not take: {big}")
+                lines.append(f"LDT {tcid} {big['content']} {big['fullLength'] // 8}")
+                expected[tcid] = (tt, [(tc["md"].upper(), 8 * DIGEST_BYTES[algorithm])])
+                continue
+            if ldt:
                 continue
             msg = message(tc, name)
             if msg is None:
@@ -232,10 +278,11 @@ def run_driver(driver, algorithm, lines, inject=None):
     return rc, out, err
 
 
-def check_set(name, data, driver, inject=None):
-    """Runs one vector set; returns (cases passed per test type, cases not run, problems)."""
+def check_set(name, data, driver, inject=None, ldt=False):
+    """Runs one vector set (its LDT cases with ldt); returns (cases passed per test type, cases not
+    run, problems)."""
     algorithm, partial = PINNED[name][1], PINNED[name][4]
-    lines, expected, not_run = plan(name, data)
+    lines, expected, not_run = plan(name, data, ldt)
     rc, out, err = run_driver(driver, algorithm, lines, inject)
     problems = []
     if rc < 0:
@@ -274,7 +321,7 @@ def check_set(name, data, driver, inject=None):
                 break
         else:
             passed[tt] += 1
-    pinned = collections.Counter(PINNED[name][3])
+    pinned = collections.Counter(pinned_run(name, ldt))
     if not problems and passed != pinned:
         problems.append(f"{name}: {dict(passed)} cases passed, pinned {dict(pinned)}")
     return passed, not_run, problems
@@ -312,15 +359,81 @@ def controls(driver, cache):
     return status
 
 
+def ldt_check(driver):
+    """The driver's large-data form against Python's hashlib on messages of up to 3 MiB; returns
+    (cases passed, functions that hashlib lacks, problems)."""
+    passed, missing, problems = 0, [], []
+    for algorithm, pyname in HASHLIB.items():
+        try:
+            hashlib.new(pyname)
+        except ValueError:
+            missing.append(algorithm)
+            continue
+        lines, expected = [], {}
+        for content in LDT_CHECK_CONTENTS:
+            for n in LDT_CHECK_LENGTHS:
+                tcid = str(len(lines))
+                lines.append(f"LDT {tcid} {content.hex().upper()} {n}")
+                expected[tcid] = hashlib.new(pyname, (content * (n // len(content) + 1))[:n]).hexdigest().upper()
+        rc, out, err = run_driver(driver, algorithm, lines)
+        if rc != 0 or err:
+            problems.append(f"large-data form, {algorithm}: driver status {rc}, stderr {err.strip()[:200]!r}")
+            continue
+        got = {f[1]: f[3] for f in (line.split() for line in out.splitlines()) if len(f) == 4 and f[0] == "R"}
+        for tcid, md in expected.items():
+            if got.get(tcid) == md:
+                passed += 1
+            else:
+                problems.append(f"large-data form, {algorithm}, case {lines[int(tcid)][:60]}: got {got.get(tcid)}, "
+                                f"expected {md}")
+    return passed, missing, problems
+
+
+def run_ldt(driver, cache):
+    """The 40 LDT cases, with the time each vector set took."""
+    names = [n for n in PINNED if pinned_run(n, True)]
+    sets = fetch(names, cache)
+    total, problems, seconds, gib = collections.Counter(), [], 0.0, 0
+    for name, data in sets.items():
+        start = time.monotonic()
+        try:
+            passed, _, found = check_set(name, data, driver, ldt=True)
+        except Refused as e:
+            problems.append(str(e))
+            continue
+        took = time.monotonic() - start
+        size = sum(tc["largeMsg"]["fullLength"] // 8 for tg in data["testGroups"] if tg["testType"] == "LDT"
+                   for tc in tg["tests"]) / 2 ** 30
+        seconds += took
+        gib += size
+        total += passed
+        problems += found
+        print(f"{name:18s} LDT {passed['LDT']}/{LDT_PER_SET}  {size:4.0f} GiB in {took:6.0f} s "
+              f"({size * 1024 / took:5.0f} MiB/s)", flush=True)
+    for p in problems[:40]:
+        print(f"FAIL: {p}", file=sys.stderr)
+    print(f"ACVP-Server {ACVP_COMMIT[:8]}, {len(sets)} vector sets, SHA-256 checked: {total['LDT']} of {LDT} LDT cases "
+          f"passed, {gib:.0f} GiB hashed in {seconds:.0f} s")
+    if not problems and total["LDT"] != LDT:
+        problems.append(f"{total['LDT']} LDT cases passed, pinned {LDT}")
+        print(f"FAIL: {problems[-1]}", file=sys.stderr)
+    print("FAIL" if problems else "PASS")
+    return 1 if problems else 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--driver", required=True, type=pathlib.Path)
     parser.add_argument("--cache", required=True, type=pathlib.Path)
-    parser.add_argument("--controls", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--controls", action="store_true")
+    mode.add_argument("--ldt", action="store_true")
     args = parser.parse_args()
     cache = args.cache.resolve()
     if args.controls:
         return controls(args.driver, cache)
+    if args.ldt:
+        return run_ldt(args.driver, cache)
 
     sets = fetch(PINNED, cache)
     total, not_run, problems = collections.Counter(), collections.Counter(), []
@@ -336,12 +449,17 @@ def main():
         cases = " ".join(f"{tt} {passed[tt]}/{n}" for tt, n in PINNED[name][3].items())
         rest = ", ".join(f"{n} {why}" for why, n in sorted(skipped.items()))
         print(f"{name:18s} {cases:32s} not run: {rest or 'none'}")
+    ldt_passed, ldt_missing, ldt_problems = ldt_check(args.driver)
+    problems += ldt_problems
     for p in problems[:40]:
         print(f"FAIL: {p}", file=sys.stderr)
     bits = sum(n for why, n in not_run.items() if why.startswith("bit-oriented"))
     print(f"ACVP-Server {ACVP_COMMIT[:8]}, {len(sets)} vector sets, SHA-256 checked: {sum(total.values())} of "
-          f"{RUN} cases passed (AFT {total['AFT']}, VOT {total['VOT']}, MCT {total['MCT']}); not run: {bits} with "
-          f"a message of a fractional number of bytes, {not_run['LDT']} LDT")
+          f"{RUN} cases passed (AFT {total['AFT']}, VOT {total['VOT']}, MCT {total['MCT']}); not run: {bits} "
+          f"bit-oriented (a message of a fractional number of bytes: registrations of every bit length, which a "
+          f"byte-oriented module does not make), {not_run['LDT']} LDT (--ldt)")
+    print(f"large-data form of the driver against hashlib: {ldt_passed} messages of 0 to 3 MiB passed"
+          + (f"; not checked, hashlib lacks: {', '.join(ldt_missing)}" if ldt_missing else ""))
     if not problems and (sum(total.values()) != RUN or bits != BIT_ORIENTED or not_run["LDT"] != LDT):
         problems.append(f"counts differ from the pinned {RUN} run, {BIT_ORIENTED} bit-oriented, {LDT} LDT")
         print(f"FAIL: {problems[-1]}", file=sys.stderr)

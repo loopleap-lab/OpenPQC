@@ -16,7 +16,8 @@
  * the C++ layer (openpqc/sycl.hpp) over this API. The program
  *   [1] makes n key pairs, signs n messages of different lengths (message i with key i) and
  *       verifies the signatures; keygen and sign are the randomized calls, whose seeds and addrnd
- *       come from the operating system's RNG on the host;
+ *       come from opqc_randombytes on the host (the operating system's RNG, or in FIPS 140-3
+ *       mode the module's HMAC_DRBG);
  *   [2] interoperability: the CPU library verifies the device's signatures, and the device
  *       verifies signatures that the CPU library made with key pairs of its own (4 of them for an
  *       f set, 2 for an s set, whose signing takes about 0.3 to 2 s per signature on one core);
@@ -152,7 +153,8 @@ struct SecretBytes : std::vector<std::uint8_t> {
 
 // The context; declared before the buffers, so that it is destroyed after them. Destroying it
 // zeroizes its workspace, which held the intermediate values of the calls. SLH-DSA's contexts
-// run no self-test (openpqc/sycl.h, Self-test).
+// run a known-answer self-test at creation only in FIPS 140-3 mode, or with the developer
+// definition OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST (openpqc/sycl.h, Self-test).
 class Context {
 public:
     Context(openpqc_alg alg, std::size_t max_batch, int device) {
@@ -307,7 +309,7 @@ Outcome run(std::size_t n, const SetInfo& set, int device) {
     std::int32_t* const status = d_status.as_status();
     // The messages of the calls of [1] to [4]; size bounds the offsets, which the device checks
     const openpqc_gpu_messages messages{d_msg.get(), d_offsets.as_offsets(), 0, msg.size()};
-    // Pure SLH-DSA, hedged (addrnd from the operating system), one key per message; and the same
+    // Pure SLH-DSA, hedged (addrnd from opqc_randombytes), one key per message; and the same
     // with key 0 for every message. The CPU takes the same options (openpqc/sig.h).
     const openpqc_sign_opts opts{ctxstr, CONTEXT_LEN, 0, 0};
     const openpqc_sign_opts one_key{ctxstr, CONTEXT_LEN, 0, OPENPQC_GPU_ONE_KEY};
@@ -340,7 +342,7 @@ Outcome run(std::size_t n, const SetInfo& set, int device) {
                           [&] { return openpqc_gpu_sig_keygen(gpu, d_pk.get(), d_sk.get(), status, n); });
     print_call("keygen", n, t, checks.status(d_status, n) + ", the first call");
     // SLH-DSA has no rejection loop: an operation of a signing call has no result only if the call
-    // failed or its message lay outside the buffer. Hedged: addrnd comes from the operating system.
+    // failed or its message lay outside the buffer. Hedged: addrnd comes from opqc_randombytes.
     // The time includes the first launch of the signing kernels, which the later signing calls
     // share: at a small n it is a visible part (0.3 to 0.5 ms on an NVIDIA L4).
     t = timed_call(gpu, "openpqc_gpu_sig_sign",

@@ -14,13 +14,10 @@
 #   sanitizers  GCC and Clang with AddressSanitizer and UndefinedBehaviorSanitizer (-O1): the quick
 #               offline tests (the build sets the TIMEOUTs and turns off AddressSanitizer's fake stacks
 #               for the stack tests, tests/CMakeLists.txt)
-#   pct         GCC and Clang, Release (-O3), with the pair-wise consistency tests after KeyGen
-#               (FIPS 140-3) compiled into the ML-KEM and ML-DSA libraries (OPENPQC_MLKEM_KEYGEN_PCT,
-#               OPENPQC_MLDSA_KEYGEN_PCT): the quick offline tests of ML-KEM and ML-DSA against them
 #   vendoring   the vendored references and test programs are those of the pinned upstream commits
 #   vectors     GCC and Clang, Release (-O3): NIST's ACVP vectors for ML-KEM, ML-DSA, SLH-DSA and Core's hash
-#               functions, and the Wycheproof vectors, with the positive controls of their clients (the tests
-#               with the label "network"). These are the tests that compare the library with NIST's own
+#               functions (their large-data tests too), NIST's CAVP vectors for HMAC_DRBG, and the Wycheproof
+#               vectors, with the positive controls of their clients (the tests with the label "network"). These are the tests that compare the library with NIST's own
 #               answers, so they run on every push. The vector files are downloaded from the commits that the
 #               tests' scripts name and checked against the SHA-256 pinned there on every run; the cache only
 #               spares the download, and a cached file that differs from its pin fails the test.
@@ -121,28 +118,6 @@ jobs:
       - name: Test (quick, offline)
         run: ctest --preset ${{ matrix.compiler }}-asan-ubsan -j "$(nproc)"
 
-  pct:
-    name: pair-wise consistency tests (${{ matrix.compiler }})
-    runs-on: ubuntu-24.04
-    container: archlinux:latest
-    timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      matrix:
-        compiler: [gcc, clang]
-    steps:
-      - name: Toolchain
-        run: |
-          grep -q '^\[multilib\]' /etc/pacman.conf || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
-          pacman -Syu --noconfirm --needed base-devel cmake clang valgrind python openssl git lib32-glibc lib32-gcc-libs
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Configure
-        run: cmake --preset ${{ matrix.compiler }}-release-pct
-      - name: Build
-        run: cmake --build --preset ${{ matrix.compiler }}-release-pct -j "$(nproc)"
-      - name: Test (ML-KEM and ML-DSA, quick, offline)
-        run: ctest --preset ${{ matrix.compiler }}-release-pct -j "$(nproc)"
-
   vendoring:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -185,11 +160,12 @@ jobs:
         with:
           path: |
             build-presets/${{ matrix.compiler }}-release/tests/acvp-hash-data
+            build-presets/${{ matrix.compiler }}-release/tests/Core/drbg-vectors
             build-presets/${{ matrix.compiler }}-release/tests/ML-KEM/vector-data
             build-presets/${{ matrix.compiler }}-release/tests/ML-DSA/acvp-data
             build-presets/${{ matrix.compiler }}-release/tests/ML-DSA/vector-data
             build-presets/${{ matrix.compiler }}-release/tests/SLH-DSA/acvp-data
-          key: vectors-${{ matrix.compiler }}-${{ hashFiles('tests/Core/acvp_hash.py', 'tests/ML-KEM/pinned_vectors.py', 'tests/ML-DSA/acvp/acvp_client.py', 'tests/SLH-DSA/acvp/acvp_client.py') }}
+          key: vectors-${{ matrix.compiler }}-${{ hashFiles('tests/Core/acvp_hash.py', 'tests/Core/CMakeLists.txt', 'tests/ML-KEM/pinned_vectors.py', 'tests/ML-DSA/acvp/acvp_client.py', 'tests/SLH-DSA/acvp/acvp_client.py') }}
       - name: Configure
         run: cmake --preset ${{ matrix.compiler }}-release
       - name: Build

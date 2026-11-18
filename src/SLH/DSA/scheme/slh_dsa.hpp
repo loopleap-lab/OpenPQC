@@ -9,17 +9,19 @@
 // the internal functions of Section 9 (slhdsa_internal.hpp), adding
 //
 //   - the random values SK.seed, SK.prf, PK.seed (KeyGen) and addrnd (hedged
-//     signing) from the system RNG,
+//     signing) from Core's opqc_randombytes (the system RNG by default; in FIPS
+//     140-3 mode the module's HMAC_DRBG),
 //   - the formatted message M' = toByte(0, 1) || toByte(|ctx|, 1) || ctx || M, or
 //     for HashSLH-DSA M' = toByte(1, 1) || toByte(|ctx|, 1) || ctx || OID || PH(M),
 //     which separates the two domains; M' is passed as a list of byte strings and
 //     never copied,
 //   - the check of the context string (at most 255 bytes),
 //   - optionally (OPENPQC_SLHDSA_KEYGEN_PCT), a pair-wise consistency test after
-//     KeyGen, as FIPS 140-3 asks of validated modules.
+//     KeyGen, as FIPS 140-3 asks of validated modules: the library has it in
+//     FIPS 140-3 mode only (OPENPQC_FIPS140_3).
 //
 // Variants of signing, as FIPS 205 words them (Algorithms 22 and 23, lines 4-9):
-//   sign, hash_sign                                hedged: addrnd from the system RNG (the default)
+//   sign, hash_sign                                hedged: addrnd from opqc_randombytes (the default)
 //   sign_deterministic, hash_sign_deterministic    the deterministic variant: lines 4-7 skipped, addrnd
 //                                                  omitted, so that opt_rand = PK.seed (Algorithm 19, line 2)
 //   sign_derand, hash_sign_derand                  addrnd given (for testing; addrnd = PK.seed gives the
@@ -93,7 +95,8 @@ bool check_key_pair(std::span<const std::uint8_t, Sizes<P>::pk> PK, std::span<co
 }
 
 // The configuration of key generation. keygen_derand and keygen run the pair-wise consistency test only
-// where this header is compiled with OPENPQC_SLHDSA_KEYGEN_PCT (slhdsa.cpp, for a FIPS 140-3 module), and
+// where this header is compiled with OPENPQC_SLHDSA_KEYGEN_PCT (slhdsa.cpp in FIPS 140-3 mode, in which the
+// top-level CMakeLists.txt gives the library's objects that definition; and the tests' own copies), and
 // check_pair_wise_consistency fails on purpose with OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST (tests only).
 // Each translation unit that uses these templates for a parameter set has its own copy of them, and the
 // linker keeps one copy per name. Under one name for every configuration, the copy of an application
@@ -195,7 +198,7 @@ Status sign_deterministic(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<
     return Status::ok;                                                             // 10
 }
 
-// Algorithm 22: slh_sign(M, ctx, SK) -> SIG, hedged (addrnd from the system RNG)
+// Algorithm 22: slh_sign(M, ctx, SK) -> SIG, hedged (addrnd from opqc_randombytes)
 template <ParameterSet P>
 Status sign(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<const std::uint8_t, Sizes<P>::sk> SK,
             std::span<const std::uint8_t> M, std::span<const std::uint8_t> ctx) {

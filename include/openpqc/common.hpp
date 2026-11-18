@@ -45,6 +45,8 @@ enum class status : int {
     device_failure = OPENPQC_ERR_DEVICE,
     not_computed = OPENPQC_ERR_NOT_COMPUTED,
     unsupported = OPENPQC_ERR_UNSUPPORTED,
+    error_state = OPENPQC_ERR_ERROR_STATE,
+    not_approved = OPENPQC_ERR_NOT_APPROVED,
 };
 
 [[nodiscard]] constexpr status to_status(openpqc_status s) noexcept {

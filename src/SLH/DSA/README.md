@@ -57,13 +57,13 @@ and the spreadsheet address that NIST uses for FIPS 203 and FIPS 204 returns 404
 | Algorithm 23 hash_slh_sign | `hash_sign`, `hash_sign_deterministic`, `hash_sign_derand`; the twelve pre-hash functions, their OIDs and digest lengths: `PreHash`, `prehash`, `prehash_oid`, `prehash_bytes` (`Core/prehash.hpp`, shared with HashML-DSA); the C values `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`, through `openpqc/common.h`) |
 | Algorithms 24, 25 slh_verify, hash_slh_verify | `verify`, `hash_verify` |
 | §10.2 the formatted message M′ | the two bytes before ctx (domain separator, \|ctx\|) are written at each call site, next to its line of the standard; M′ is passed as a list of byte strings and never copied |
-| §3.1 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which draws from a source the application registered with `opqc_set_randombytes`, or else from the operating system, and fails closed; KeyGen draws SK.seed, SK.prf and PK.seed in one call of 3n bytes, in that order, as the reference does; hedged signing draws addrnd (n bytes) after the context string has been checked. FIPS 205 requires the three seeds to come from an approved RBG (SP 800-90A/B/C) of at least 8n bits of strength, and recommends one for addrnd; the operating system's generator is not one within a module boundary, so the integrator supplies it (top-level README, [Security notes](../../../README.md#security-notes)) |
+| §3.1 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which draws from a source the application registered with `opqc_set_randombytes`, or else from the operating system, and fails closed; KeyGen draws SK.seed, SK.prf and PK.seed in one call of 3n bytes, in that order, as the reference does; hedged signing draws addrnd (n bytes) after the context string has been checked. FIPS 205 requires the three seeds to come from an approved RBG (SP 800-90A/B/C) of at least 8n bits of strength, and recommends one for addrnd; the operating system's generator is not one within a module boundary, so the integrator supplies it (top-level README, [Security notes](../../../README.md#security-notes)); in FIPS 140-3 mode it is the module's own HMAC_DRBG (SHA-512, 256 bits), and registering another source is refused ([FIPS 140-3 mode](#fips-140-3-mode)) |
 | §9 testing interfaces | `openpqc_testing_slhdsa_<set>_keygen_derand`, `_sign_derand` and `_prehash_sign_derand` (addrnd given), and `_sign_internal` and `_verify_internal`, take values that the module would otherwise generate or format itself: they are in `OpenPQC::testing` (`openpqc/testing.h`), not in the library `openpqc`, which has the deterministic variant as `*_deterministic` ([Usage](#usage)) |
 | §3.1 destruction of sensitive data | every n-byte value is a `Value<n>`, which zeroizes itself, unnamed temporaries included; every hash state that saw a secret is zeroized after its last use; `ZeroizeOnExit` (`Core/zeroize.hpp`) for named byte strings; `burn_stack` for what the compression functions leave in their dead frames (see below); `slhdsa_stack` checks the result |
 | §3.1 key checks | `check_secret_key` ("assurance of private key possession via regeneration": PK.root recomputed from SK.seed and PK.seed) and `check_key_pair` (also pk against the PK.seed ‖ PK.root that sk holds), in the C API `openpqc_slhdsa_<set>_check_sk` and `_check_keypair`; neither can check SK.prf, which takes no part in PK; the lengths are fixed by the types (C++) and by the array sizes of the C prototypes, which C does not check |
 | §3.1 floating point | none |
 | §3.2 component interfaces | not offered: neither the C, the C++ nor the GPU API exposes WOTS+, XMSS, FORS or the hypertree |
-| pair-wise consistency test (FIPS 140-3) | `check_pair_wise_consistency`, run by KeyGen when `slhdsa.cpp` is compiled with `OPENPQC_SLHDSA_KEYGEN_PCT` (CPU library only) |
+| pair-wise consistency test (FIPS 140-3) | `check_pair_wise_consistency`, run by KeyGen when `slhdsa.cpp` is compiled with `OPENPQC_SLHDSA_KEYGEN_PCT`, which FIPS 140-3 mode, and only that mode, gives the CPU library; a failure there also puts the module into its error state; the GPU backend has a test of its own in that mode only |
 | Table 2 | `params::SLH_DSA_SHA2_128s` … `params::SLH_DSA_SHAKE_256f`, `Sizes<P>`, `Layout<P>` (`scheme/parameter_sets.hpp`); the `ParameterSet` concept states every constraint the code relies on (h = d·h′, the formula for m, 8n a multiple of lg_w, idx_tree at most 64 bits, …) |
 
 ## Choices that differ from the reference implementation
@@ -132,7 +132,8 @@ reference's NIST KAT generator gives upstream's SHA-256 for all twelve sets thro
   interface `keygen_derand` must not overlap each other or the seed.
 - **Pre-hash strength.** As for HashML-DSA, the requirement of §10.2 that PH be as strong as the parameter set (and that
   SHA-256 and SHAKE128 be used only with category 1 sets) is not enforced: NIST's ACVP vectors combine every pre-hash
-  function with every set.
+  function with every set. In FIPS 140-3 mode a weaker pre-hash is computed as a service that is not approved
+  ([FIPS 140-3 mode](#fips-140-3-mode)).
 
 ## Usage
 
@@ -222,10 +223,13 @@ returns an `openpqc::status` and is `[[nodiscard]]`, and `secret_key` and `seed`
 (`openpqc/common.hpp`), zeroized when destroyed or moved from.
 
 The pair-wise consistency test that FIPS 140-3 asks of validated modules is compiled into KeyGen when `slhdsa.cpp` is
-built with the definition `OPENPQC_SLHDSA_KEYGEN_PCT` (as `OPENPQC_MLDSA_KEYGEN_PCT` for ML-DSA, which has a CMake
-option of that name; SLH-DSA has none yet, and the tests compile their own object library with the definition). It
-costs one signature and one verification per key pair, 0.6–1.6 s for the s sets on one core. A failing test returns
-`OPENPQC_ERR_PCT` and zeroizes both keys. The GPU backend's KeyGen has no such test.
+built with the definition `OPENPQC_SLHDSA_KEYGEN_PCT`, which the top-level `CMakeLists.txt` gives the library's objects
+in FIPS 140-3 mode only, as it gives ML-KEM and ML-DSA theirs; no scheme has a CMake option for it (the maintainers'
+decision of 2026-11-17), and configuring stops if `OPENPQC_SLHDSA_KEYGEN_PCT` is set as a variable. The tests compile
+their own object library with the definition, in every build. It costs one signature and one verification per key
+pair, 0.6–1.6 s for the s sets on one core. A failing test returns `OPENPQC_ERR_PCT` and zeroizes both keys, and in
+FIPS 140-3 mode a key pair that fails it also puts the module into its error state. The GPU backend's KeyGen
+has a test of its own in FIPS 140-3 mode only ([Known limits](#known-limits-and-open-items)).
 
 ## GPU backend (`sycl/`)
 
@@ -498,6 +502,60 @@ defaults; on the GPU, `-DOPQC_SHA2_UNROLL_PASSES=1` gave byte-identical results 
 The work-group sizes of the backend (128 for the hashing stages, a team of up to 128 per tree) were not tuned at all
 (E2).
 
+## FIPS 140-3 mode
+
+A library built with the CMake option `OPENPQC_FIPS140_3` is a module designed for FIPS 140-3; not validated
+([docs/FIPS-140-3.md](../../../docs/FIPS-140-3.md),
+[the security policy draft](../../../docs/FIPS-140-3-security-policy.md)). `openpqc_slhdsa.h` has the contract in its
+paragraph "FIPS 140-3 mode"; in short:
+
+- Each function of the C API is a service of the module. It first checks the module's state and, in the error state,
+  returns `OPENPQC_ERR_ERROR_STATE` (-12) and writes nothing; it checks again when its computation ends, and if the
+  module entered its error state meanwhile (another thread's failed pair-wise consistency test, a failure of the
+  entropy source or the DRBG, its own draw included), it zeroizes its outputs and returns -12. It sets the calling
+  thread's approved-service indicator last (`openpqc_fips_service_approved`, `openpqc/fips.h`): 1 if the service is
+  approved and returned `OPENPQC_OK`, 0 otherwise (a rejected signature, a refused argument, the error state). The
+  module has no seed import for SLH-DSA: key generation from given seeds is a testing interface.
+- Approved: `keygen`, `sign`, `sign_deterministic`, `verify`, HashSLH-DSA (`prehash_sign`,
+  `prehash_sign_deterministic`, `prehash_verify`) with a pre-hash as strong as the set, `check_sk` and
+  `check_keypair` (FIPS 205 §3.1, assurance of private-key possession via regeneration). Not approved, still computed,
+  indicator 0: HashSLH-DSA with a pre-hash weaker than the set (§10.2: at least 8n bits; §10.2.2: SHA-256 and SHAKE128
+  only for category 1):
+
+  | `OPENPQC_PREHASH_*` | strength (bits) | `*_128s`, `*_128f` | `*_192s`, `*_192f` | `*_256s`, `*_256f` |
+  |---|---|---|---|---|
+  | SHA2_224, SHA2_512_224, SHA3_224 | 112 | no | no | no |
+  | SHA2_256, SHA2_512_256, SHA3_256, SHAKE128 | 128 | approved | no | no |
+  | SHA2_384, SHA3_384 | 192 | approved | approved | no |
+  | SHA2_512, SHA3_512, SHAKE256 | 256 | approved | approved | approved |
+
+- `keygen` always runs its pair-wise consistency test, with the stack it needs (Stack, in `openpqc_slhdsa.h`); a key
+  pair that fails it is zeroized, the call returns `OPENPQC_ERR_PCT`, and the module enters its error state until it
+  is loaded again.
+- The module's CASTs of SLH-DSA (at load) run KeyGen, a deterministic signature and its verification for
+  SLH-DSA-SHA2-128f and SLH-DSA-SHAKE-128f, against NIST ACVP vectors. The HMAC-SHA-512 of the SHA2-192 and -256 sets
+  (`math/slhdsa_sha2.h`, PRF_msg) is covered by no CAST; a laboratory may ask for one.
+- Outside the module: the C++ API (`slhdsa.hpp`; each of its operations is one call of a service of the C API, whose
+  indicator then applies; its pre-hash helpers `prehash` and `prehash_oid`, from Core's `prehash.hpp`, compute in the
+  application), the scheme templates (`scheme/`) compiled into an application, the testing interfaces
+  (`OpenPQC::testing`; in the module's error state they return -12 and compute nothing) and the GPU backend, whose
+  services are not approved (indicator 0; in the module's error state every GPU service returns -12). In this mode,
+  and only there, the GPU backend also runs a self-test when a context is created and a pair-wise consistency test of
+  every key pair ([Known limits](#known-limits-and-open-items)).
+- Tests (FIPS builds): `fips_services_slhdsa_f` and `fips_services_slhdsa_s` (every function, every pre-hash with
+  every set, accepted and refused inputs, with the indicator preset to the opposite value; the `_s` test takes 3 to 7
+  minutes on the development laptop and has the label `slow`), `fips_services_facade`, `fips_services_cxx`,
+  `fips_services_pct_slhdsa_sha2_192f_keygen`, `fips_services_pct_slhdsa_shake_128s_keygen`,
+  `fips_services_inflight_*` (every function of SLH-DSA-SHA2-128f held after its first check while another thread puts
+  the module in its error state, or failing its own draw: -12, outputs zero, indicator 0; held with no failure: its
+  result; the security policy, Section 4.8), and `fips_vectors_slhdsa` (912 of the 1,248 ACVP cases through the sealed
+  module, all but those of the internal interface, which the module does not offer; labels `network` and `slow`). In a
+  FIPS build `slhdsa_pct_fail` and `slhdsa_pct_odr` check, one KeyGen per process, that a forced failure of `keygen`
+  enters the error state and that the testing interfaces' `keygen_derand` reports the indicator 0; `slhdsa_fresh` that a
+  recording randomness source is refused and never called; `slhdsa_fresh_control` and `slhdsa_fresh_draws` (FIPS builds
+  only: the draws that `slhdsa_fresh` checks in other builds) run on the test variant `openpqc_slhdsa_testrng`, whose
+  generator the program gives.
+
 ## Performance
 
 Measured on one laptop on 2026-10-23: an Intel Core i7-11370H (4 cores, 8 threads, at most 4.8 GHz) with its integrated
@@ -691,7 +749,8 @@ work.
 tests below, never into `openpqc`. The objects of `slhdsa.cpp` go into the library `openpqc`
 (`OpenPQC::openpqc`, which applications link; see the top-level README) and into two libraries for the tests and
 benchmarks, built only when they need them and never installed: `openpqc_slhdsa` takes its randomness, as `openpqc`
-does, from Core's `opqc_randombytes` (a source registered with `opqc_set_randombytes`, else the operating system),
+does, from Core's `opqc_randombytes` (a source registered with `opqc_set_randombytes`, else the operating system;
+in FIPS 140-3 mode the module's HMAC_DRBG),
 `openpqc_slhdsa_testrng` calls the application's `opqc_external_randombytes()` instead (tests only; never link it into
 a program together with a production library: both define `opqc_randombytes`, and the linker keeps the first
 definition it finds, without an error).
@@ -716,7 +775,7 @@ The reference's own test programs run against this library and against the unmod
 | `test_slhdsa_cxx` | the C++ API (`openpqc/openpqc.hpp`, and `openpqc/testing.hpp` for the testing interfaces): round trips, determinism, `sign_deterministic` and `prehash_sign_deterministic` against signing with addrnd = PK.seed given, the domains of SLH-DSA and HashSLH-DSA against Algorithms 22 and 23 written out (the twelve OIDs typed in), 255- and 256-byte context strings and wrong signature lengths at every entry point, the context check of Verify, signing in place, the root comparison of `ht_verify` byte by byte, the key checks of §3.1 (`check_sk` and `check_keypair`: a changed byte of SK.seed, PK.seed or PK.root fails them, one of SK.prf does not), and the `ParameterSet` concept |
 | `slhdsa_pct`, `slhdsa_pct_fail` | the library built with the pair-wise consistency test (`OPENPQC_SLHDSA_KEYGEN_PCT`); and built so that the test fails (`OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_ERR_PCT` with both keys zeroized, which shows that the test is compiled in and its result used |
 | `slhdsa_pct_odr` | an application's own KeyGen, compiled without the pair-wise consistency test and linked first, must not take the place of the library's (key generation lives in an inline namespace named after its configuration) |
-| `slhdsa_fresh`, `slhdsa_fresh_control` | `keygen`, `sign` and `prehash_sign` of the library as built draw fresh random values on every call (FIPS 205, Algorithms 21 to 23): no SK.seed, SK.prf, PK.seed, PK.root, R or signature repeats (4 calls for the f sets; 2 calls of `keygen` and `sign` for the s sets), and for the f sets none equals the output of all-zero seeds, of an all-zero addrnd or of the deterministic variant; every signature verifies. With a source registered through `opqc_set_randombytes`, `keygen` draws its three seeds in one call of 3n bytes, and (f sets) `sign` and `prehash_sign` draw addrnd in one call of n bytes, each giving what its testing interface (`openpqc_testing_slhdsa_<set>_keygen_derand`, `_sign_derand`, `_prehash_sign_derand`) gives for those bytes. The control registers sources of constant bytes and of zeros, whose repeats the checks must report. A library that draws addrnd or the seeds only once fails it |
+| `slhdsa_fresh`, `slhdsa_fresh_control`, `slhdsa_fresh_draws` | `keygen`, `sign` and `prehash_sign` of the library as built draw fresh random values on every call (FIPS 205, Algorithms 21 to 23): no SK.seed, SK.prf, PK.seed, PK.root, R or signature repeats (4 calls for the f sets; 2 calls of `keygen` and `sign` for the s sets), and for the f sets none equals the output of all-zero seeds, of an all-zero addrnd or of the deterministic variant; every signature verifies. With a source registered through `opqc_set_randombytes`, `keygen` draws its three seeds in one call of 3n bytes, and (f sets) `sign` and `prehash_sign` draw addrnd in one call of n bytes, each giving what its testing interface (`openpqc_testing_slhdsa_<set>_keygen_derand`, `_sign_derand`, `_prehash_sign_derand`) gives for those bytes. The control registers sources of constant bytes and of zeros, whose repeats the checks must report. A library that draws addrnd or the seeds only once fails it. In a FIPS build, where registration is refused: `slhdsa_fresh` checks the refusal (the source is never called) and the freshness, `slhdsa_fresh_control` runs its constant generators on the test variant `openpqc_slhdsa_testrng`, and `slhdsa_fresh_draws` (FIPS builds only) checks the draws of 3n and n bytes and their `_derand` equality there |
 | `slhdsa_stack` | no secret intermediate value on the stack after KeyGen, Sign, HashSLH-DSA and Verify (FIPS 205 §3.1): the stack is copied after each call and searched, also in the byte-swapped views of SHA-2's message schedule and for the 4-byte words that SHA-256's and SHA-512's compressions leave (of HMAC and of the pre-hash functions too), for SK.seed, SK.prf, HMAC's key blocks, opt_rand, every unrevealed WOTS+ and FORS value and tree node, the message, its digest and PH(M) (for all twelve pre-hash functions, and the compression words of Core's pre-hash for the six SHA-2 ones); positive controls on the library's own compression path and without the burn (a library built without the burn fails it for every SHA2 set, GCC 16 and Clang 23); the scheme layer's own destruction without the burn; and a fault, not a write beyond the guard page, on thread stacks that are too short, each in a child process that cannot dump core (Linux, GCC or Clang; also under AddressSanitizer, with its fake stacks turned off) |
 | `slhdsa_stack_pct` | the same for the library with the pair-wise consistency test, built without `-fstack-clash-protection`: KeyGen's residue and the test's signature for all twelve sets, short stacks for KeyGen, Sign and Verify of SHA2-256f, and in optimized x86-64 builds the compiler's report of the library's frames checked against the header (every frame over a page touched first, every other frame under 3.5 KiB) |
 | `slhdsa_ct` | constant-time test under valgrind (when valgrind is found and the build has no sanitizer), with the check that the declassification is not too broad, on a copy of the library compiled with `OPQC_CT_TESTING` and otherwise with the library's warnings and `-fstack-clash-protection` (label `slow`) |
@@ -724,7 +783,7 @@ The reference's own test programs run against this library and against the unmod
 | `core_sha2` | Core's SHA-2, including the word-level compression against the FIPS 180-4 examples and a transcription with the full schedule |
 | `gpu_api` | the GPU API (`openpqc/sycl.h`, `sycl.hpp`) on every SYCL device, linked as an application links it, for every parameter set of the build: for SLH-DSA key pairs that this library accepts, deterministic signatures byte for byte against this library, pure and pre-hash (PH(M) given) and under one key, hedged signatures that this library verifies, verification of good and tampered signatures, messages outside their buffer (review finding F073); the order of checks and launches of 3 operations (label `gpu`; see [ML-KEM's README](../../ML/KEM/README.md#tests)) |
 | `slhdsa_sycl` | the SYCL backend's own C API against this library on every SYCL device (labels `gpu` and `slow`, below) |
-| `slhdsa_sycl_faults`, `slhdsa_sycl_faults_sticky` | the SYCL backend when its work fails, by fault injection (white-box: the test compiles the backend's source for SHA2-128f and SHAKE-128f): the fail-closed status after a refusal, a failure part way and launches that never ran, the failed context (also with pageable buffers, which then give −2; a pageable status buffer may afterwards hold only its old entries or invalid ones), the zeroization of the whole workspace after a failure and of verification's sections after a call; `_sticky` with a real CUDA illegal-address fault in a process of its own (label `gpu`; skipped without an NVIDIA device) |
+| `slhdsa_sycl_faults`, `slhdsa_sycl_faults_nopct`, `slhdsa_sycl_faults_sticky` | the SYCL backend when its work fails, by fault injection (white-box: the test compiles the backend's source for SHA2-128f and SHAKE-128f): the fail-closed status after a refusal, a failure part way and launches that never ran, the failed context (also with pageable buffers, which then give −2; a pageable status buffer may afterwards hold only its old entries or invalid ones), the zeroization of the whole workspace after a failure and of verification's sections after a call; with the create self-test and the pair-wise consistency test of FIPS 140-3 mode compiled in: the self-test's answers against the CPU library for the twelve sets, create with each launch of its self-test left out in turn (must give `OPENPQC_ERR_SELF_TEST` and no context), and KeyGen calls with the test broken in several ways, among them one pair left out beside a good pair of its launch, in the first and in a middle launch (must give -6 with every key and the workspace zero); `_nopct` the backend as the library builds it: in ordinary SYCL builds without the two, in FIPS builds with `OPENPQC_FIPS140_3` alone, which must turn both on (the test fails otherwise and runs the self-test and KeyGen cases on that backend); `_sticky` with a real CUDA illegal-address fault in a process of its own (label `gpu`; skipped without an NVIDIA device) |
 
 The tests of the C APIs of all three schemes in `tests/` (`c_api_errors`, which also takes the error paths of the
 `_deterministic` functions and of `check_sk` and `check_keypair` and checks that the testing interfaces refuse a NULL
@@ -854,8 +913,21 @@ the GPU backend reported ten findings, nine distinct issues (two of its lenses f
   there is no trace-based check of the kernels, and a GPU compiler could still turn a select into a branch. The
   device-side zeroization is checked by `slhdsa_sycl_faults` (whole workspace after a failure, verification's
   sections after a call); what the CUDA driver keeps of the coin transfers is beyond the library's reach.
-- **No self-test when a context is created**, unlike the ML-KEM and ML-DSA backends: a device or JIT compiler that
-  miscomputes is found only by the tests.
+- **No self-test when a context is created in the ordinary build**, as for the ML-KEM and ML-DSA backends (the
+  maintainers' decision of 2026-11-17), so an ordinary GPU build has no known-answer check of the device: a device or
+  JIT compiler that miscomputes is found only by the tests, and the ordinary GPU library holds neither the self-test's
+  code nor its answers. Outside FIPS 140-3 mode only the developer definition `OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST`
+  compiles it in: a compile definition for the project's tests, not a CMake option, which no target of the libraries
+  gives (the white-box test `slhdsa_sycl_faults` compiles the backend with it, and a build that gives it to every
+  object, through `CMAKE_CXX_FLAGS`, has the self-test in its GPU library too). In FIPS 140-3 mode, or with that
+  definition, `create` runs a known-answer test of the context's own parameter set (a KAT of another set would not test
+  the kernels the context runs): KeyGen of fixed seeds, the deterministic signature of a 100-byte message with a 5-byte
+  context string, and the verification of it and of a tampered copy, through the calls' own paths on the device;
+  SHA3-256 of pk, sk and the signature and both verdicts are compared with the CPU library's answers for all twelve
+  sets, and a mismatch, or a launch of the test that does not run, gives `OPENPQC_ERR_SELF_TEST` and no context. Its
+  device memory is wiped and freed on every way out, and the workspace is zeroized afterwards. On the laptop's RTX 3050
+  under DPC++ it made a create of SLH-DSA-SHA2-128s about 7 ms longer (1.6 to 8.4 ms) and one of SHAKE-256f about 71 ms
+  longer (indicative; the other sets were not timed).
 - **What the buffer check cannot see.** It asks the SYCL runtime, so a freed buffer under DPC++'s Level Zero and on
   the OpenMP host device, any pointer on the OpenMP host device (another GPU's device memory then ends the process
   with a segmentation fault), under DPC++ and AdaptiveCpp USM memory of another SYCL context on the same device, and under DPC++ and
@@ -869,7 +941,20 @@ the GPU backend reported ten findings, nine distinct issues (two of its lenses f
 - **The CTest TIMEOUT of `slhdsa_sycl`** (7200 s) was set from the times before the GPU review added checks; after it,
   the two AdaptiveCpp processes of the re-run took 2583 s and 3692 s, and one CTest process over all four AdaptiveCpp
   devices has not been timed.
-- **The GPU KeyGen** has no pair-wise consistency test; `OPENPQC_SLHDSA_KEYGEN_PCT` applies to the CPU library only.
+- **The GPU KeyGen** has no pair-wise consistency test in the ordinary build (FIPS 140-3 mode turns it on, and so does
+  the definition `OPENPQC_SLHDSA_KEYGEN_PCT`, which outside the mode only the tests' own objects get). In FIPS 140-3
+  mode each pair signs the empty message (deterministic, M′ = 0 ‖ 0) and the signature must verify under pk. The
+  verdicts are set to "invalid" first and the test counts passes, so a part of the test that the device does not run
+  fails it; unless every pair of the call passes, every key of the call is zeroed and the call returns `OPENPQC_ERR_PCT`
+  (no result per key). The workspace grows by |SIG| + 8 bytes per operation (SHAKE-256f at the default max_batch of 256:
+  about 12.8 MB). Its cost on the RTX 3050 (indicative): about 2 ms per pair for SHA2-128s (32 pairs: 6.6 to 69.6 ms)
+  and 2.7 ms per pair for SHAKE-256f (64 pairs: 3.3 to 177.6 ms), through the GPU API with the module's DRBG. In a FIPS
+  build the test also shows that the backend compiled as the mode compiles it has the pair-wise consistency test and the
+  create self-test (`slhdsa_sycl_faults_nopct`), `gpu_layout` that the GPU library has the pair-wise consistency test,
+  and `gpu_self_test` that it holds the create self-test's answers (none in an ordinary build). The backend zeroizes the
+  keys itself only after `OPENPQC_ERR_PCT`: another KeyGen error (-2, `OPENPQC_ERR_RNG`) leaves in pk and sk the keys
+  that KeyGen wrote before it, tested or not, in the ordinary build and in FIPS mode alike (the GPU API's finish zeroes
+  its outputs).
 - **No fault countermeasures** (verify-after-sign, redundant computation) in the CPU library or on the GPU; E6 would
   measure their price.
 - **Clang 23** ran the fast SLH-DSA tests (53 of 53) and the stack tests; the slow and network tests ran with GCC 16

@@ -571,8 +571,12 @@ private:
         const openpqc_status synced = gpu_ ? openpqc_gpu_sync(gpu_) : OPENPQC_ERR_INVALID_ARGUMENT;
         return call != OPENPQC_OK ? call : synced;
     }
+    // The status of every operation, from the call's status buffer. A call refused in the module's error state
+    // (FIPS 140-3 mode) has written nothing into it (openpqc/sycl.h): what the buffer holds is not a result, so
+    // every operation reads OPENPQC_ERR_NOT_COMPUTED, as for any other failed call.
     Results results(openpqc_status call, const Buffer<std::int32_t>& st, std::size_t n) {
         std::vector<std::int32_t> ops(n, OPENPQC_ERR_NOT_COMPUTED);
+        if (call == OPENPQC_ERR_ERROR_STATE) return {to_status(call), std::move(ops)};
         if (n > 0 && st.valid() && openpqc_gpu_memcpy(gpu_, ops.data(), st.data(), n * sizeof(std::int32_t)) != OPENPQC_OK)
             std::fill(ops.begin(), ops.end(), OPENPQC_ERR_NOT_COMPUTED);
         return {to_status(call), std::move(ops)};

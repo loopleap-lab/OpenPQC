@@ -14,6 +14,8 @@
 #     C++20 (with -fsyntax-only). The headers that include <sycl/...>, themselves or through another installed
 #     header, need a SYCL compiler and its flags and are left to the GPU tests; the first two checks hold for them
 #     too.
+# Also: openpqc/fips.h (the state of a FIPS 140-3 module and its indicator, declared in every build) is installed,
+# and the headers of functions internal to the library (Core/opqc_drbg.h, Core/opqc_fips.h) are not.
 # A positive control: a header that includes a file the installation does not have must be reported.
 foreach(v BUILD_DIR WORK CC CXX)
     if(NOT ${v})
@@ -95,6 +97,14 @@ if(n_headers EQUAL 0)
     message(FATAL_ERROR "no header installed under ${prefix}/include: the check would pass on nothing")
 endif()
 set(problems "")
+if(NOT EXISTS ${prefix}/include/openpqc/fips.h)
+    list(APPEND problems "openpqc/fips.h is not installed")
+endif()
+foreach(internal Core/opqc_drbg.h Core/opqc_fips.h)
+    if(EXISTS ${prefix}/include/openpqc/${internal})
+        list(APPEND problems "${internal} is installed: it declares functions internal to the library")
+    endif()
+endforeach()
 set(n_compiled 0)
 set(n_sycl 0)
 foreach(header IN LISTS headers)

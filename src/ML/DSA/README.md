@@ -54,14 +54,14 @@ allowed bound on the signing loop (Appendix C, Table 3) from 814 to 821, which `
 | §3.7 H, G | `H<L>`, `H_init` (`scheme/crypto_functions.hpp`) over `openpqc::sponge` and `openpqc::Xof` (`Core/xof.hpp`); G inside `mldsa_rej_ntt_poly` |
 | Algorithms 6–8 KeyGen_internal, Sign_internal, Verify_internal | `internal::keygen`, `internal::sign` / `sign_mu`, `internal::verify` / `verify_mu` (`scheme/mldsa_internal.hpp`) |
 | Algorithms 1–3 ML-DSA.KeyGen, Sign, Verify | `keygen`, `sign`, `verify` and the `_derand` variants (`scheme/ml_dsa.hpp`) |
-| Algorithms 4, 5 HashML-DSA.Sign, Verify | `hash_sign`, `hash_verify`; the twelve pre-hash functions and their OIDs: `PreHash`, `prehash`, `prehash_oid` (`Core/prehash.hpp`, shared with HashSLH-DSA; also reachable as `openpqc::mldsa::PreHash` etc.), the C values `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`, through `openpqc/common.h`); §5.4 asks for a pre-hash function with at least λ bits of collision and second preimage strength (λ = 128, 192 and 256 for ML-DSA-44, -65 and -87, Table 1), which is not enforced: every function is accepted with every set, as in NIST's ACVP vectors |
+| Algorithms 4, 5 HashML-DSA.Sign, Verify | `hash_sign`, `hash_verify`; the twelve pre-hash functions and their OIDs: `PreHash`, `prehash`, `prehash_oid` (`Core/prehash.hpp`, shared with HashSLH-DSA; also reachable as `openpqc::mldsa::PreHash` etc.), the C values `OPENPQC_PREHASH_*` (`Core/openpqc_prehash.h`, through `openpqc/common.h`); §5.4 asks for a pre-hash function with at least λ bits of collision and second preimage strength (λ = 128, 192 and 256 for ML-DSA-44, -65 and -87, Table 1), which is not enforced: every function is accepted with every set, as in NIST's ACVP vectors; in FIPS 140-3 mode a weaker one is computed as a service that is not approved ([FIPS 140-3 mode](#fips-140-3-mode)) |
 | Algorithm 7 line 6, Algorithm 8 line 7: external μ | `external_mu`, `sign_mu`, `verify_mu` |
-| §3.6.1 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which draws from a source the application registered with `opqc_set_randombytes`, or else from the operating system, and fails closed. FIPS 204 requires ξ to come from an approved RBG (SP 800-90A/B/C) of at least 192 bits of strength for ML-DSA-65 and 256 for ML-DSA-87 (ML-DSA-44: at least 128, and 192 to keep category 2), and recommends one for rnd; the operating system's generator is not one within a module boundary, so the integrator supplies it (top-level README, [Security notes](../../../README.md#security-notes)) |
+| §3.6.1 randomness | `opqc_randombytes` (`Core/opqc_platform.h`), which draws from a source the application registered with `opqc_set_randombytes`, or else from the operating system, and fails closed. FIPS 204 requires ξ to come from an approved RBG (SP 800-90A/B/C) of at least 192 bits of strength for ML-DSA-65 and 256 for ML-DSA-87 (ML-DSA-44: at least 128, and 192 to keep category 2), and recommends one for rnd; the operating system's generator is not one within a module boundary, so the integrator supplies it (top-level README, [Security notes](../../../README.md#security-notes)); in FIPS 140-3 mode it is the module's own HMAC_DRBG (SHA-512, 256 bits), and registering another source is refused |
 | §6 testing interfaces | signing with rnd given (`openpqc_testing_mldsaNN_sign_derand`, `_prehash_sign_derand`, `_sign_mu_derand`) and `openpqc_testing_mldsaNN_sign_internal` and `_verify_internal` take values that the module would otherwise generate or format itself: they are in `OpenPQC::testing` (`openpqc/testing.h`), not in the library `openpqc`, which has `keygen_from_seed` for a stored ξ (§3.6.3) and the deterministic variant, rnd = 0³², as `*_deterministic` ([Usage](#usage)) |
 | §3.6.3 destruction of intermediate values | every `Poly` zeroizes itself when its lifetime ends, unnamed temporaries included (`scheme/polynomials.hpp`), and `ZeroizeOnExit` (`Core/zeroize.hpp`) destroys the secret byte strings, μ and the byte strings of verification; `mldsa_stack` checks that KeyGen, the key checks, Sign and Verify leave none of them on the stack, nor a lane of the last Keccak-f of a sponge that absorbs a secret |
 | §7.2 skDecode only on trusted input (a key check is not part of FIPS 204) | every signing function refuses s1 or s2 outside [−η, η] (`internal::sign_mu`, `OPENPQC_ERR_INVALID_SECRET_KEY`); `check_secret_key` and `check_key_pair` (`scheme/ml_dsa.hpp`), `openpqc_mldsaNN_check_sk` and `openpqc_mldsaNN_check_keypair`: the whole key regenerated and compared (Private keys, below) |
 | Appendix C bound on the signing loop | `max_signing_attempts` = 821, the smallest that NIST's errata allow (Table 3 itself says 814); then `Status::signing_limit` and the signature all zeros |
-| pair-wise consistency test (FIPS 140-3) | `check_pair_wise_consistency`, run by KeyGen when built with `OPENPQC_MLDSA_KEYGEN_PCT` (the CMake option of that name, for the CPU libraries and the GPU backend) |
+| pair-wise consistency test (FIPS 140-3) | `check_pair_wise_consistency`, run by KeyGen when built with `OPENPQC_MLDSA_KEYGEN_PCT`, which FIPS 140-3 mode, and only that mode, gives the CPU library and the GPU backend; a failure there also puts the module into its error state |
 | Table 1, Table 2 | `params::ML_DSA_44/65/87`, `Sizes<P>` (`scheme/parameter_sets.hpp`) |
 
 ## Choices that differ from the reference implementation
@@ -265,7 +265,7 @@ const openpqc_alg_info *a = openpqc_alg_info_get(OPENPQC_ML_DSA_65);    /* the s
 const openpqc_gpu_config cfg = {-1, max_batch};              /* -1: default device (or OPENPQC_SYCL_DEVICE); 0: 1024 */
 openpqc_gpu *gpu;
 if (openpqc_gpu_create(&gpu, OPENPQC_ML_DSA_65, &cfg) != OPENPQC_OK)
-    return -1;                                               /* no such device, no memory, or the self-test failed */
+    return -1;                    /* no such device, no memory, or the self-test (FIPS 140-3 mode) failed */
 uint8_t *pk = openpqc_gpu_malloc(gpu, n * a->public_key_bytes);  /* also sk, sig, msg, offsets, the status buffers */
 /* message i is msg[offsets[i] .. offsets[i + 1]) of the msg_bytes in msg; one context string for all, in host memory */
 const openpqc_gpu_messages msgs = {msg, offsets, 0, msg_bytes};
@@ -314,12 +314,13 @@ only (FIPS 204 §6): `openpqc_testing_gpu_sig_sign_derand` and `_sign_mu_derand`
 shared `openpqc_sycl`. Every function that returns a status is declared `OPENPQC_MUST_CHECK` (the backend's
 `OPQC_MUST_CHECK`). The GPU API's results are `openpqc_status` values (`OPENPQC_ERR_INVALID_ARGUMENT`,
 `OPENPQC_ERR_UNSUPPORTED`, `OPENPQC_ERR_DEVICE`, `OPENPQC_ERR_RNG`, `OPENPQC_ERR_PCT`, and `OPENPQC_ERR_SELF_TEST`
-from `openpqc_gpu_create`). The backend's results other than -1 and -2, which are its own and not
+from `openpqc_gpu_create` where create runs its self-test: FIPS 140-3 mode, or the developer definition
+`OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST`). The backend's results other than -1 and -2, which are its own and not
 `OPENPQC_ERR_INVALID_SIGNATURE` and `OPENPQC_ERR_INVALID_ARGUMENT`, are the CPU library's codes of `openpqc/common.h`
 (`OPENPQC_ERR_RNG`, `OPENPQC_ERR_INVALID_SECRET_KEY`, `OPENPQC_ERR_SIGNING_LIMIT`, `OPENPQC_ERR_PCT`), and
-`OPQC_SYCL_MLDSA_SELF_TEST_FAIL` (-7, `OPENPQC_ERR_SELF_TEST`) from its create; a backend signing call without a
-status buffer returns `OPENPQC_ERR_INVALID_SECRET_KEY` when it refused a malformed private key, or else
-`OPENPQC_ERR_SIGNING_LIMIT` when a signature reached the bound on its attempts (with one, these results are per
+`OPQC_SYCL_MLDSA_SELF_TEST_FAIL` (-7, `OPENPQC_ERR_SELF_TEST`) from its create where it runs the self-test; a backend
+signing call without a status buffer returns `OPENPQC_ERR_INVALID_SECRET_KEY` when it refused a malformed private key,
+or else `OPENPQC_ERR_SIGNING_LIMIT` when a signature reached the bound on its attempts (with one, these results are per
 operation, in the buffer).
 
 ### Design
@@ -355,8 +356,10 @@ The kernels are a staged pipeline, like ML-KEM's:
   destroys μ (§3.6.3 counts the message as sensitive in some applications), also when a key is refused or a signature
   reaches the limit: one more memset per launch (μ) and one per call (the context string), of 2 to 5 µs of device time
   each, under 1 % of a signing call at batch 1 and under 0.03 % at 8192 operations (measured once on the RTX 3050
-  under DPC++, indicative, laptop). It leaves the challenges c of its attempts, and their flags, in the workspace
-  until later calls overwrite them or destroy zeroizes it (the CPU's Sign destroys c at the end of each attempt).
+  under DPC++, indicative, laptop). It also zeroizes the challenges c of its attempts and their result flags after
+  every call, on every way out (a refused key, the signing limit, an RNG failure of a later chunk), as the CPU's Sign
+  destroys c at the end of each attempt: two more memsets of the launch's slots per chunk (C is 1 KiB and FLAGS 8 bytes
+  per slot; not timed on their own).
   Verification zeroizes what it computed in the workspace (μ, tr, the hint, c, NTT(z), NTT(t1·2^d), w1′ and its
   checks, and the workspace copy of the context string; not Â, which §3.6.3 lets an implementation keep), as the CPU's
   Verify does (§3.6.3 counts verification data as sensitive in some applications): it queues these zeroizations behind
@@ -370,7 +373,8 @@ The kernels are a staged pipeline, like ML-KEM's:
   (ML-DSA-44), 4.5 % to 9.3 % (-65) and 4.5 % to 6.6 % (-87) longer: without control of the clocks, the end-to-end
   figure depends on the run. The GPU API's signing and verification calls end in the same functions of the backend, so
   these zeroizations hold for them too. `openpqc_gpu_free` overwrites what it frees and reports whether it could
-  (`OPENPQC_ERR_DEVICE` if the context had failed); the backend's own `opqc_sycl_mldsa_free` frees without wiping. `create` zeroizes the whole workspace after its self-test.
+  (`OPENPQC_ERR_DEVICE` if the context had failed); the backend's own `opqc_sycl_mldsa_free` frees without wiping. In
+  FIPS 140-3 mode `create` zeroizes the whole workspace after its self-test.
 - **The signing limit** (Appendix C, 821 attempts) gives an all-zero signature and `OPENPQC_ERR_SIGNING_LIMIT`,
   in `status` (the GPU API always passes one) or, for a call of the backend without a status buffer, as the result of
   the call. A private key whose s1 or s2 has a coefficient outside [−η, η] gives an all-zero signature and
@@ -400,15 +404,24 @@ The kernels are a staged pipeline, like ML-KEM's:
   again when a call is refused or fails, and the backend sets them to `OPENPQC_ERR_INVALID_SIGNATURE` before its own
   kernels (and again when one of its calls is refused or fails), so that an entry no kernel reached never reads as
   valid; take the verdicts only when the call, sync and the copy of status returned `OPENPQC_OK`.
-- **Self-test.** `openpqc_gpu_create` (in the backend, `opqc_sycl_mldsa_create`) runs a KeyGen, a deterministic
-  signature and two verifications of fixed inputs on the device and compares them with the CPU library's results
-  (`sycl/mldsa_sycl_self_test.hpp`); a device that computes a wrong result gets no context (`OPENPQC_ERR_SELF_TEST`,
-  the backend's `OPQC_SYCL_MLDSA_SELF_TEST_FAIL`). Create zeroizes the whole workspace after the self-test, so that a
-  new context holds none of its values (they are public, but lie in sections that hold secrets otherwise). Built
-  with the CMake option `OPENPQC_MLDSA_KEYGEN_PCT` (which reaches the GPU backend as well as the CPU library), KeyGen
-  also signs and verifies with every key pair it makes (the pair-wise consistency test of FIPS 140-3); a pair that
-  fails is zeroed and the call returns `OPENPQC_ERR_PCT`, and the GPU API marks the pairs that failed with
-  `OPENPQC_ERR_PCT` in status and the others with `OPENPQC_OK`.
+- **Self-test.** In FIPS 140-3 mode, or with the developer definition `OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST`,
+  `openpqc_gpu_create` (in the backend, `opqc_sycl_mldsa_create`) runs a KeyGen, a deterministic signature and two
+  verifications of fixed inputs on the device and compares them with the CPU library's results
+  (`sycl/mldsa_sycl_self_test.hpp`); a device that computes a wrong result gets no context (`OPENPQC_ERR_SELF_TEST`, the
+  backend's `OPQC_SYCL_MLDSA_SELF_TEST_FAIL`). Create then zeroizes the whole workspace, so that a new context holds
+  none of the self-test's values (they are public, but lie in sections that hold secrets otherwise). An ordinary build
+  runs no self-test at create and holds neither its code nor its answers, so it has no known-answer check of the device
+  (the maintainers' decision of 2026-11-17), and only the project's tests compare the device's results with the CPU
+  library's (a new workspace is zeroed when it is allocated). The developer definition is a compile definition for the
+  project's tests, not a CMake option, and no target of the libraries gives it: the white-box test `mldsa_sycl_faults`
+  compiles the backend with it, and a build that gives it to every object (`CMAKE_CXX_FLAGS`) has the self-test in its
+  GPU library too. In FIPS 140-3 mode, and only there, KeyGen also signs and verifies with every key pair it makes (the
+  pair-wise consistency test of FIPS 140-3); a pair that fails is zeroed and the call returns `OPENPQC_ERR_PCT`, and the
+  GPU API marks the pairs that failed with `OPENPQC_ERR_PCT` in status and the others with `OPENPQC_OK`. A pair counts
+  as passed only once the test's last kernel has seen it pass: if that kernel does not run for a launch, every pair of
+  the launch is zeroed and reported as failed. On the laptop's RTX 3050 a launch of 1,024 ML-DSA-65 key pairs through
+  the GPU API took 1.39 ms in an ordinary build and 13.5 ms in FIPS mode, with the test and the module's DRBG
+  (indicative). In FIPS 140-3 mode the GPU services are not approved (see below).
 - **Threads.** A context is locked while a call queues or runs its work, so several host threads can share it; their
   calls take turns (`memcpy` does not take the lock, and `destroy` must not run while another thread uses the
   context). A shared context gives one call's throughput at a time: on the RTX 3050, four contexts signed about
@@ -530,6 +543,65 @@ GPU's cache. At batch 4096 (RTX 3050, cooled to 65 °C), Sign is 1.3–1.5× fas
 361 k → 845 k per second); for Verify, ExpandA was the largest stage. At small batches the operations are
 latency-bound and gain little.
 
+## FIPS 140-3 mode
+
+A library built with the CMake option `OPENPQC_FIPS140_3` is a module designed for FIPS 140-3; not validated
+([docs/FIPS-140-3.md](../../../docs/FIPS-140-3.md),
+[the security policy draft](../../../docs/FIPS-140-3-security-policy.md)). `openpqc_mldsa.h` has the contract in its
+paragraph "FIPS 140-3 mode"; in short:
+
+- Each function of the C API is a service of the module. It first checks the module's state and, in the error state,
+  returns `OPENPQC_ERR_ERROR_STATE` (-12) and writes nothing; it checks again when its computation ends, and if the
+  module entered its error state meanwhile (another thread's failed pair-wise consistency test, a failure of the
+  entropy source or the DRBG, its own draw included), it zeroizes its outputs and returns -12. It sets the calling
+  thread's approved-service indicator last (`openpqc_fips_service_approved`, `openpqc/fips.h`): 1 if the service is
+  approved and returned `OPENPQC_OK`, 0 otherwise (a rejected signature, a refused key or argument, the signing limit,
+  the error state).
+- Approved: `keygen`, `keygen_from_seed`, `sign`, `sign_deterministic`, `verify`, HashML-DSA (`prehash_sign`,
+  `prehash_sign_deterministic`, `prehash_verify`) with a pre-hash as strong as the set, `external_mu`, `sign_mu`,
+  `sign_mu_deterministic` and `verify_mu` (the approval of external μ is for a laboratory to confirm).
+  `keygen_from_seed` imports a key pair in its seed format: ML-DSA.KeyGen_internal (Algorithm 6) on a seed ξ that an
+  approved random bit generator of a cryptographic module generated (§3.6.1), with the pair-wise consistency test;
+  NIST's PQC FAQ (the answer last revised 2026-06-16) allows "generating the seed in one cryptographic module and then
+  importing or exporting it into another cryptographic module", and says that ML-DSA.KeyGen_internal(ξ) "can be
+  accessed for this purpose". The module cannot check where a seed came from. FIPS 204 allows μ to be computed in a
+  different cryptographic module (Algorithm 7, line 6); NIST's PQC FAQ (the answer last revised 2025-03-19) asks that
+  module to have, at minimum, a validated SHAKE256, and the signing module to pass CAVP's SigGen tests with its μ
+  interface. The module cannot check where a μ came from.
+- Not approved, still computed, indicator 0: `check_sk` and `check_keypair`, which regenerate the key with the steps
+  of Algorithm 6 (FIPS 204 defines no key check, and ACVP has no test of one); and HashML-DSA with a pre-hash weaker
+  than the set (FIPS 204 §5.4):
+
+  | `OPENPQC_PREHASH_*` | strength (bits) | ML-DSA-44 | ML-DSA-65 | ML-DSA-87 |
+  |---|---|---|---|---|
+  | SHA2_224, SHA2_512_224, SHA3_224 | 112 | no | no | no |
+  | SHA2_256, SHA2_512_256, SHA3_256, SHAKE128 | 128 | approved | no | no |
+  | SHA2_384, SHA3_384 | 192 | approved | approved | no |
+  | SHA2_512, SHA3_512, SHAKE256 | 256 | approved | approved | approved |
+
+- KeyGen (`keygen` and `keygen_from_seed`) always runs its pair-wise consistency test; a key pair that fails it is
+  zeroized, the call returns `OPENPQC_ERR_PCT`, and the module enters its error state until it is loaded again.
+- The module's CAST of ML-DSA (at load) runs ML-DSA-44's KeyGen from a known ξ, a deterministic signature and its
+  verification, and HashML-DSA-44's deterministic signature with SHA3-512, against NIST ACVP vectors, and two
+  rejection cases from Table 1 of NIST's ACVP ML-DSA specification (rows 2 and 4 of ML-DSA-44: KeyGen, then the
+  deterministic signature of a given μ), whose signing loops reject an attempt for each condition of Algorithm 7,
+  lines 23 and 28 (‖z‖, ‖r0‖, ‖ct0‖ and the number of hints), as IG 10.3.A, Note 23, recommends.
+- Outside the module: the C++ API (`mldsa.hpp`; each of its operations is one call of a service of the C API, whose
+  indicator then applies; its pre-hash helpers `prehash` and `prehash_oid`, from Core's `prehash.hpp`, compute in the
+  application), the scheme templates (`scheme/`) compiled into an application, the testing interfaces
+  (`OpenPQC::testing`; in the module's error state they return -12 and compute nothing) and the GPU backend, whose
+  services are not approved (indicator 0; in the module's error state every GPU service returns -12).
+- Tests (FIPS builds): `fips_services_mldsa` (every function, every pre-hash with every set, accepted and refused
+  inputs, with the indicator preset to the opposite value), `fips_services_facade`, `fips_services_cxx`,
+  `fips_services_threads`, `fips_services_pct_mldsa65_keygen`, `fips_services_pct_mldsa87_keygen_from_seed`,
+  `fips_services_pct_sig_keygen`, `fips_services_inflight_*` (every function of ML-DSA-44 held after its first check
+  while another thread puts the module in its error state, or failing its own draw: -12, outputs zero, indicator 0; held
+  with no failure: its result; the security policy, Section 4.8), `fips_break_mldsa_*` (each of the CAST's known answers
+  changed: the module loads into its error state) and `fips_vectors_mldsa` (all 1,335 ACVP cases through the sealed
+  module; label `network`). In a FIPS build `mldsa_pct_fail` and `mldsa_pct_odr` check, one KeyGen per process, that a
+  forced failure enters the error state; `mldsa_fresh` that a constant randomness source is refused and never called;
+  `mldsa_fresh_control` runs on the test variant `openpqc_mldsa_testrng`, whose generator the program gives.
+
 ## Performance
 
 Measured on one laptop: an Intel Core i7-11370H (4 cores, 8 threads, at most 4.8 GHz) with its integrated Intel Iris
@@ -562,7 +634,8 @@ hardware thread of each core adds 1–9 %. These figures, and the GPU figures be
 before the fixes of the review's findings: on the CPU the range check of private keys and the clearing of the stack
 and the registers after Keccak-f and the one-shot hashes (Core), whose measured cost is a few per cent (KeyGen of
 ML-DSA-65 +3.4 % instructions with GCC 16; `Core/README.md` has the figures); on the GPU the fail-closed status
-fills, the self-test at creation and the checks of the signing loop after every round, which were not measured, the
+fills, the self-test at creation (FIPS 140-3 mode only since 2026-11-17) and the checks of the signing loop after every
+round, which were not measured, the
 zeroization after every verification (Design, Secrets: up to about 10 % of a verification launch's device time in two
 indicative runs), the zeroization of μ and the context string after every signing call (a few microseconds of device
 time per call) and the command that `sync` queues (about 1 to 2 µs more per `sync` that waits for work on the RTX
@@ -633,16 +706,19 @@ arithmetic weighs more: 41–46 % of Sign in the attempts' z, r0, c·t0 and hint
 tests below, never into `openpqc`. The objects of `mldsa.cpp` go into the library `openpqc` (`OpenPQC::openpqc`,
 which applications link; see the top-level README) and into two libraries for the tests and benchmarks, built only
 when they need them and never installed: `openpqc_mldsa` takes its randomness, as `openpqc` does, from Core's
-`opqc_randombytes` (a source registered with `opqc_set_randombytes`, else the operating system),
+`opqc_randombytes` (a source registered with `opqc_set_randombytes`, else the operating system; in FIPS 140-3 mode
+the module's HMAC_DRBG),
 `openpqc_mldsa_testrng` calls the application's `opqc_external_randombytes()` instead (tests only; never link it into
 a program together with a production library: both define `opqc_randombytes`, and the linker keeps the first
 definition it finds, without an error).
-The CMake option `OPENPQC_MLDSA_KEYGEN_PCT` (OFF by default) compiles the pair-wise consistency test into the CPU
-libraries (`openpqc` and the tests' copies) and into the GPU backend's objects (in `openpqc_sycl`,
-`openpqc_sycl_testing` and `openpqc_mldsa_sycl`), as `OPENPQC_MLKEM_KEYGEN_PCT` does for ML-KEM's CPU libraries. The
-presets `gcc-release-pct` and `clang-release-pct` build with both options and run the quick ML-KEM and ML-DSA tests
-against those libraries (no test labelled `slow` or `network`, and none of the `_ct` tests, which compile their own
-copies of the code).
+FIPS 140-3 mode compiles the pair-wise consistency test into the CPU library `openpqc` (the definition
+`OPENPQC_MLDSA_KEYGEN_PCT`, from the top-level `CMakeLists.txt`) and into the GPU backend's objects (in `openpqc_sycl`,
+`openpqc_sycl_testing` and `openpqc_mldsa_sycl`, from `src/ML/DSA/CMakeLists.txt`; the backend also turns it on itself
+when it is compiled with `OPENPQC_FIPS140_3`), as it does for ML-KEM and SLH-DSA. No other build has it, and no CMake
+option or preset adds it (the maintainers' decision of 2026-11-17: the former option `OPENPQC_MLDSA_KEYGEN_PCT` stops
+the configuration, and the presets `gcc-release-pct` and `clang-release-pct` are gone). The tests that compile their
+own copies with the test (`mldsa_pct`, `mldsa_pct_fail`, `mldsa_pct_odr`, `mldsa_thread_stack_pct`) run in every
+build.
 The GPU backend is part of the GPU library `openpqc_sycl` when a SYCL compiler is found (see the top-level
 README), under the GPU API; `openpqc_mldsa_sycl` is its static copy for the benchmarks, and `openpqc_sycl_testing` the
 library of the same objects that exports the backend's C API, for the white-box tests. Like the code of Core's and
@@ -672,7 +748,7 @@ The reference's own test programs run against this library and against the unmod
 | `mldsa_differential` | this library against the reference (C and AVX2), byte for byte: keys, deterministic and hedged signatures with context strings up to 255 bytes, the internal functions, and verification of tampered signatures, malformed hints (equal and decreasing indices included) and out-of-range z, and of signatures with a coefficient of z exactly at γ₁ − β (rejected) and one below (valid); also a failing RNG and the end of the signing loop (Appendix C) |
 | `test_mldsa_cxx` | the C++ API (`openpqc/openpqc.hpp`); HashML-DSA against Algorithm 4 written out (the twelve OIDs and pre-hash functions), signatures of the wrong length at every verification function, context strings of 255 and 256 bytes everywhere, the key checks of every key pair it generates; the three `_deterministic` functions against the testing interfaces of `openpqc/testing.hpp` with rnd = 0³², and the refusal of a NULL rnd |
 | `mldsa_pct`, `mldsa_pct_fail`, `mldsa_pct_odr` | the library built with the pair-wise consistency test after KeyGen (`OPENPQC_MLDSA_KEYGEN_PCT`); and built so that the test fails (`OPENPQC_MLDSA_KEYGEN_PCT_BREAKAGE_TEST`): KeyGen must return `OPENPQC_ERR_PCT` with both keys zeroized, which shows that the test is compiled in and its result used; `mldsa_pct_odr`: the same with an application's own copies of the KeyGen templates, compiled without the test and linked first, which must not take the place of the library's (key generation lives in an inline namespace named after its configuration, `scheme/ml_dsa.hpp`) |
-| `mldsa_pct_library` | only with the CMake option `OPENPQC_MLDSA_KEYGEN_PCT`: the test of `mldsa_pct` against the library as built (KeyGen of every set through the test; the keys sign and verify), and `mldsa_thread_stack` then compares KeyGen with the documented size of KeyGen with the test, an upper bound, and in optimized builds also requires more stack than the documented size of KeyGen without the test, a lower bound. The ML-DSA test draws no randomness, so no call of the C API shows whether it is compiled in: `mldsa_pct_library` passes against a library without it, and `mldsa_thread_stack` fails in an optimized build (with the option taken out of the library, KeyGen needed 43,864 bytes for ML-DSA-44, within the 52 KiB of KeyGen without the test) |
+| `mldsa_pct_library` | FIPS 140-3 mode only: the test of `mldsa_pct` against the library as built (KeyGen of every set through the test; the keys sign and verify), and `mldsa_thread_stack` then compares KeyGen with the documented size of KeyGen with the test, an upper bound, and in optimized builds also requires more stack than the documented size of KeyGen without the test, a lower bound. The ML-DSA test draws no randomness, so no call of the C API shows whether it is compiled in: `mldsa_pct_library` passes against a library without it, and `mldsa_thread_stack` fails in an optimized build (with the test taken out of the library, KeyGen needed 43,864 bytes for ML-DSA-44, within the 52 KiB of KeyGen without the test) |
 | `mldsa_sk_check` | private keys with each out-of-range code of s1 and s2 (FIPS 204, Algorithm 25), all of s1 or s2 out of range, changes within the range, and changed ρ, K, tr or t0, all made from a fixed seed, and consistent malformed key pairs (t0, tr and pk recomputed from out-of-range s1 and s2, which only the range check can refuse): every signing function refuses the malformed ones (`OPENPQC_ERR_INVALID_SECRET_KEY`, an all-zero signature) and `check_sk` and `check_keypair` find every change except of K; `check_keypair` also finds a changed ρ or t1 of pk, and a valid sk with the pk of another key |
 | `mldsa_stack` | no secret intermediate value on the stack (FIPS 204 §3.6.3) after KeyGen (from a seed, and randomized), the key checks, Sign (deterministic; hedged, HashML-DSA and external μ with rnd from the test's `opqc_external_randombytes()`; at the bound of Appendix C), ExpandMask on its own, external μ and Verify (also HashML-DSA): the stack is copied after each call and searched at every byte offset for ξ, rnd, ρ′, K, ρ″, μ, PH(M), s1 and s2 (also as sk packs them), the values of every attempt (y, ExpandMask's output v, w, c ∘ s1, c ∘ s2, w − cs2, r0, and z and w1 of the rejected ones), Verify's values (w1Encode(w1′) and c̃′ among them), the final states of the sponges that absorb secrets or μ, and, lane by lane, the last two rounds and the output of the last Keccak-f of each of those sponges; with positive controls (Linux; under AddressSanitizer the test turns the fake stack off for itself, reports itself skipped if frames are not on the stack all the same, and reports Keccak lanes it finds without counting them, as the sanitizer instruments Core's clearing too) |
 | `mldsa_fresh`, `mldsa_fresh_control` | `keygen` and the hedged signing functions (sign, prehash_sign with SHA2-512, sign_mu) of the library as built draw fresh randomness on every call: in 32 calls of each, no key pair or signature repeats, none equals the output for all-zero randomness (`keygen_from_seed` with ξ = 0, the deterministic signature), and every signature verifies; the control registers a constant source with `opqc_set_randombytes` (bytes 0x5a, then zeros) and must report every kind of repeat, then restores the default with NULL. A KeyGen or a hedged Sign that reuses its random value fails it, and so does a Core that reports randomness without writing it |
@@ -681,7 +757,7 @@ The reference's own test programs run against this library and against the unmod
 | `gpu_api` | the GPU API (`openpqc/sycl.h`, `sycl.hpp`) on every SYCL device, linked as an application links it, for every parameter set of the build: for ML-DSA KeyGen from seeds and deterministic signatures byte for byte against this library (messages by offsets, at a stride, and under one key), hedged signatures that this library verifies, verification of good and tampered signatures, external μ, HashML-DSA refused, messages outside their buffer (review finding F073); the order of checks and launches of 3 operations (label `gpu`; see [ML-KEM's README](../KEM/README.md#tests)) |
 | `mldsa_sycl` | the SYCL backend's own C API against this library on every SYCL device: byte identity, fresh randomness across operations, launches and calls, the status and error contract (also `sign_stats` after a refused call and after a randomized call of n = 0: 0 rounds, 0 attempts), the self-test's answers, two host threads on one context, and malformed private keys mixed with well-formed ones in launches of 3 for every signing function (an all-zero signature and `OPENPQC_ERR_INVALID_SECRET_KEY` in status, or as the result of a call without one; the others the CPU's signatures, or valid hedged ones) (label `gpu`) |
 | `mldsa_sycl_sticky` | a real device fault inside the signing loop on an NVIDIA GPU, in a process of its own: -2 in the round of the fault, no endless loop (a watchdog fails the test after 60 s), no process termination; then every call, sync and copy returns -2, refused arguments still -1, the other context on the device fails too, and a new create fails. The fault comes from a signature placed 8 bytes before the end of a 64 MiB device allocation, which passes every check of the C API; it relies on the CUDA driver mapping nothing after that allocation, and if a driver does, the test fails ("no fault"), it never passes without a fault (label `gpu`; skipped without an NVIDIA device) |
-| `mldsa_sycl_faults`, `mldsa_sycl_faults_nopct` | white-box fault injection, on the backend built with KeyGen's pair-wise consistency test and, in `_nopct`, without it (the default build): fail-closed verification status, the failed context, the signing loop stopping at a fault or an incomplete round, an RNG failure, workspace zeroization (after every call, the three verification calls included; after every signing call no μ and no context string, also after a refused key, at the signing limit and after an RNG failure; after create's self-test: the whole workspace), the end of the signing loop (bound lowered) with a malformed key among the signatures (without status it comes before the limit), KeyGen's pair-wise consistency test (with it only), create's self-test and a create whose lock throws (Core's count of USM allocations, a count compiled into tests only, must be 0 after every case), and `sign_stats` after calls that are refused or launch nothing (label `gpu`) |
+| `mldsa_sycl_faults`, `mldsa_sycl_faults_nopct` | white-box fault injection, on the backend built with KeyGen's pair-wise consistency test and create's self-test (`OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST`) and, in `_nopct`, as the build compiles it (in an ordinary build without either, and every case that needs them reported by name as not applicable): fail-closed verification status, the failed context, the signing loop stopping at a fault or an incomplete round, an RNG failure, workspace zeroization (after every call, the three verification calls included; after every signing call no μ, no context string, no challenge c and no result flags, also after a refused key, at the signing limit and after an RNG failure; after create's self-test: the whole workspace), the end of the signing loop (bound lowered) with a malformed key among the signatures (without status it comes before the limit), KeyGen's pair-wise consistency test (with it only; also one pair left out of the test beside passing pairs of its launch: the call returns -6, that pair's keys are zero and the others are the CPU's keys), create's self-test and a create whose lock throws (Core's count of USM allocations, a count compiled into tests only, must be 0 after every case), and `sign_stats` after calls that are refused or launch nothing; in a FIPS build `_nopct` compiles the backend with `OPENPQC_FIPS140_3` alone, fails unless that turns both tests on, and runs their cases on it (label `gpu`) |
 
 The tests of the C APIs of all three schemes in `tests/` (`c_api_errors`, which also takes the error paths of the
 `_deterministic` functions and checks that every testing interface that takes rnd refuses a NULL one,
@@ -706,7 +782,8 @@ rest of the attempt (GCC 16 and Clang 23), so the test also runs ExpandMask on i
 without the range check of `sk_decode` and without the comparison of the regenerated key; `mldsa_thread_stack` fails
 without `-fstack-clash-protection` (16 to 51 KB written below the guard page, also by Sign of ML-DSA-87 on musl's
 128 KiB) and, with Clang 23, with operations that take their operands by value. With the network test
-`mldsa_wycheproof`, deleting the ct0 check of Algorithm 7, line 28 fails 13 vectors, a Sign that ignores the range
+`mldsa_wycheproof`, deleting the ct0 check of Algorithm 7, line 28 fails 13 vectors (in a FIPS build the module's
+self-test also fails at load, as it does without the check of the number of hints), a Sign that ignores the range
 check of `sk_decode` fails the 6 malformed private keys, and a refusal that does not zero the signature fails them
 too; `mldsa_fresh` fails when KeyGen or hedged Sign reuses its random value, or when Core reports randomness without
 writing it; `mldsa_regs_asm` fails with Clang 23 on the `H` from before (a jump to the sponge at -O1 to -Os).

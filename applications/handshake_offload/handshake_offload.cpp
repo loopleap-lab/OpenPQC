@@ -40,9 +40,10 @@
  * runs one batch that is not timed, then at least 10 timed batches, so that the median and p90 of
  * the batch latency rest on 10 values or more: if the clients make fewer full batches, they are
  * served again from the first. The CPU server first serves handshakes for 0.3 s that are not
- * timed. Encaps and signing are the randomized functions, with coins from the operating system's
- * RNG: FIPS 203 (Section 3.3) requires fresh randomness for Encaps, and hedged signing is FIPS
- * 204's default (Section 3.4), which a server with an RNG should use.
+ * timed. Encaps and signing are the randomized functions, with coins from opqc_randombytes (the
+ * operating system's RNG, or in FIPS 140-3 mode the module's HMAC_DRBG, on the CPU and for the
+ * device alike): FIPS 203 (Section 3.3) requires fresh randomness for Encaps, and hedged signing
+ * is FIPS 204's default (Section 3.4), which a server with an RNG should use.
  *
  * After each server run every served client decapsulates its ct, recomputes TH and derives the
  * traffic key, which must equal the server's, and verifies the server's signature with the CPU
@@ -497,7 +498,9 @@ CpuRun run_cpu_server(const Clients& c, const ServerKey& server, Responses& r, u
 // --- The GPU server ------------------------------------------------------------------------------
 
 // A context of the GPU API (openpqc/sycl.h) for one parameter set, with up to max_batch
-// operations per launch. openpqc_gpu_create runs a known-answer self-test on the device.
+// operations per launch. In FIPS 140-3 mode, or with the developer definitions
+// OPENPQC_*_SYCL_CREATE_SELF_TEST, openpqc_gpu_create also runs a known-answer self-test on the device;
+// an ordinary GPU build runs none and has no known-answer check of the device (openpqc/sycl.h, Self-test).
 class Context {
 public:
     Context(openpqc_alg alg, std::size_t max_batch, int device) {

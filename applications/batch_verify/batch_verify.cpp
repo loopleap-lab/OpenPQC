@@ -15,8 +15,9 @@
  * Setup (not timed). M maintainers with ML-DSA-65 key pairs; N packages of random sizes (256 B to
  * 16 KiB), each a line with the package's name and version followed by random bytes; a manifest
  * that lists every package's name and version and assigns it to a random maintainer. Each package
- * is signed by its maintainer on the CPU (T threads, hedged signing with randomness from the
- * operating system) with the context string "openpqc-demo package signature", which keeps
+ * is signed by its maintainer on the CPU (T threads, hedged signing with randomness from
+ * opqc_randombytes: the operating system's RNG, or in FIPS 140-3 mode the module's HMAC_DRBG)
+ * with the context string "openpqc-demo package signature", which keeps
  * signatures the maintainers make for other purposes from verifying as package signatures
  * (FIPS 204, Section 5.2); the secret keys are zeroized when the setup ends. Then about 1 % of
  * the packages (at least 5) are damaged, the five faults in turn, and recorded as the ground truth:
@@ -315,7 +316,7 @@ SetupInfo build_repository(Repository& r, unsigned threads) {
     SetupInfo info;
 
     // The layout (sizes, manifest, which packages are damaged and how) is not secret: a generator
-    // seeded once from the operating system draws it
+    // seeded once from opqc_randombytes draws it
     std::uint8_t seed_bytes[8];
     check(opqc_randombytes(seed_bytes, sizeof seed_bytes), "opqc_randombytes");
     std::uint64_t seed = 0;
@@ -445,8 +446,10 @@ Times verify_cpu(const Repository& r, unsigned threads, Decisions& decisions) {
     return t;
 }
 
-// The ML-DSA-65 context of the GPU API (openpqc/sycl.h); openpqc_gpu_create runs a known-answer
-// self-test on the device. A member declared before the buffers, so that it is destroyed after them.
+// The ML-DSA-65 context of the GPU API (openpqc/sycl.h). In FIPS 140-3 mode, or with the developer
+// definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST, openpqc_gpu_create also runs a known-answer self-test on
+// the device; an ordinary GPU build runs none and has no known-answer check of the device (openpqc/sycl.h,
+// Self-test). A member declared before the buffers, so that it is destroyed after them.
 class Context {
 public:
     Context(std::size_t max_batch, int device) {

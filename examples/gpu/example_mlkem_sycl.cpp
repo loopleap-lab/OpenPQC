@@ -15,7 +15,8 @@
  * Results (the call's status and that of every operation). example_mldsa_sycl and
  * example_slhdsa_sycl use the C API, openpqc/sycl.h, which this layer is built on. The program
  *   [1] makes n key pairs, n ciphertexts and n shared secrets in three device calls, with the
- *       randomized functions (the coins come from the operating system's RNG on the host), and
+ *       randomized functions (the coins come from opqc_randombytes on the host: the operating
+ *       system's RNG, or in FIPS 140-3 mode the module's HMAC_DRBG), and
  *       checks that Encaps and Decaps give the same secrets;
  *   [2] has the CPU library (ML/KEM/mlkem.hpp) decapsulate the device's ciphertexts with the
  *       device's decapsulation keys;
@@ -133,8 +134,10 @@ void print_call(const char* op, std::size_t n, double ms, const std::string& not
 
 bool run(std::size_t n, int device) {
     // max_batch = n: device memory for n operations, so every call is one launch. The
-    // constructor runs the context's known-answer self-test, and throws openpqc::error if
-    // creation fails.
+    // constructor throws openpqc::error if creation fails (in FIPS 140-3 mode, or with the
+    // developer definition OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST, creation also runs the context's
+    // known-answer self-test on the device; an ordinary GPU build runs none and has no
+    // known-answer check of the device).
     Context gpu{openpqc_gpu_config{device, n}};
     std::printf("context: ML-KEM-768 on %s, max_batch %zu\n", gpu.device_name(), gpu.max_batch());
 

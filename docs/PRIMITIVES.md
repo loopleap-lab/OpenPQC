@@ -50,7 +50,7 @@ therefore run the same arithmetic code. Only the distribution of work and the me
 | SHAKE256 | PRF_η, J | seed expansion, tr, μ, SampleInBall, ExpandMask, ExpandS | all six hash functions of the SHAKE sets; pre-hash | tr, HashToPoint, sampler PRNG | **Core (identical)** |
 | SHA-2 (SHA-224 … SHA-512/256, FIPS 180-4) | - | pre-hash only (HashML-DSA) | the six hash functions of the SHA2 sets: SHA-256 for all of them in category 1; in categories 3 and 5 SHA-256 for F and PRF, SHA-512 for H, T_l, PRF_msg and H_msg; pre-hash | pre-hash only | **Core (identical)** |
 | Constant-time toolkit (value barriers, masks, ct memcmp/cmov, zeroize) | FO transform, message decoding | norm checks, hint, wiping | root and key comparisons, wiping, the stack burn | sampler, encodings | **Core (identical)** (needs 32/64-bit variants for ML-DSA/FN-DSA) |
-| Randomness (`opqc_randombytes`: the operating system, a source registered with `opqc_set_randombytes`, or `opqc_external_randombytes()`) | d, z, m | ξ, rnd | SK.seed, SK.prf, PK.seed, addrnd | seed, salt/nonce | **Core (identical)** |
+| Randomness (`opqc_randombytes`: the operating system, a source registered with `opqc_set_randombytes`, or `opqc_external_randombytes()`; in FIPS 140-3 mode the module's HMAC_DRBG, `opqc_drbg.{h,c}`) | d, z, m | ξ, rnd | SK.seed, SK.prf, PK.seed, addrnd | seed, salt/nonce | **Core (identical)** |
 | Modular reduction | q = 3329, exact multiply-shift | q = 8380417 | - | q = 12289 | Core (pattern) |
 | NTT / inverse NTT (CT/GS butterflies, bit-reversed twiddles) | n = 256, **incomplete**, 7 layers | n = 256, complete, 8 layers | - | n = 512/1024, complete, 9/10 layers | Core (pattern) |
 | NTT-domain product | degree-2 base multiplication | pointwise | - | pointwise + field division | Core (pattern) |
@@ -76,6 +76,8 @@ C++ API: [`hash.hpp`](../src/Core/hash.hpp), [`zeroize.hpp`](../src/Core/zeroize
 | Sponge with pad10\*1, any rate; byte-granular absorb and squeeze | FIPS 202 §4, §5.1, Alg. 8–9 | `opqc_sponge_init/absorb/finalize/squeeze` | `opqc_sha3.h` |
 | One-shot hashes | FIPS 202 §6.1, §6.2 | `opqc_sha3_256`, `opqc_sha3_512`, `opqc_shake128`, `opqc_shake256` | `opqc_sha3.h` |
 | SHA-2 compression (on 16 words, the schedule as a ring; the byte functions call it), incremental and one-shot SHA-224 … SHA-512/256 | FIPS 180-4 §6.2, §6.4 | `opqc_sha256_compress_words`, `opqc_sha512_compress_words`, `opqc_sha256_*`, `opqc_sha512_*` | `opqc_sha2.h` |
+| HMAC-SHA-256 and HMAC-SHA-512, one-shot and incremental | FIPS 198-1 | `opqc_hmac_sha256`, `opqc_hmac_sha512`, `opqc_hmac_sha256_init/absorb/finalize`, `opqc_hmac_sha512_*` | `opqc_hmac.h` (internal, not installed) |
+| HMAC_DRBG with SHA-512, the random bit generator of the FIPS 140-3 mode, and its health test | SP 800-90A Rev. 1 §10.1.2, §11.3 | `opqc_hmac_drbg_instantiate/reseed/generate/uninstantiate`, `opqc_drbg_cast` | `opqc_drbg.{h,c}` (internal, not installed) |
 | SHA-2 in GPU kernels (compile-time positions, a midstate, HMAC, MGF1) | FIPS 180-4, FIPS 198-1, RFC 8017 B.2.1 | `openpqc::gpu::Sha256`, `Sha512`, `sha2_fixed`, `hmac_init`, `mgf1` | `sycl/opqc_sycl_sha2.hpp` |
 | Pre-hash functions and OIDs of HashML-DSA and HashSLH-DSA | FIPS 204 §5.4, FIPS 205 §10.2.2 | `openpqc::PreHash`, `prehash`, `prehash_oid`, `prehash_bytes`; `OPENPQC_PREHASH_*` | `prehash.hpp`, `openpqc_prehash.h` |
 | The sponge in GPU kernels (word-wise, compile-time positions) | FIPS 202 §4 | `openpqc::gpu::absorb`, `pad_and_permute` | `sycl/opqc_sycl_sponge.hpp` |

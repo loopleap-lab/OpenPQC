@@ -114,7 +114,8 @@ public:
 
     const DSA::public_key& public_key() const { return pk_; }
 
-    // Algorithm 7 from line 7 on, hedged: rnd comes from the operating system
+    // Algorithm 7 from line 7 on, hedged: rnd comes from opqc_randombytes (the operating system's RNG; in FIPS
+    // 140-3 mode the module's HMAC_DRBG)
     DSA::signature sign(const DSA::message_representative& mu) const {
         DSA::signature sig{};
         check(DSA::sign_mu(sig, mu, sk_), "signer: sign_mu");
