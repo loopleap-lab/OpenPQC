@@ -4,24 +4,10 @@
 // openpqc/openpqc.hpp  --  the whole C++ API: the schemes' class templates under the names of the standards, and
 // the bridge from an openpqc_alg chosen at run time to a type
 //
-//   using KEM = openpqc::ML_KEM_768;            // = openpqc::mlkem::MLKEM<768>
-//   KEM::public_key pk;  KEM::secret_key sk;      // secret_key = openpqc::secret<2400>: zeroized on destruction
-//   openpqc::check(KEM::keygen(pk, sk));          // [[nodiscard]] openpqc::status; check() throws openpqc::error
-//
-//   openpqc_alg alg;
-//   openpqc::check(openpqc::alg_from_name("ML-DSA-65", alg));
-//   openpqc::status s = openpqc::visit_sig(alg, [&]<class DSA>(DSA) {
-//       DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
-//       openpqc::check(DSA::keygen(pk, sk));
-//       return DSA::sign(sig, message, sk);
-//   });
-//
-// visit_kem calls f with a value of the KEM type of alg (ML_KEM_*), visit_sig with that of the signature scheme
-// (ML_DSA_*, SLH_DSA_*), and returns what f returns (an openpqc::status; status::ok for an f that returns
-// nothing). An alg of the other kind, or of a scheme this build does not contain (Core/openpqc_version.h:
-// OPENPQC_HAVE_*), gives status::unsupported without calling f. Every type that visit_sig passes has the same
-// functions: keygen, check_sk, check_keypair, sign, sign_deterministic, verify, prehash_sign,
-// prehash_sign_deterministic, prehash_verify (ML-DSA has external mu and keygen_from_seed besides).
+// ML_KEM_512 ... SLH_DSA_SHAKE_256f name the class templates of ML/KEM/mlkem.hpp, ML/DSA/mldsa.hpp and
+// SLH/DSA/slhdsa.hpp (ML_KEM_768 = openpqc::mlkem::MLKEM<768>); alg_from_name gives the openpqc_alg of a name,
+// and visit_kem and visit_sig call a function with the type of an openpqc_alg chosen at run time.
+// Guide, with an example of each: README.md, "C and C++ APIs".
 #pragma once
 
 #include <type_traits>
@@ -77,6 +63,10 @@ status visit_call(F&& f) {
 
 } // namespace detail
 
+// visit_kem calls f with a value of the KEM type of alg (ML_KEM_*), visit_sig with that of the signature scheme
+// (ML_DSA_*, SLH_DSA_*), and returns what f returns (an openpqc::status; status::ok for an f that returns
+// nothing). An alg of the other kind, or of a scheme this build does not contain (Core/openpqc_version.h:
+// OPENPQC_HAVE_*), gives status::unsupported without calling f.
 template <class F>
 status visit_kem(openpqc_alg alg, F&& f) {
     switch (alg) {
@@ -89,6 +79,9 @@ status visit_kem(openpqc_alg alg, F&& f) {
     }
 }
 
+// Every type that visit_sig passes has the same functions: keygen, check_sk, check_keypair, sign,
+// sign_deterministic, verify, prehash_sign, prehash_sign_deterministic, prehash_verify (ML-DSA has external mu
+// and keygen_from_seed besides).
 template <class F>
 status visit_sig(openpqc_alg alg, F&& f) {
     switch (alg) {

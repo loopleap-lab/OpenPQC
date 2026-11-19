@@ -3,47 +3,12 @@
 //
 // openpqc/sycl.hpp  --  the GPU API (openpqc/sycl.h) in C++: one context per parameter set, host staging, results
 //
-//   #include <openpqc/openpqc.hpp>
-//   #include <openpqc/sycl.hpp>
-//   using KEM = openpqc::ML_KEM_768;
-//
-//   openpqc::sycl::Context<KEM> gpu{{.device = -1, .max_batch = 8192}};   // throws openpqc::error if it fails
-//   std::vector<KEM::public_key> pk(n);  std::vector<KEM::secret_key> sk(n);
-//   std::vector<KEM::ciphertext> ct(n);  std::vector<KEM::shared_secret> ss(n);
-//   openpqc::check(gpu.keygen(pk, sk).status());   // host data: staged through page-locked memory and back
-//   auto r = gpu.encaps(ct, ss, pk);                // r.ok(): the call and every operation; r[i]: operation i
-//
-//   // for pipelines: device memory in, an event out; buffers are overwritten with zeros when they are freed
-//   openpqc::sycl::Buffer<KEM::public_key> d_pk{gpu, n};
-//   openpqc::sycl::Buffer<KEM::secret_key> d_sk{gpu, n};
-//   openpqc::sycl::Buffer<std::int32_t> d_status{gpu, n};
-//   ::sycl::event done;
-//   openpqc::check(gpu.keygen_async(d_pk, d_sk, d_status, &done));
-//
 // Context<Scheme> takes the schemes' types of openpqc/openpqc.hpp (openpqc::ML_KEM_768, openpqc::ML_DSA_65,
 // openpqc::SLH_DSA_SHAKE_128f, ...): their alg, key, ciphertext, shared-secret and signature types. Everything
 // openpqc/sycl.h says of the calls holds here (status, results, order of checks, threads, device failures).
-//
-//   Host calls (keygen, keygen_from_seed, encaps, decaps, sign, verify, sign_mu, verify_mu on spans of host memory): n
-//   is the size of the spans, which must agree. They copy the inputs into page-locked memory of the context and on to
-//   device memory, run the call, wait for it (sync), and copy the outputs back the same way; every staging buffer is
-//   overwritten with zeros when it is freed, and the page-locked one keeps secrets out of the driver's staging buffers
-//   for pageable memory. The result is a Results: the call's status (status()), the status of every operation
-//   (operator[]), and ok() for "the call and every operation succeeded". An output of an operation whose status is not
-//   status::ok is not a result (zeros, as openpqc/sycl.h says). The messages of sign and verify are spans of bytes, one
-//   per operation, packed into one buffer: at a stride when they all have the same length (so the pre-hashes PH(M) of
-//   SLH-DSA's pre-hash variants, opts->prehash, pass as openpqc/sycl.h asks), else with offsets.
-//
-//   Device calls (*_async, on Buffer<T>): queued on the context, as the C API's are; with `done`, an event that
-//   completes when the call's work is done (openpqc_gpu_event: waiting for it does not report a device failure,
-//   sync does). The messages are an openpqc_gpu_messages of device memory.
-//
-// The context is move-only: its destructor runs once, and destroy must not overlap another call
-// (openpqc/sycl.h, Threads). Buffers must be freed (destroyed) before their context; a Buffer keeps a pointer to
-// the context's handle, not to the Context object, so moving the Context does not invalidate it; release() frees a
-// Buffer and reports whether its memory was overwritten (openpqc_gpu_free), which the destructor cannot. Constructors
-// throw openpqc::error when the C API fails, if exceptions are enabled (otherwise check valid()). In this
-// namespace the SYCL implementation's own names are written ::sycl:: (openpqc::sycl is this namespace).
+// Constructors throw openpqc::error when the C API fails, if exceptions are enabled (otherwise check valid()).
+// Secrets: Buffers, and the staging buffers of the host calls, are overwritten with zeros when they are freed.
+// Guide: README.md, "GPU API"; an example of each kind of call: Context, below.
 #pragma once
 
 #include <sycl/sycl.hpp>
@@ -62,6 +27,7 @@
 #include "openpqc/sycl.h"
 #include "openpqc/sycl/interop.hpp"
 
+// In this namespace the SYCL implementation's own names are written ::sycl:: (openpqc::sycl is this namespace).
 namespace openpqc::sycl {
 
 namespace detail {
@@ -80,7 +46,8 @@ concept external_mu = requires { typename S::message_representative; };
 // n values of type T (a key, ciphertext, shared secret or signature type of a scheme, or std::int32_t for status
 // entries, or std::uint8_t / std::uint64_t for messages and offsets) in device memory of a context
 // (openpqc_gpu_malloc; host = true: page-locked host memory, openpqc_gpu_malloc_host), overwritten with zeros
-// when freed. Move-only.
+// when freed. Move-only. Buffers must be freed (destroyed) before their context; a Buffer keeps a pointer to the
+// context's handle, not to the Context object, so moving the Context does not invalidate it.
 template <class T>
 class Buffer {
 public:
@@ -113,8 +80,8 @@ public:
     ~Buffer() { reset(); }
 
     // Frees the memory (overwritten with zeros first: openpqc_gpu_free waits for the context's work). release
-    // reports openpqc_gpu_free's result (status::device: the context has failed, and the memory may not have been
-    // overwritten); reset and the destructor drop it.
+    // reports openpqc_gpu_free's result, whether the memory was overwritten (status::device: the context has
+    // failed, and the memory may not have been overwritten); reset and the destructor cannot, and drop it.
     [[nodiscard]] status release() noexcept {
         const openpqc_status s = bytes_ ? openpqc_gpu_free(gpu_, bytes_) : OPENPQC_OK;
         bytes_ = nullptr;
@@ -162,9 +129,10 @@ public:
         }
     }
 
-    // The call's own result (openpqc/sycl.h, Results of calls)
+    // The call's own result (openpqc/sycl.h, Results)
     [[nodiscard]] openpqc::status status() const noexcept { return call_; }
-    // Operation i: status::ok if it has a result
+    // Operation i: status::ok if it has a result; an output of an operation whose status is not status::ok is not
+    // a result (zeros, as openpqc/sycl.h says)
     [[nodiscard]] openpqc::status operator[](std::size_t i) const noexcept {
         return static_cast<openpqc::status>(ops_[i]);
     }
@@ -184,6 +152,25 @@ private:
     std::vector<std::int32_t> ops_;
 };
 
+// A context of the parameter set Scheme (openpqc_gpu). Move-only: its destructor runs once, and destroy must not
+// overlap another call (openpqc/sycl.h, Threads). For example:
+//
+//   #include <openpqc/openpqc.hpp>
+//   #include <openpqc/sycl.hpp>
+//   using KEM = openpqc::ML_KEM_768;
+//
+//   openpqc::sycl::Context<KEM> gpu{{.device = -1, .max_batch = 8192}};   // throws openpqc::error if it fails
+//   std::vector<KEM::public_key> pk(n);  std::vector<KEM::secret_key> sk(n);
+//   std::vector<KEM::ciphertext> ct(n);  std::vector<KEM::shared_secret> ss(n);
+//   openpqc::check(gpu.keygen(pk, sk).status());   // host data: staged through page-locked memory and back
+//   auto r = gpu.encaps(ct, ss, pk);                // r.ok(): the call and every operation; r[i]: operation i
+//
+//   // for pipelines: device memory in, an event out; buffers are overwritten with zeros when they are freed
+//   openpqc::sycl::Buffer<KEM::public_key> d_pk{gpu, n};
+//   openpqc::sycl::Buffer<KEM::secret_key> d_sk{gpu, n};
+//   openpqc::sycl::Buffer<std::int32_t> d_status{gpu, n};
+//   ::sycl::event done;
+//   openpqc::check(gpu.keygen_async(d_pk, d_sk, d_status, &done));
 template <class Scheme>
 class Context {
 public:
@@ -219,6 +206,9 @@ public:
     [[nodiscard]] status sync() noexcept { return to_status(openpqc_gpu_sync(gpu_)); }
 
     // ------------------------------------------------------------ device calls (openpqc/sycl.h)
+    // *_async, on Buffer<T>: queued on the context, as the C API's are; with `done`, an event that completes when
+    // the call's work is done (openpqc_gpu_event: waiting for it does not report a device failure, sync does). The
+    // messages are an openpqc_gpu_messages of device memory.
 
     template <class PK, class SK>
     [[nodiscard]] status keygen_async(Buffer<PK>& pk, Buffer<SK>& sk, Buffer<std::int32_t>& st,
@@ -296,6 +286,11 @@ public:
     }
 
     // ------------------------------------------------------------ host calls (staged, waited for)
+    // On spans of host memory: n is the size of the spans, which must agree. They copy the inputs into page-locked
+    // memory of the context and on to device memory, run the call, wait for it (sync), and copy the outputs back
+    // the same way; every staging buffer is overwritten with zeros when it is freed, and the page-locked one keeps
+    // secrets out of the driver's staging buffers for pageable memory. The result is a Results. The messages of
+    // sign and verify are spans of bytes, one per operation, packed into one buffer (Packed, below).
 
     template <class PK, class SK>
     [[nodiscard]] Results keygen(std::span<PK> pk, std::span<SK> sk) {
@@ -508,8 +503,9 @@ private:
         std::uint8_t* host_ = nullptr;
     };
 
-    // The messages of a host call, packed back to back: at a stride when they all have the same length (which
-    // SLH-DSA's pre-hash variants require of PH(M), openpqc/sycl.h, Messages), else with offsets
+    // The messages of a host call, packed back to back: at a stride when they all have the same length (so the
+    // pre-hashes PH(M) of SLH-DSA's pre-hash variants, opts->prehash, pass as openpqc/sycl.h, Messages, asks),
+    // else with offsets
     struct Packed {
         bool strided;
         std::size_t stride;

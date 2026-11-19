@@ -6,18 +6,21 @@
 /*
  * openpqc/fips.h -- FIPS 140-3 mode: the state of the module and the approved-service indicator
  *
- *   openpqc_fips_status()             0 when the module is operational, OPENPQC_ERR_ERROR_STATE (-12) in its error
- *                                     state; OPENPQC_ERR_NOT_APPROVED (-13) from a library that is not built as a
- *                                     FIPS 140-3 module
- *   openpqc_fips_service_approved()   1 if the last service that the calling thread called was an approved service
- *                                     that succeeded, 0 otherwise (FIPS 140-3 IG 2.4.C)
- *
  * Declared and defined in every build of the library openpqc. A build with the CMake option OPENPQC_FIPS140_3 is
  * built as a FIPS 140-3 module (docs/FIPS-140-3.md): the shared library libopenpqc, which runs its self-tests when it
  * is loaded and enters an error state after any failure. OpenPQC is not a validated module: no CMVP certificate
- * covers it. In every other build, openpqc_fips_status() returns OPENPQC_ERR_NOT_APPROVED and
- * openpqc_fips_service_approved() returns 0: none of its services is an approved service of a FIPS 140-3 module.
- *
+ * covers it. In every other build none of its services is an approved service of a FIPS 140-3 module, and the two
+ * functions below say so.
+ * Guide: Core/README.md, "FIPS 140-3 mode".
+ */
+
+/*
+ * Functions.
+ *   openpqc_fips_status()             the state of the module
+ *   openpqc_fips_service_approved()   the calling thread's approved-service indicator
+ */
+
+/*
  * The state (FIPS 140-3 mode). The module tests itself when it is loaded (a known-answer test of each approved
  * algorithm and a software integrity test), before any of its services can run. A thread that calls a service meanwhile
  * waits for the tests. On the thread that runs them, and on every thread that waits for them, every signal that the
@@ -38,9 +41,10 @@
  * whose computation the module entered its error state (through another thread, or through the call's own draw from the
  * DRBG) returns OPENPQC_ERR_ERROR_STATE with its outputs set to zero; a key generation whose own pair-wise consistency
  * test fails returns OPENPQC_ERR_PCT with its keys set to zero. A result returned with OPENPQC_OK was complete while
- * the module was operational. openpqc_fips_status() reports the state (running the self-tests first if they have not
- * run yet, as a service does) and does not change the indicator.
- *
+ * the module was operational. (The functions of the schemes' C APIs in detail: openpqc/common.h, FIPS 140-3 mode.)
+ */
+
+/*
  * The indicator (FIPS 140-3 mode). Each thread has its own: every service of the module sets the calling thread's
  * indicator when it returns, to 1 for an approved service (an approved algorithm, used in an approved way) that
  * succeeded and to 0 for anything else: a service that is not approved, a refused call, an error. Read it right after
@@ -50,13 +54,16 @@
  * Each scheme's header says which of its functions are approved services (ML/KEM/openpqc_mlkem.h,
  * ML/DSA/openpqc_mldsa.h, SLH/DSA/openpqc_slhdsa.h); opqc_randombytes (Core/opqc_platform.h) is one, and
  * opqc_set_randombytes is refused. The services of the GPU library (openpqc/sycl.h) are not approved.
- *
- * In FIPS 140-3 mode, key generation runs its pair-wise consistency test in every scheme, on the CPU and on the GPU,
- * and the GPU library runs a known-answer self-test of every context it creates. An ordinary build does neither, so
- * an ordinary GPU library has no known-answer check of the device. Outside the mode, only the developer definitions
- * OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST, OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST and OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST
- * compile the GPU self-tests in: compile definitions for OpenPQC's tests, not CMake options, which no target of the
- * libraries gives (openpqc/sycl.h, Self-test).
+ */
+
+/*
+ * Pair-wise consistency tests and GPU self-tests. In FIPS 140-3 mode, key generation runs its pair-wise consistency
+ * test in every scheme, on the CPU and on the GPU, and the GPU library runs a known-answer self-test of every context
+ * it creates. An ordinary build does neither, so an ordinary GPU library has no known-answer check of the device.
+ * Outside the mode, only the developer definitions OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST,
+ * OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST and OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST compile the GPU self-tests in: compile
+ * definitions for OpenPQC's tests, not CMake options, which no target of the libraries gives (openpqc/sycl.h,
+ * Self-test).
  */
 
 #ifndef OPENPQC_FIPS_H
@@ -69,11 +76,12 @@ extern "C" {
 #endif
 
 /* 0: operational; OPENPQC_ERR_ERROR_STATE (-12): the module is in its error state; OPENPQC_ERR_NOT_APPROVED (-13):
- * this library is not built as a FIPS 140-3 module (above) */
+ * this library is not built as a FIPS 140-3 module (above). It runs the self-tests first if they have not run yet,
+ * as a service does, and does not change the indicator. */
 OPENPQC_MUST_CHECK OPENPQC_API int openpqc_fips_status(void);
 
-/* 1 if the calling thread's last service was an approved service that succeeded, 0 otherwise; always 0 outside
- * FIPS 140-3 mode */
+/* 1 if the calling thread's last service was an approved service that succeeded, 0 otherwise (FIPS 140-3
+ * IG 2.4.C); always 0 outside FIPS 140-3 mode */
 OPENPQC_API int openpqc_fips_service_approved(void);
 
 #ifdef __cplusplus

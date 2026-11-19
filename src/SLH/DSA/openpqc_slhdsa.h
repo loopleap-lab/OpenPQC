@@ -6,8 +6,16 @@
 /*
  * openpqc_slhdsa.h -- C API of OpenPQC SLH-DSA (FIPS 205)
  *
- * For each parameter set S of FIPS 205, Table 2 (infix: sha2_128s, shake_128s, sha2_128f, shake_128f, sha2_192s,
- * shake_192s, sha2_192f, shake_192f, sha2_256s, shake_256s, sha2_256f, shake_256f):
+ * slh_keygen, slh_sign and slh_verify (Section 10), HashSLH-DSA (Section 10.2) and two key checks (Section 3.1),
+ * for the twelve parameter sets of Table 2, as functions with fixed-size buffers in the library openpqc. The
+ * implementation is SLH/DSA/slhdsa.cpp, with the algorithms in SLH/DSA/scheme; openpqc/sig.h and the C++ API
+ * (SLH/DSA/slhdsa.hpp) call these functions.
+ * Guide: README.md, "C and C++ APIs"; the rules of all C APIs: openpqc/common.h.
+ */
+
+/*
+ * Functions. For each parameter set S of FIPS 205, Table 2 (infix: sha2_128s, shake_128s, sha2_128f, shake_128f,
+ * sha2_192s, shake_192s, sha2_192f, shake_192f, sha2_256s, shake_256s, sha2_256f, shake_256f):
  *
  *   SLH-DSA (FIPS 205, Section 10)
  *   openpqc_slhdsa_S_keygen(pk, sk)                                 slh_keygen (Alg. 21)
@@ -23,21 +31,17 @@
  *   openpqc_slhdsa_S_prehash_sign_deterministic(sig, m, mlen, ctx, ctxlen, ph, sk)
  *   openpqc_slhdsa_S_prehash_verify(sig, siglen, m, mlen, ctx, ctxlen, ph, pk)      (Alg. 25)
  *
- * Each returns an openpqc_status (openpqc/common.h). The same functions for a parameter set chosen at run time
- * are in openpqc/sig.h. Key generation from seeds that the caller gives, signing with an addrnd that the caller
- * gives and the internal functions (Algorithms 18-20) are for testing, in openpqc/testing.h (see Testing
- * interfaces).
- *
- * pk is the public key PK.seed || PK.root (2n bytes), sk the private key SK.seed || SK.prf || PK.seed || PK.root
- * (4n bytes), sig the signature SIG, m the message M and ctx the context string (at most 255 bytes; NULL is
- * allowed for an empty one, and for an empty message). A signature whose length is not that of the parameter set
- * is invalid (Algorithm 20, lines 1-3), and so is every signature checked with a context string longer than 255
- * bytes (Algorithms 24 and 25, lines 1-3).
- *
- * Results. Every function returns OPENPQC_OK (0) or one of the OPENPQC_ERR_* codes; the verification functions
- * return OPENPQC_OK for a valid signature and nothing else. Every function is declared OPENPQC_MUST_CHECK: the
- * compiler warns about a call whose result is not used, which for a verification would accept every signature. A
- * call that fails produces no output (FIPS 205's "bottom"), and its output buffers then hold:
+ * The same functions for a parameter set chosen at run time are in openpqc/sig.h. Key generation from seeds that
+ * the caller gives, signing with an addrnd that the caller gives and the internal functions (Algorithms 18-20) are
+ * for testing, in openpqc/testing.h (see Testing interfaces). pk is the public key PK.seed || PK.root (2n bytes), sk
+ * the private key SK.seed || SK.prf || PK.seed || PK.root (4n bytes), sig the signature SIG, m the message M and ctx
+ * the context string (at most 255 bytes; NULL is allowed for an empty one, and for an empty message).
+ */
+
+/*
+ * Results. The common rule (openpqc/common.h, Results) applies. The verification functions return OPENPQC_OK for a
+ * valid signature and nothing else, so that a verification whose result is not used, which OPENPQC_MUST_CHECK makes
+ * the compiler warn about, would accept every signature. A call that fails leaves in its outputs:
  *
  *   keygen                  pk and sk unchanged: no randomness for the seeds (OPENPQC_ERR_RNG); pk and sk zero:
  *                           the key pair was generated and failed its pair-wise consistency test (OPENPQC_ERR_PCT;
@@ -46,29 +50,19 @@
  *   every signing function  sig unchanged: ctx longer than 255 bytes or an unknown ph
  *                           (OPENPQC_ERR_INVALID_ARGUMENT), or no randomness for addrnd (sign and prehash_sign,
  *                           OPENPQC_ERR_RNG)
- *
- * The same rule holds in all of OpenPQC's C APIs: a failure found before the internal algorithm runs (a check of
- * an argument or a key, a missing random value) writes nothing, and a failure inside it or in the pair-wise
- * consistency test that follows KeyGen sets the outputs to zero, so that they never hold a key that failed its
- * test or part of a result. Never use an output of a call that did not return OPENPQC_OK.
- *
- * Buffers. The signing functions read m and ctx before they write sig, so sig may overlap them, e.g. sign in
- * place over the message; sig must not overlap sk, which is read until the signature is complete. The outputs pk
- * and sk of keygen must not overlap each other.
- *
- * Private keys. sk must come from keygen, or from storage or a party that is trusted. check_sk is the assurance of
- * private-key possession via regeneration of FIPS 205, Section 3.1: it recomputes PK.root from SK.seed and PK.seed,
- * at about the cost of keygen and in constant time, and returns OPENPQC_OK if it equals the PK.root that sk holds,
- * and OPENPQC_ERR_INVALID_SECRET_KEY otherwise. check_keypair also checks a pk stored or received apart from sk:
- * OPENPQC_OK if, besides, pk is the PK.seed || PK.root that sk holds. Neither can check SK.prf, which takes no part
- * in PK: a changed SK.prf goes unnoticed, and the signatures made with it, which use a different randomizer R
- * (Algorithm 19, line 3), still verify.
- *
- * Deterministic variant. The *_deterministic functions leave out lines 4-7 of Algorithms 22 and 23, so that
- * opt_rand = PK.seed (Algorithm 19, line 2): FIPS 205 offers this variant "for platforms where a random bit
- * generator is not available" (Section 9.2), while the hedged variant "should be used on platforms where
- * side-channel attacks are a concern".
- *
+ */
+
+/*
+ * Sizes. A signature whose length is not that of the parameter set is invalid (Algorithm 20, lines 1-3), and so is
+ * every signature checked with a context string longer than 255 bytes (Algorithms 24 and 25, lines 1-3).
+ */
+
+/*
+ * Randomness. keygen draws the three seeds with one call of 3n bytes, in the order SK.seed, SK.prf, PK.seed, and sign
+ * and prehash_sign draw addrnd, from opqc_randombytes, by the common rule (openpqc/common.h, Randomness).
+ */
+
+/*
  * Stack. Every function, verification included, overwrites 32 KiB of the stack below its own frame when it
  * returns (the destruction of intermediate values of FIPS 205, Section 3.1; SLH/DSA/scheme/slhdsa_internal.hpp),
  * and so needs about 35 KiB of stack below the call (measured on x86-64: 34.3-34.9 KiB for every set and
@@ -85,7 +79,32 @@
  * -fstack-clash-protection. Without optimization the frames are larger, and other architectures were not
  * measured: build with -fstack-clash-protection there. The overwriting assumes one contiguous native stack (not
  * SafeStack, split stacks or the fake stacks of AddressSanitizer's use-after-return detection).
- *
+ */
+
+/*
+ * Buffers. The signing functions read m and ctx before they write sig, so sig may overlap them, e.g. sign in
+ * place over the message; sig must not overlap sk, which is read until the signature is complete. The outputs pk
+ * and sk of keygen must not overlap each other.
+ */
+
+/*
+ * Private keys. sk must come from keygen, or from storage or a party that is trusted. check_sk is the assurance of
+ * private-key possession via regeneration of FIPS 205, Section 3.1: it recomputes PK.root from SK.seed and PK.seed,
+ * at about the cost of keygen and in constant time, and returns OPENPQC_OK if it equals the PK.root that sk holds,
+ * and OPENPQC_ERR_INVALID_SECRET_KEY otherwise. check_keypair also checks a pk stored or received apart from sk:
+ * OPENPQC_OK if, besides, pk is the PK.seed || PK.root that sk holds. Neither can check SK.prf, which takes no part
+ * in PK: a changed SK.prf goes unnoticed, and the signatures made with it, which use a different randomizer R
+ * (Algorithm 19, line 3), still verify.
+ */
+
+/*
+ * Deterministic variant. The *_deterministic functions leave out lines 4-7 of Algorithms 22 and 23, so that
+ * opt_rand = PK.seed (Algorithm 19, line 2): FIPS 205 offers this variant "for platforms where a random bit
+ * generator is not available" (Section 9.2), while the hedged variant "should be used on platforms where
+ * side-channel attacks are a concern".
+ */
+
+/*
  * Testing interfaces (FIPS 205, Section 9). slh_keygen_internal of seeds that the caller gives (Algorithm 18),
  * signing with an addrnd that the caller gives, and sign_internal and verify_internal, Algorithms 19 and 20 on a
  * formatted message M' that the caller builds (they sign and accept any M', without the prefix that separates
@@ -97,37 +116,17 @@
  * place of the private key, so this library has no keygen_from_seed for SLH-DSA: store sk, whose PK.root also saves
  * the computation of the top XMSS tree. A program for production use calls keygen, sign or prehash_sign (or, without
  * a random bit generator, their deterministic variants), and verify or prehash_verify.
- *
- * Randomness. keygen draws the three seeds with one call of 3n bytes, in the order SK.seed, SK.prf, PK.seed, and sign
- * and prehash_sign draw addrnd, from opqc_randombytes (Core/opqc_platform.h): from the source that the application
- * registered with opqc_set_randombytes, or else from the operating system, or, in a library built with the CMake option
- * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes. In FIPS 140-3 mode (below) the source
- * is the module's own HMAC_DRBG, and registering another one is refused. The set ids OPENPQC_SLHDSA_<SET>
- * number the parameter sets in the order of Table 2; they are the low byte of the sets' openpqc_alg values
- * (openpqc/common.h). The implementation is SLH/DSA/slhdsa.cpp, with the algorithms in SLH/DSA/scheme.
- *
- * FIPS 140-3 mode. A library built with the CMake option OPENPQC_FIPS140_3 is a FIPS 140-3 module, the shared
- * library openpqc (docs/FIPS-140-3.md; not a validated module), and each function above is one of its services. They
+ */
+
+/*
+ * FIPS 140-3 mode. The common rule (openpqc/common.h, FIPS 140-3 mode) applies to each function of this header. They
  * are approved services (FIPS 205: slh_keygen, slh_sign and its deterministic variant, slh_verify, HashSLH-DSA, and
  * the assurance of private-key possession via regeneration of Section 3.1), except HashSLH-DSA with a pre-hash weaker
  * than the parameter set (below). The module has no seed import for SLH-DSA: key generation from seeds that the
  * caller gives (openpqc_testing_slhdsa_S_keygen_derand) is a testing interface (Testing interfaces, above). keygen
  * always runs its pair-wise consistency test (OPENPQC_SLHDSA_KEYGEN_PCT is given to the library's objects in this
- * mode, and in no other build), with the stack it needs (Stack, above). Each function:
- *   - first checks the module's state: in the error state, which a failed self-test, pair-wise consistency test or
- *     random bit generator puts the module in, it returns OPENPQC_ERR_ERROR_STATE and writes nothing;
- *   - checks the state again when its computation ends: if the module entered its error state meanwhile (another
- *     thread's failed pair-wise consistency test, or a failure of the entropy source or of the DRBG on any thread,
- *     this call's own draw included), it zeroizes its outputs and returns OPENPQC_ERR_ERROR_STATE, so that a call
- *     whose own draw fails returns OPENPQC_ERR_ERROR_STATE, not OPENPQC_ERR_RNG. A result returned with OPENPQC_OK
- *     was complete while the module was operational; an error state that begins after this second check does not
- *     reach it;
- *   - sets the calling thread's approved-service indicator last (openpqc_fips_service_approved, openpqc/fips.h): 1
- *     if the service is approved and returned OPENPQC_OK, 0 otherwise; a call that fails, a signature it rejects
- *     included, gives no output of the approved service and reports 0;
- *   - keygen: when the key pair fails its own pair-wise consistency test, the call returns OPENPQC_ERR_PCT with pk
- *     and sk zeroized, and the module enters its error state, so that every service returns OPENPQC_ERR_ERROR_STATE
- *     until the module is loaded again (openpqc/fips.h).
+ * mode, and in no other build), with the stack it needs (Stack, above).
+ *
  * HashSLH-DSA keeps the strength of the parameter set only with a pre-hash of at least 8n bits of classical security
  * strength against collision and second-preimage attacks (FIPS 205, Section 10.2; 8n is 128, 192 and 256 for the
  * sets of security category 1, 3 and 5), and Section 10.2.2 adds that SHA-256 and SHAKE128 are appropriate only for
@@ -140,17 +139,10 @@
  *   SHA2_256, SHA2_512_256, SHA3_256, SHAKE128          128   approved         no               no
  *   SHA2_384, SHA3_384                                  192   approved         approved         no
  *   SHA2_512, SHA3_512, SHAKE256                        256   approved         approved         approved
- *
- * The testing interfaces (openpqc/testing.h, OpenPQC::testing) are not part of the module and are not approved
- * services; in the module's error state they return OPENPQC_ERR_ERROR_STATE and compute nothing. The C++ API
- * (SLH/DSA/slhdsa.hpp) is compiled into the application: its calls are calls of the functions above, and the
- * indicator then reports theirs. The scheme templates (SLH/DSA/scheme, in the source tree) compiled into an
- * application are the application's own code, outside the module: no self-test, state or indicator of the module
- * applies to them, and they are not approved services.
- *
- * Linking. The functions are in the library openpqc: OpenPQC::openpqc in CMake (find_package(OpenPQC), or
- * add_subdirectory), openpqc for pkg-config. Its C++ code is compiled without exceptions and RTTI and needs nothing
- * of the C++ runtime: a C program links it with the C compiler alone (test c_link).
+ */
+
+/*
+ * Linking. The common rule (openpqc/common.h, Linking) applies: the library openpqc, which a C program links alone.
  */
 
 #ifndef OPENPQC_SLHDSA_H
@@ -161,7 +153,8 @@
 
 #include "openpqc/common.h" /* openpqc_status, OPENPQC_PREHASH_*, OPENPQC_MUST_CHECK, OPENPQC_API */
 
-/* The parameter sets, numbered in the order of FIPS 205, Table 2 */
+/* The set ids OPENPQC_SLHDSA_<SET>: the parameter sets, numbered in the order of FIPS 205, Table 2; they are the
+ * low byte of the sets' openpqc_alg values (openpqc/common.h) */
 #define OPENPQC_SLHDSA_SHA2_128S 1
 #define OPENPQC_SLHDSA_SHAKE_128S 2
 #define OPENPQC_SLHDSA_SHA2_128F 3

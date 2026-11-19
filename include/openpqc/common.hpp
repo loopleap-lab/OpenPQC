@@ -5,15 +5,13 @@
 //
 //   openpqc::status        the results of openpqc/common.h (openpqc_status) as an enum class, [[nodiscard]] in
 //                          every C++ function that returns one
-//   openpqc::check(s)      throws openpqc::error unless s is status::ok (only where exceptions are enabled:
-//                          the library itself is compiled without them, the check is inline code of the program)
+//   openpqc::check(s)      throws openpqc::error unless s is status::ok (only where exceptions are enabled)
 //   openpqc::secret<N>     N bytes of secret material (a private key, a shared secret, a seed): move-only, zeroized
 //                          when destroyed or moved from (FIPS 203, Section 3.3; FIPS 204, Section 3.6.3; FIPS 205,
-//                          Section 3.1), compared in constant time; it converts to std::span<std::uint8_t, N> and
-//                          std::span<const std::uint8_t, N>, so it goes wherever the C++ APIs take a span
+//                          Section 3.1), compared in constant time
 //
 // Header-only, over the C API (openpqc/common.h) and Core's opqc_zeroize (Core/opqc_platform.h), both in the library
-// openpqc.
+// openpqc. Guide: README.md, "C and C++ APIs".
 #pragma once
 
 #include <array>
@@ -68,7 +66,8 @@ private:
     status status_;
 };
 
-// Throws openpqc::error unless s is status::ok
+// Throws openpqc::error unless s is status::ok. Only where exceptions are enabled: the library itself is compiled
+// without them, the check is inline code of the program.
 inline void check(status s) {
     if (s != status::ok) throw error(s);
 }
@@ -112,6 +111,8 @@ public:
     [[nodiscard]] std::span<const std::uint8_t, N> span() const noexcept {
         return std::span<const std::uint8_t, N>(bytes_);
     }
+    // The conversions to std::span<std::uint8_t, N> and std::span<const std::uint8_t, N>: a secret goes wherever the
+    // C++ APIs take a span
     operator std::span<std::uint8_t, N>() noexcept { return span(); }
     operator std::span<const std::uint8_t, N>() const noexcept { return span(); }
 

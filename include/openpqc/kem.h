@@ -6,6 +6,13 @@
 /*
  * openpqc/kem.h -- key-encapsulation mechanisms, the parameter set chosen at run time
  *
+ * The functions of ML/KEM/openpqc_mlkem.h (FIPS 203) with an openpqc_alg in place of the parameter set in their
+ * name, for applications that choose the set at run time; dispatch.c implements them in the library openpqc.
+ * Guide: README.md, "C and C++ APIs"; the rules of all C APIs: openpqc/common.h.
+ */
+
+/*
+ * Functions.
  *   openpqc_kem_keygen(alg, pk, sk)                       ML-KEM.KeyGen (FIPS 203, Alg. 19)
  *   openpqc_kem_keygen_from_seed(alg, pk, sk, seed)       ML-KEM.KeyGen_internal of a stored seed d || z (Alg. 16)
  *   openpqc_kem_encaps(alg, ct, ss, pk)                   ML-KEM.Encaps with the check of ek (Alg. 20, Sec. 7.2)
@@ -14,14 +21,21 @@
  *   openpqc_kem_check_secret_key(alg, sk)                 the check of dk (Section 7.3)
  *   openpqc_kem_check_keypair(alg, pk, sk, seed_or_NULL)  the checks of a key pair (Section 7.1)
  *
- * alg is an openpqc_alg of kind OPENPQC_KIND_KEM (openpqc/common.h): OPENPQC_ML_KEM_512, _768 or _1024. The
- * buffers have the sizes that openpqc_alg_info_get(alg) gives (public_key_bytes, secret_key_bytes,
+ * alg is an openpqc_alg of kind OPENPQC_KIND_KEM (openpqc/common.h): OPENPQC_ML_KEM_512, _768 or _1024. These
+ * functions call those of ML/KEM/openpqc_mlkem.h: everything that header says of them (results, outputs on failure,
+ * stored seeds, the key checks) holds here. Encapsulation with an m that the caller chooses is for testing (FIPS
+ * 203, Section 3.3), in openpqc/testing.h.
+ */
+
+/*
+ * Results. The common rule (openpqc/common.h, Results) applies, also to an alg that is not a KEM or that this build
+ * of the library does not contain (OPENPQC_ERR_UNSUPPORTED).
+ */
+
+/*
+ * Sizes. The buffers have the sizes that openpqc_alg_info_get(alg) gives (public_key_bytes, secret_key_bytes,
  * ciphertext_bytes, shared_secret_bytes, seed_bytes), the same as the OPENPQC_MLKEM<N>_* sizes of
- * ML/KEM/openpqc_mlkem.h, whose functions these call: everything that header says of them (results, outputs on
- * failure, stored seeds, the key checks) holds here. An alg that is not a KEM, or that this build of the library
- * does not contain, gives OPENPQC_ERR_UNSUPPORTED and writes nothing.
- *
- * Encapsulation with an m that the caller chooses is for testing (FIPS 203, Section 3.3), in openpqc/testing.h.
+ * ML/KEM/openpqc_mlkem.h.
  */
 
 #ifndef OPENPQC_KEM_H

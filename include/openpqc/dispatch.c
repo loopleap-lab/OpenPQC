@@ -11,12 +11,7 @@
  * built from the schemes this build contains (OPENPQC_HAVE_MLKEM, _MLDSA, _SLHDSA: Core/openpqc_version.h,
  * from OPENPQC_WITH_*). Every check here (the kind of alg, the flags) runs before a per-set function is called, so
  * a refusal writes nothing, as the per-set functions' own checks do.
- *
- * FIPS 140-3 mode (OPENPQC_FIPS140_3; Core/opqc_fips.h): each function of openpqc/kem.h and openpqc/sig.h first
- * sets the calling thread's indicator to 0 and, in the error state, returns OPENPQC_ERR_ERROR_STATE before any other
- * check, writing nothing; otherwise the per-set function it calls sets the indicator for the service it performs.
- * The functions of the algorithm table use no cryptographic algorithm: they work in the error state too and leave
- * the indicator alone.
+ * Guide: README.md, "C and C++ APIs".
  */
 
 #include <stddef.h>
@@ -32,6 +27,9 @@
 
 #if defined(OPENPQC_FIPS140_3)
 #include "Core/opqc_fips.h"
+/* FIPS 140-3 mode: each function of openpqc/kem.h and openpqc/sig.h first sets the calling thread's indicator to 0
+ * and, in the error state, returns OPENPQC_ERR_ERROR_STATE before any other check, writing nothing; otherwise the
+ * per-set function it calls sets the indicator for the service it performs. */
 #define FIPS_SERVICE()                                                                                         \
     do {                                                                                                       \
         opqc_fips_set_approved(0);                                                                             \
@@ -42,6 +40,9 @@
 #endif
 
 /* --- the algorithms ------------------------------------------------------------------------------------------- */
+
+/* The functions of the algorithm table use no cryptographic algorithm: in FIPS 140-3 mode they work in the error
+ * state too and leave the indicator alone. */
 
 #define KEM_INFO(N, cat)                                                                                         \
     {OPENPQC_ML_KEM_##N, "ML-KEM-" #N, OPENPQC_KIND_KEM, cat, OPENPQC_MLKEM##N##_PUBLICKEYBYTES,                 \

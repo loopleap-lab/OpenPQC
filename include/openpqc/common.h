@@ -5,8 +5,17 @@
 
 /*
  * openpqc/common.h -- what all of OpenPQC's C APIs share: the result codes, the algorithm ids and what they
- * describe
+ * describe, and the rules that hold in every one of them
  *
+ * The scheme headers (ML/KEM/openpqc_mlkem.h, ML/DSA/openpqc_mldsa.h, SLH/DSA/openpqc_slhdsa.h), the functions
+ * that take an openpqc_alg (openpqc/kem.h, openpqc/sig.h) and the testing interfaces (openpqc/testing.h) include
+ * it. A rule that holds for all of them is stated once, in the block of its name below; their blocks of the same
+ * name add only what is their own.
+ * Guide: README.md, "C and C++ APIs".
+ */
+
+/*
+ * Functions.
  *   openpqc_status                  the result of every function: OPENPQC_OK (0) or a negative OPENPQC_ERR_*
  *                                   (OPENPQC_ERR_ERROR_STATE and OPENPQC_ERR_NOT_APPROVED: FIPS 140-3 mode,
  *                                   openpqc/fips.h)
@@ -15,15 +24,66 @@
  *   openpqc_alg_info_get(alg)       its name (as FIPS 203, 204 and 205 and NIST's ACVP write it) and sizes
  *   openpqc_alg_from_name(name, &alg)
  *   OPENPQC_PREHASH_*               the pre-hash functions of HashML-DSA and HashSLH-DSA (Core/openpqc_prehash.h)
+ */
+
+/*
+ * Results. The functions of each parameter set (ML/KEM/openpqc_mlkem.h, ML/DSA/openpqc_mldsa.h,
+ * SLH/DSA/openpqc_slhdsa.h), the ones that take an openpqc_alg (openpqc/kem.h, openpqc/sig.h) and the testing
+ * interfaces (openpqc/testing.h) all return openpqc_status, OPENPQC_OK (0) or one of the OPENPQC_ERR_* codes, and
+ * are declared OPENPQC_MUST_CHECK (below). A call that fails produces no output (the "bottom" of FIPS 203, 204
+ * and 205): a failure found before the internal algorithm runs (a check of an argument or a key, a missing
+ * random value) writes nothing, and a failure inside it or in the pair-wise consistency test that follows KeyGen
+ * sets the outputs to zero, so that they never hold a key that failed its test or part of a result. The block
+ * "Results" of each header says which outputs of which function a failure leaves unchanged and which it sets to
+ * zero; they are never a key, shared secret or signature to use. Never use an output of a call that did not
+ * return OPENPQC_OK.
  *
- * The functions of each parameter set (ML/KEM/openpqc_mlkem.h, ML/DSA/openpqc_mldsa.h, SLH/DSA/openpqc_slhdsa.h),
- * the ones that take an openpqc_alg (openpqc/kem.h, openpqc/sig.h) and the testing interfaces (openpqc/testing.h)
- * all return openpqc_status. A call that fails produces no output: its output buffers then hold what the
- * function's header says ("Results"), never a key, shared secret or signature to use.
- *
- * openpqc_alg_info_get answers for the parameter sets of this build of the library (the CMake options
- * OPENPQC_WITH_MLKEM, _MLDSA, _SLHDSA) and gives NULL for the others; the functions that take an openpqc_alg
- * return OPENPQC_ERR_UNSUPPORTED for those.
+ * A function that takes an openpqc_alg returns OPENPQC_ERR_UNSUPPORTED, and writes nothing, for an alg that this
+ * build of the library does not contain (openpqc_alg_info_get gives NULL for it) and for an alg of another kind
+ * (a signature scheme given to openpqc/kem.h, a KEM to openpqc/sig.h).
+ */
+
+/*
+ * Randomness. The functions of the scheme headers that need random values (each says which) take them from
+ * opqc_randombytes (Core/opqc_platform.h): from the source that the application registered with
+ * opqc_set_randombytes, or else from the operating system, or, in a library built with the CMake option
+ * OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes. In FIPS 140-3 mode (below) the
+ * source is the module's own HMAC_DRBG, and registering another one is refused. What a source must do:
+ * Core/openpqc_core.h, "Randomness".
+ */
+
+/*
+ * FIPS 140-3 mode. A library built with the CMake option OPENPQC_FIPS140_3 is a FIPS 140-3 module, the shared
+ * library openpqc (docs/FIPS-140-3.md; not a validated module), and each function of the scheme headers is one of
+ * its services; each scheme header says which of them are approved services. Each function:
+ *   - first checks the module's state: in the error state, which a failed self-test, pair-wise consistency test
+ *     or random bit generator puts the module in, it returns OPENPQC_ERR_ERROR_STATE and writes nothing;
+ *   - checks the state again when its computation ends: if the module entered its error state meanwhile (another
+ *     thread's failed pair-wise consistency test, or a failure of the entropy source or of the DRBG on any
+ *     thread, this call's own draw included), it zeroizes its outputs and returns OPENPQC_ERR_ERROR_STATE, so
+ *     that a call whose own draw fails returns OPENPQC_ERR_ERROR_STATE, not OPENPQC_ERR_RNG. A result returned
+ *     with OPENPQC_OK was complete while the module was operational; an error state that begins after this
+ *     second check does not reach it;
+ *   - sets the calling thread's approved-service indicator last (openpqc_fips_service_approved, openpqc/fips.h):
+ *     1 if the service is approved and returned OPENPQC_OK, 0 otherwise; a call that fails, a key, ciphertext or
+ *     argument refused or a signature rejected included, gives no output of the approved service and reports 0;
+ *   - keygen, and keygen_from_seed of ML-KEM and ML-DSA: when the key pair fails its own pair-wise consistency
+ *     test, the call returns OPENPQC_ERR_PCT with pk and sk zeroized, and the module enters its error state, so
+ *     that every service returns OPENPQC_ERR_ERROR_STATE until the module is loaded again (openpqc/fips.h).
+ * The testing interfaces (openpqc/testing.h, OpenPQC::testing) are not part of the module and are not approved
+ * services; in the module's error state they return OPENPQC_ERR_ERROR_STATE and compute nothing
+ * (openpqc/testing.h, FIPS 140-3 mode, says more). The C++ APIs (ML/KEM/mlkem.hpp, ML/DSA/mldsa.hpp,
+ * SLH/DSA/slhdsa.hpp) are compiled into the application: their calls are calls of the functions of the scheme
+ * headers, and the indicator then reports theirs. The scheme templates (ML/KEM/scheme, ML/DSA/scheme,
+ * SLH/DSA/scheme, in the source tree) compiled into an application are the application's own code, outside the
+ * module: no self-test, state or indicator of the module applies to them, and they are not approved services.
+ */
+
+/*
+ * Linking. The functions of the scheme headers, of openpqc/kem.h, openpqc/sig.h and openpqc/fips.h, and of this
+ * header are in the library openpqc: OpenPQC::openpqc in CMake (find_package(OpenPQC), or add_subdirectory),
+ * openpqc for pkg-config. Its C++ code is compiled without exceptions and RTTI and needs nothing of the C++
+ * runtime: a C program links it with the C compiler alone (test c_link).
  */
 
 #ifndef OPENPQC_COMMON_H
@@ -45,7 +105,7 @@ typedef enum openpqc_status {
                                             context string longer than 255 bytes, an unknown pre-hash function */
     OPENPQC_ERR_INVALID_ARGUMENT = -2,   /* refused before any work: a context string longer than 255 bytes, an
                                             unknown pre-hash function or flag, a NULL where randomness is
-                                            required, an algorithm of the wrong kind */
+                                            required */
     OPENPQC_ERR_RNG = -3,                /* no randomness available */
     OPENPQC_ERR_INVALID_PUBLIC_KEY = -4, /* a public key failed its check (ML-KEM: FIPS 203, Section 7.2) */
     OPENPQC_ERR_INVALID_SECRET_KEY = -5, /* a secret key failed its check (ML-KEM: FIPS 203, Section 7.3; ML-DSA:
@@ -118,7 +178,8 @@ typedef struct openpqc_alg_info {
 extern "C" {
 #endif
 
-/* The description of alg, or NULL if alg is unknown or not in this build */
+/* The description of alg, or NULL if alg is unknown or not in this build of the library (the CMake options
+ * OPENPQC_WITH_MLKEM, _MLDSA and _SLHDSA leave schemes out) */
 OPENPQC_API const openpqc_alg_info *openpqc_alg_info_get(openpqc_alg alg);
 
 /* The parameter sets that this build of the library contains (the CMake options OPENPQC_WITH_MLKEM, _MLDSA and

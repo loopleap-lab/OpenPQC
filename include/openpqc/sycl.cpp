@@ -5,26 +5,14 @@
 // OPENPQC_GPU_TESTING_INTERFACES, also sycl_testing.h) over the backends of the three schemes
 //
 // An openpqc_gpu holds one backend context (ML/KEM/sycl, ML/DSA/sycl, SLH/DSA/sycl) and calls it through its C
-// functions or the C++ ones of Core/sycl/opqc_sycl_backends.hpp. What this layer adds to every call is what the
-// backends do not share:
-//   - one order of checks (openpqc/sycl.h, Results of calls), made here before the backend makes its own, with
-//     the context's lock held for the whole call, so that this layer's fills cannot land between the kernels of
-//     another thread's call;
-//   - a status buffer for every call, set to OPENPQC_ERR_NOT_COMPUTED before the first kernel; OPENPQC_OK filled
-//     in where the backend has no status (KeyGen, SLH-DSA signing), and the pair-wise consistency test's verdict
-//     read from the zeros it leaves (ML-DSA KeyGen);
-//   - the bounds of messages with offsets: the backends read an operation whose message lies outside the buffer
-//     as the empty message (Core/sycl/opqc_sycl_messages.hpp), and a kernel queued behind them here gives it
-//     OPENPQC_ERR_INVALID_ARGUMENT and zeroes its signature (review finding F073);
-//   - after a failure, the zeroing of all outputs and the fill of status, waited for;
-//   - openpqc_status codes for the backends' -1 and -2;
-//   - buffers that are wiped when they are freed, for every scheme;
-//   - in FIPS 140-3 mode (OPENPQC_FIPS140_3), the module's error state, checked when a call begins and again once
-//     its work is done, and the approved-service indicator (service and settle, below).
-//
+// functions or the C++ ones of Core/sycl/opqc_sycl_backends.hpp. This layer adds what the backends do not share:
+// one order of checks, a status buffer for every call, the bounds of messages with offsets, the zeroing of all
+// outputs after a failure, openpqc_status codes, buffers wiped when they are freed and, in FIPS 140-3 mode, the
+// module's error state and the approved-service indicator; each is described where it is done, below.
 // The library openpqc_sycl exports openpqc_gpu_* only (cmake/openpqc_sycl.map); the library openpqc_sycl_testing
 // compiles this file again with the testing interfaces and exports everything of the C APIs (the backends'
 // functions included, for the white-box tests and benchmarks).
+// Guide: README.md, "GPU API".
 
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
@@ -192,7 +180,7 @@ int fill(openpqc_gpu* g, std::int32_t* status, openpqc_status value, std::size_t
     });
 }
 
-// Steps 4 and 5 of the order of checks (openpqc/sycl.h, Results of calls), for a call with n > 0 and the lock
+// Steps 4 and 5 of the order of checks (openpqc/sycl.h, Results), for a call with n > 0 and the lock
 // held: a context that has failed (OPENPQC_ERR_DEVICE; the backend's sync zeroizes its workspace the first
 // time), then the arguments (OPENPQC_ERR_INVALID_ARGUMENT): arguments_ok, a usable status buffer, buffers of n
 // operations that fit in size_t, and usable buffers. False: the call ends with *result, and its status entries,
@@ -248,8 +236,9 @@ int for_each_operation(openpqc_gpu* g, std::size_t n, F f) {
     });
 }
 
-// Behind the backend's kernels: an operation whose message lies outside the caller's buffer (in_range) gets
-// OPENPQC_ERR_INVALID_ARGUMENT and, when signing, a zero signature (openpqc/sycl.h, Messages)
+// The bounds of messages with offsets, behind the backend's kernels: the backends read an operation whose message
+// lies outside the caller's buffer (in_range) as the empty message (Core/sycl/opqc_sycl_messages.hpp), and this
+// kernel gives it OPENPQC_ERR_INVALID_ARGUMENT and, when signing, a zero signature (openpqc/sycl.h, Messages)
 int mark_out_of_range(openpqc_gpu* g, const openpqc::gpu::Messages& msgs, std::uint8_t* sig, std::size_t siglen,
                       std::int32_t* status, std::size_t n) {
     return for_each_operation(g, n, [&](sycl::queue& q, std::size_t first, std::size_t count) {
@@ -424,6 +413,11 @@ openpqc_status create(openpqc_gpu** out, openpqc_alg alg, std::size_t max_batch,
 
 // ------------------------------------------------------------------ the calls
 
+// Each call makes the checks of the order of openpqc/sycl.h (Results) here, before the backend makes its own, with
+// the context's lock held for the whole call, so that this layer's fills cannot land between the kernels of another
+// thread's call. Every call has a status buffer, set to OPENPQC_ERR_NOT_COMPUTED before the first kernel; OPENPQC_OK
+// is filled in where the backend has no status (KeyGen, SLH-DSA signing), and the pair-wise consistency test's
+// verdict is read from the zeros it leaves (ML-DSA KeyGen: mark_failed_pairs).
 openpqc_status kem_keygen(openpqc_gpu* g, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* seeds,
                           std::int32_t* status, std::size_t n) {
     if (!g) return OPENPQC_ERR_INVALID_ARGUMENT;
@@ -578,9 +572,10 @@ openpqc_status sig_verify(openpqc_gpu* g, const std::uint8_t* sig, const openpqc
     return finish(g, rc, {}, status, n);
 }
 
-// Overwrites a buffer of the context's with zeros and frees it, behind the context's work
-// Overwrites the allocation with zeros, waits, and frees it: 0, or -2 if the context has failed (before or during
-// the wipe, which then may not have happened); the memory is freed either way
+// Overwrites a buffer of the context's with zeros and frees it, behind the context's work: this layer wipes the
+// buffers of every scheme when they are freed. Overwrites the allocation with zeros, waits, and frees it: 0, or -2
+// if the context has failed (before or during the wipe, which then may not have happened); the memory is freed
+// either way
 int wipe_and_free(openpqc_gpu* g, void* p, std::size_t bytes) {
     ContextQueue& q = *g->h.queue;
     int rc = q.guard([&] {

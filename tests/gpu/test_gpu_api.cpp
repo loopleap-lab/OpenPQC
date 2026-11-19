@@ -129,7 +129,7 @@ struct Messages {
     }
 };
 
-// The common checks of every call (openpqc/sycl.h, Results of calls)
+// The common checks of every call (openpqc/sycl.h, Results)
 void check_refusals(openpqc_gpu* g, const openpqc_alg_info* info, bool host_memory_refused) {
     Dev status(g, N * 4), a(g, 1 << 16), b(g, 1 << 16), c(g, 1 << 16);
     Bytes host(1 << 16);

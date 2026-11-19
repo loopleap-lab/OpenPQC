@@ -3,29 +3,13 @@
 //
 // openpqc/sycl/device.hpp  --  hash functions to call inside an application's own SYCL kernels
 //
-//   openpqc::sycl::device::sha3_256(out[32], in, inlen)          SHA3-256 (FIPS 202, Section 6.1)
-//   openpqc::sycl::device::sha3_512(out[64], in, inlen)          SHA3-512
-//   openpqc::sycl::device::shake128(out, outlen, in, inlen)      SHAKE128 (FIPS 202, Section 6.2), outlen bytes
-//   openpqc::sycl::device::shake256(out, outlen, in, inlen)      SHAKE256
-//   openpqc::sycl::device::sha256(out[32], in, inlen)            SHA-256 (FIPS 180-4, Section 6.2)
-//   openpqc::sycl::device::sha512(out[64], in, inlen)            SHA-512 (FIPS 180-4, Section 6.4)
-//   openpqc::sycl::device::hmac_sha256(out[32], key, keylen, msg, msglen)   HMAC (FIPS 198-1) with SHA-256
-//   openpqc::sycl::device::hmac_sha512(out[64], key, keylen, msg, msglen)   HMAC with SHA-512
-//
-// Each call is one hash by one work-item, as the GPU backends compute theirs: a kernel that hashes n messages
-// runs n work-items (examples/device_hash.cpp). The functions are the code of the backends (Core/sycl: the
-// Keccak-f[1600] permutation and the SHA-2 compression functions that the CPU library runs too), with the
-// bookkeeping for byte strings of any length and alignment in global, local or private memory. They are
-// header-only and need no library: include this header in the SYCL source of the kernel. The results are those
-// of the CPU functions of Core (Core/opqc_sha3.h, Core/opqc_sha2.h), byte for byte (test device_hash).
-//
-// Speed: an input or output that is 8-byte aligned (4-byte for SHA-256) at an offset that is a multiple of 8 is
-// read and written a word at a time; otherwise a byte at a time. Every state stays in registers. Nothing here
-// zeroizes: a kernel that hashes secrets keeps the results in registers or destroys what it writes, as the
-// backends do with their workspaces.
-//
-// Stable API: these names and their results; how they are computed may change. They are the only device-callable
-// part of OpenPQC (the schemes are staged pipelines of kernels, not one device call each).
+// SHA3-256, SHA3-512, SHAKE128 and SHAKE256 (FIPS 202), SHA-256 and SHA-512 (FIPS 180-4) and HMAC with either
+// (FIPS 198-1), one hash by one work-item, as the GPU backends compute theirs: the code of the backends
+// (Core/sycl), header-only, with the results of Core's CPU functions. The functions an application calls are at
+// the end of the file, under openpqc::sycl::device.
+// Secrets: nothing here zeroizes: a kernel that hashes secrets keeps the results in registers or destroys what it
+//          writes, as the backends do with their workspaces.
+// Guide: ../README.md, "GPU API".
 #pragma once
 
 #include <cstddef>
@@ -152,30 +136,51 @@ OPQC_KERNEL_INLINE inline void hmac(std::uint8_t* out, const std::uint8_t* key, 
 
 } // namespace detail
 
+// The functions an application calls. Each call is one hash by one work-item: a kernel that hashes n messages
+// runs n work-items (examples/device_hash.cpp). They are the code of the backends (Core/sycl: the Keccak-f[1600]
+// permutation and the SHA-2 compression functions that the CPU library runs too), with the bookkeeping for byte
+// strings of any length and alignment in global, local or private memory. They are header-only and need no
+// library: include this header in the SYCL source of the kernel. The results are those of the CPU functions of
+// Core (Core/opqc_sha3.h, Core/opqc_sha2.h), byte for byte (test device_hash).
+//
+// Speed: an input or output that is 8-byte aligned (4-byte for SHA-256) at an offset that is a multiple of 8 is
+// read and written a word at a time; otherwise a byte at a time. Every state stays in registers.
+//
+// Stable API: these names and their results; how they are computed may change. They are the only device-callable
+// part of OpenPQC (the schemes are staged pipelines of kernels, not one device call each).
+
+// SHA3-256 (FIPS 202, Section 6.1)
 OPQC_KERNEL_INLINE inline void sha3_256(std::uint8_t out[32], const std::uint8_t* in, std::size_t inlen) {
     detail::sponge<openpqc::gpu::SHA3_256_RATE_WORDS>(out, 32, in, inlen, OPQC_SHA3_SUFFIX);
 }
+// SHA3-512 (FIPS 202, Section 6.1)
 OPQC_KERNEL_INLINE inline void sha3_512(std::uint8_t out[64], const std::uint8_t* in, std::size_t inlen) {
     detail::sponge<openpqc::gpu::SHA3_512_RATE_WORDS>(out, 64, in, inlen, OPQC_SHA3_SUFFIX);
 }
+// SHAKE128 (FIPS 202, Section 6.2): outlen bytes
 OPQC_KERNEL_INLINE inline void shake128(std::uint8_t* out, std::size_t outlen, const std::uint8_t* in,
                                         std::size_t inlen) {
     detail::sponge<openpqc::gpu::SHAKE128_RATE_WORDS>(out, outlen, in, inlen, OPQC_SHAKE_SUFFIX);
 }
+// SHAKE256 (FIPS 202, Section 6.2): outlen bytes
 OPQC_KERNEL_INLINE inline void shake256(std::uint8_t* out, std::size_t outlen, const std::uint8_t* in,
                                         std::size_t inlen) {
     detail::sponge<openpqc::gpu::SHAKE256_RATE_WORDS>(out, outlen, in, inlen, OPQC_SHAKE_SUFFIX);
 }
+// SHA-256 (FIPS 180-4, Section 6.2)
 OPQC_KERNEL_INLINE inline void sha256(std::uint8_t out[32], const std::uint8_t* in, std::size_t inlen) {
     detail::sha2<openpqc::gpu::Sha256>(out, in, inlen);
 }
+// SHA-512 (FIPS 180-4, Section 6.4)
 OPQC_KERNEL_INLINE inline void sha512(std::uint8_t out[64], const std::uint8_t* in, std::size_t inlen) {
     detail::sha2<openpqc::gpu::Sha512>(out, in, inlen);
 }
+// HMAC (FIPS 198-1) with SHA-256
 OPQC_KERNEL_INLINE inline void hmac_sha256(std::uint8_t out[32], const std::uint8_t* key, std::size_t keylen,
                                            const std::uint8_t* msg, std::size_t msglen) {
     detail::hmac<openpqc::gpu::Sha256>(out, key, keylen, msg, msglen);
 }
+// HMAC (FIPS 198-1) with SHA-512
 OPQC_KERNEL_INLINE inline void hmac_sha512(std::uint8_t out[64], const std::uint8_t* key, std::size_t keylen,
                                            const std::uint8_t* msg, std::size_t msglen) {
     detail::hmac<openpqc::gpu::Sha512>(out, key, keylen, msg, msglen);

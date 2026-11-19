@@ -8,13 +8,14 @@
  *
  * The GPU's counterparts of openpqc/testing.h: randomness that the caller chooses, for known-answer tests and for
  * comparing the device with the CPU byte for byte (FIPS 203, Section 3.3; FIPS 204, Section 6; FIPS 205,
- * Section 9). Anybody who knows the randomness of an Encaps knows its shared secret, and signatures with chosen
- * randomness lose what hedging gives. They are in the library openpqc_sycl_testing (OpenPQC::sycl_testing),
- * which a build with the tests, benchmarks or examples makes from the same objects as openpqc_sycl, adds these
- * functions to, and never installs; the library openpqc_sycl does not export them (test sycl_exports). Every
- * call is the one of openpqc/sycl.h with the randomness given, and follows its rules (buffers, status, results,
- * order of checks); NULL randomness is refused (OPENPQC_ERR_INVALID_ARGUMENT), as are opts with
- * OPENPQC_SIGN_DETERMINISTIC (the deterministic variant is openpqc_gpu_sig_sign's).
+ * Section 9). They are in the library openpqc_sycl_testing (OpenPQC::sycl_testing), which a build with the
+ * tests, benchmarks or examples makes from the same objects as openpqc_sycl, adds these functions to, and never
+ * installs; the library openpqc_sycl does not export them (test sycl_exports).
+ * Guide: README.md, "GPU API".
+ */
+
+/*
+ * Functions. Every call is the one of openpqc/sycl.h with the randomness given:
  *
  *   openpqc_testing_gpu_kem_encaps_derand(gpu, ct, ss, pk, m, status, n)       m: 32 bytes per operation
  *   openpqc_testing_gpu_sig_keygen_derand(gpu, pk, sk, seeds, status, n)       seeds: seed_bytes (ML-DSA xi;
@@ -22,6 +23,17 @@
  *   openpqc_testing_gpu_sig_sign_derand(gpu, sig, msgs, opts, rnd, sk, status, n)   rnd: randomness_bytes (ML-DSA
  *                                                                                   rnd, SLH-DSA addrnd)
  *   openpqc_testing_gpu_sig_sign_mu_derand(gpu, sig, mu, opts, rnd, sk, status, n)  ML-DSA
+ */
+
+/*
+ * Results. Every call follows the rules of openpqc/sycl.h (buffers, status, results, order of checks); NULL
+ * randomness is refused (OPENPQC_ERR_INVALID_ARGUMENT), as are opts with OPENPQC_SIGN_DETERMINISTIC (the
+ * deterministic variant is openpqc_gpu_sig_sign's).
+ */
+
+/*
+ * Randomness. Anybody who knows the randomness of an Encaps knows its shared secret, and signatures with chosen
+ * randomness lose what hedging gives.
  */
 
 #ifndef OPENPQC_GPU_TESTING_H

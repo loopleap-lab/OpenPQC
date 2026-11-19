@@ -6,6 +6,16 @@
 /*
  * openpqc_core.h -- C API of OpenPQC Core
  *
+ * One header for what the schemes share: the hash functions of FIPS 202 and
+ * FIPS 180-4, the pre-hash functions of HashML-DSA and HashSLH-DSA, the
+ * constant-time helpers and the operating-system layer (randomness,
+ * zeroization). The hashes and the helpers are header-only; the
+ * operating-system layer is in the library openpqc.
+ * Guide: README.md, "Use it".
+ */
+
+/*
+ * Functions.
  *   FIPS 202 (Core/opqc_sha3.h, Core/opqc_keccak.h), header-only:
  *     opqc_sha3_224(out[28], in, inlen)          opqc_sha3_384(out[48], in, inlen)
  *     opqc_sha3_256(out[32], in, inlen)          opqc_sha3_512(out[64], in, inlen)
@@ -27,8 +37,10 @@
  *   FIPS 140-3 mode only (a library built with the CMake option
  *   OPENPQC_FIPS140_3, whose objects are compiled with OPENPQC_FIPS140_3=1):
  *     opqc_fips_mark_non_approved()              (below)
- *
- * Preconditions and errors. The incremental sponge follows FIPS 202's order:
+ */
+
+/*
+ * Results. The incremental sponge follows FIPS 202's order:
  * opqc_sponge_init with a rate that is a multiple of 8 from 8 to 192 (the
  * OPQC_*_RATE values), any number of opqc_sponge_absorb, one
  * opqc_sponge_finalize with a suffix from 0x01 to 0x7F (OPQC_SHA3_SUFFIX,
@@ -48,7 +60,9 @@
  * (openpqc/common.h): OpenPQC's own code calls them in an order that the
  * standards fix and does not look at the status. A caller with an order of
  * its own checks it, as the example in Core/README.md does.
- *
+ */
+
+/*
  * Randomness. Every random value of the schemes comes from opqc_randombytes,
  * which takes it from the source that the application registered with
  * opqc_set_randombytes, or else from the default: the operating system, or in
@@ -67,7 +81,9 @@
  * every registration is refused; an ordinary build that must meet the
  * requirement registers an approved generator, or links one as
  * opqc_external_randombytes.
- *
+ */
+
+/*
  * The test variants. The libraries openpqc_core_testrng,
  * openpqc_mlkem_testrng, openpqc_mldsa_testrng and openpqc_slhdsa_testrng are
  * the same code built as with OPENPQC_EXTERNAL_RANDOMBYTES, so that the tests
@@ -77,7 +93,9 @@
  * production use. Nor may one program link a test variant together with a
  * production library: both define opqc_randombytes, and the linker keeps the
  * first definition it finds, without an error, for every scheme.
- *
+ */
+
+/*
  * Destruction of intermediate values. The one-shot functions destroy their
  * state before they return; an incremental state belongs to the caller, who
  * destroys it with opqc_zeroize when done. In CPU code (GCC, Clang and MSVC;
