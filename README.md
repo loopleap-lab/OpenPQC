@@ -24,7 +24,6 @@ compare their behavior and performance across hardware platforms.
 - **Learn by running.** Start with the Jupyter tutorial, then explore standalone API examples,
   application demos, and CPU/GPU benchmarks.
 
-<a id="maturity-and-scope"></a><a id="security-notes"></a>
 **Research-grade.** OpenPQC is not FIPS 140-3 validated and not yet hardened for production; its opt-in
 [FIPS 140-3 mode](docs/FIPS-140-3.md) is designed for FIPS 140-3; not validated. Read
 [SECURITY.md](SECURITY.md) and the [security notes](docs/SECURITY-NOTES.md) before you use it, and use a

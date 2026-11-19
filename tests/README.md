@@ -179,8 +179,9 @@ ctest --preset gcc-release-network              # ACVP and Wycheproof, after the
 `.github/workflows/ci.yml` runs these presets in an Arch Linux container (GCC 16, Clang 23, valgrind) on GitHub's
 hosted runners: on every push to `main`, on every pull request and once a week.
 
-A separate job runs `python3 scripts/check_docs.py`: the size limits of the front page, and every link and anchor
-of the documentation ([docs/DOCUMENTATION.md](../docs/DOCUMENTATION.md)).
+A separate job runs `python3 scripts/check_docs.py`: the size limits of the front page, every link and anchor of
+the documentation, the template of the directory READMEs and the header of every source file
+([docs/DOCUMENTATION.md](../docs/DOCUMENTATION.md)).
 
 ## FIPS 140-3 mode
 

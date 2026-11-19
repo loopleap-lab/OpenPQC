@@ -22,7 +22,8 @@
 #               tests' scripts name and checked against the SHA-256 pinned there on every run; the cache only
 #               spares the download, and a cached file that differs from its pin fails the test.
 #   docs        the rules of docs/DOCUMENTATION.md that a script can check (scripts/check_docs.py): the size
-#               limits of the front page, and every relative link and anchor of the Markdown files
+#               limits of the front page, every relative link and anchor of the Markdown files, the template
+#               of the directory READMEs, and the header of every source file
 # Every preset sets OPENPQC_REQUIRE_FULL_TESTS, so a missing tool fails the configuration instead of
 # leaving tests out. The commands are those of a local run (CMakePresets.json), with as many jobs as the
 # runner has processors (GitHub's hosted Linux runner: 2 for a private repository, 4 for a public one). More
@@ -132,12 +133,12 @@ jobs:
           python3 -I scripts/vendor_sphincsplus.py --upstream reference/repos/sphincsplus --check
 
   docs:
-    name: documentation (front-page limits, links)
+    name: documentation (front page, links, README template, source headers)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Front-page limits, links and anchors
+      - name: The documentation rules that a script can check
         run: python3 -I scripts/check_docs.py
 
   vectors:

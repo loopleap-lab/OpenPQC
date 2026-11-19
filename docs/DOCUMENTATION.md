@@ -22,6 +22,7 @@ summarise it in a sentence and link to it.
 | A test, a label, a CI preset | `tests/README.md` |
 | A benchmark and how to run it | `bench/README.md` |
 | What an integrator must know: constant time, randomness, threads, stack, what is destroyed, the GPU | `docs/SECURITY-NOTES.md` |
+| The FIPS 140-3 mode as a whole: what a module needs, the steps and their status, what is tested | `docs/FIPS-140-3.md` |
 | Maturity, a tested configuration, an open issue | `SECURITY.md` |
 | What a review found, what a fix round changed | `SECURITY.md`, "Review history", and nowhere else |
 
@@ -31,27 +32,28 @@ summarise it in a sentence and link to it.
 - **Link up, never copy up.** A new caveat goes to its home; the front page changes only when its own content does.
 - **The front page stays small.** No dates, no review finding ids, no catalogue of options or tests.
 
-A directory README opens the same way everywhere: **what this is** (one paragraph), **Files** (a table, one line
-per file), **Use it** (the shortest working example or command). The sections the directory needs follow, and
-**Limits** comes last.
+A directory README opens the same way everywhere: **what this is** (one paragraph, five lines at most), **Files**
+(a table that accounts for every file: by name, by pattern or by directory), **Use it** (the shortest working
+example or command). The sections the directory needs follow, and **Limits** comes last.
 
 ## Source comments
 
 1. A file header has at most 12 lines: the file, its FIPS section, what it adds to the layer below, what is secret,
-   one pointer to the directory README.
+   one pointer to the directory README (`Design: ../README.md, "Tests"`).
 2. Rationale is written once, on the function it explains.
 3. A function comment starts with the standard's own name ("Algorithm 19, lines 6-7"), then says only what the
    standard does not: deviations, what is secret or public, what a failure leaves in the outputs.
 4. Trailing line tags (`// 6`) stay: they let the code be read next to the standard.
-5. Public C headers keep their contract blocks in one order: functions, Results, Sizes, Randomness, Stack, then
-   what is specific to the scheme. A rule common to all schemes is stated once, in `openpqc/common.h`.
-6. No review finding ids, no dates, and no measurements of one machine unless they justify a constant on that line.
+5. C API headers state their contract in titled blocks after the file header, in one order: Functions, Results,
+   Sizes, Randomness, Stack, then their own. A rule common to all schemes is stated once: in `openpqc/common.h`
+   for the CPU API, in `Core/sycl/openpqc_sycl.h` for the GPU backends.
+6. No review finding ids, no history of fixes, no dates (but the date in the name of a document or a toolchain
+   stays), and no measurements of one machine unless they justify a constant on that line.
 7. Plain comments, no Doxygen markup.
 
-## Status and check
+## Check
 
-The front page, `SECURITY.md` and the pages of the table above follow these rules. The READMEs under `src/` and
-`examples/` and the source comments are converted later; new text there follows the rules already.
-
-`python3 scripts/check_docs.py` checks the limits of the front page, and every relative link and anchor of the
-tracked Markdown files. CI runs it.
+`python3 scripts/check_docs.py` checks what a script can, and CI runs it: the limits of the front page; every
+relative link and anchor of the tracked Markdown files; the template of the directory READMEs (the three sections,
+the opening, the Files table against the files, the table cells, review finding ids); every source file (a header
+of at most 12 lines, no review finding id, no banner or Doxygen comment, section pointers that resolve).
