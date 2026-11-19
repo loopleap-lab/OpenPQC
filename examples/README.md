@@ -1,33 +1,78 @@
 # Examples
 
-Two kinds of programs:
+Two kinds of programs. The **[demos](#demos-ml-kem-ml-dsa-and-slh-dsa-on-the-cpu-and-on-a-gpu)** (`demo_cpu`,
+`demo_gpu`, `live_demo`) run ML-KEM, ML-DSA and SLH-DSA from start to end, on the CPU and on a GPU, with timings;
+`live_demo` is for presenting. The **[example programs](#example-programs-one-part-of-the-api-each)** (`example_*`)
+show one part of the API each, for ML-KEM, ML-DSA, SLH-DSA and the hash functions, on the CPU and on a GPU; each
+checks its own results and is a CTest test (`ctest -L examples`).
 
-- **[Demos](#demos-ml-kem-ml-dsa-and-slh-dsa-on-the-cpu-and-on-a-gpu)** (`demo_cpu`, `demo_gpu`, `live_demo`):
-  ML-KEM, ML-DSA and SLH-DSA from start to end, on the CPU and on a GPU, with timings; `live_demo` is for presenting.
-- **[Example programs](#example-programs-one-part-of-the-api-each)** (`example_*`): one part of the API each, for
-  ML-KEM, ML-DSA, SLH-DSA and the hash functions, on the CPU and on a GPU; each checks its own results and is a CTest test
-  (`ctest -L examples`).
+## Files
+
+| File | Shows | API | Built |
+| --- | --- | --- | --- |
+| [`demo_cpu.c`](demo_cpu.c) | [`demo_cpu`](#demos-ml-kem-ml-dsa-and-slh-dsa-on-the-cpu-and-on-a-gpu): ML-KEM-768, ML-DSA-65 and SLH-DSA-SHA2-128f one at a time, and the speed of each operation on one CPU core | C API | with the CPU library |
+| [`demo_gpu.cpp`](demo_gpu.cpp) | [`demo_gpu`](#demos-ml-kem-ml-dsa-and-slh-dsa-on-the-cpu-and-on-a-gpu): the same operations in batches on a GPU, checked against the CPU and timed against it | GPU API in C (`openpqc/sycl.h`) | only with SYCL |
+| [`live_demo.cpp`](live_demo.cpp) | [`live_demo`](#live-demo-for-a-presentation): for presenting; one scene per scheme, then three CPU-vs-GPU races | GPU API in C (`openpqc/sycl.h`) | only with SYCL |
+| [`device_hash.cpp`](device_hash.cpp) | [`device_hash`](#demos-ml-kem-ml-dsa-and-slh-dsa-on-the-cpu-and-on-a-gpu): OpenPQC's hash functions inside the application's own SYCL kernel; the CPU checks the hashes | `openpqc/sycl/device.hpp`, header-only | only with SYCL |
+| [`cpu/example_mlkem.c`](cpu/example_mlkem.c) | [`example_mlkem`](#example_mlkem): Alice and Bob agree on a shared key; damaged ciphertexts and bad keys | ML-KEM-768, C API | with the CPU library |
+| [`cpu/example_mlkem.cpp`](cpu/example_mlkem.cpp) | [`example_mlkem_cxx`](#example_mlkem_cxx): the same with the C++ API, for all three sizes | ML-KEM-512/768/1024, C++ API | with the CPU library |
+| [`cpu/example_mldsa.c`](cpu/example_mldsa.c) | [`example_mldsa`](#example_mldsa): sign a message, verify it, and catch every kind of tampering | ML-DSA-65, HashML-DSA, C API | with the CPU library |
+| [`cpu/example_mldsa.cpp`](cpu/example_mldsa.cpp) | [`example_mldsa_cxx`](#example_mldsa_cxx): the C++ API, and signing when the signer only sees a 64-byte digest | ML-DSA-44/65/87, external mu | with the CPU library |
+| [`cpu/example_hash.c`](cpu/example_hash.c) | [`example_hash`](#example_hash): hash functions checked against known answers | SHA-3, SHAKE, SHA-2 | with the CPU library |
+| [`cpu/example_slhdsa.c`](cpu/example_slhdsa.c) | [`example_slhdsa`](#example_slhdsa): sign and verify with a hash-based signature; tampering, checking a stored key, the small (s) and fast (f) sets | SLH-DSA-SHA2-128f/128s, HashSLH-DSA, C API | with the CPU library |
+| [`cpu/example_slhdsa.cpp`](cpu/example_slhdsa.cpp) | [`example_slhdsa_cxx`](#example_slhdsa_cxx): the C++ API over the parameter sets: sizes and speed | SLH-DSA (4 sets, all 12 with `--all`), C++ API | with the CPU library |
+| [`gpu/example_mlkem_sycl.cpp`](gpu/example_mlkem_sycl.cpp) | [`example_mlkem_sycl`](#example_mlkem_sycl): many key exchanges in one call on a GPU | ML-KEM-768, GPU API in C++ (`openpqc/sycl.hpp`) | only with SYCL |
+| [`gpu/example_mldsa_sycl.cpp`](gpu/example_mldsa_sycl.cpp) | [`example_mldsa_sycl`](#example_mldsa_sycl): many signatures in one call on a GPU | ML-DSA-65, GPU API in C (`openpqc/sycl.h`) | only with SYCL |
+| [`gpu/example_slhdsa_sycl.cpp`](gpu/example_slhdsa_sycl.cpp) | [`example_slhdsa_sycl`](#example_slhdsa_sycl): many hash-based signatures in one call on a GPU | SLH-DSA-SHA2-128f (or any of the 12, chosen at run time), GPU API in C (`openpqc/sycl.h`) | only with SYCL |
+| [`CMakeLists.txt`](CMakeLists.txt) | The build of the programs above; the example programs are CTest tests, label `examples` (the GPU ones also `gpu`) | – | – |
+
+## Use it
+
+Build the CPU library with the examples, as the [quick start](../README.md#quick-start) does, and run `demo_cpu`:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DOPENPQC_SYCL=OFF \
+  -DOPENPQC_BUILD_TESTS=ON -DOPENPQC_BUILD_EXAMPLES=ON
+cmake --build build -j
+./build/examples/demo_cpu
+```
+
+[Demos](#demos-ml-kem-ml-dsa-and-slh-dsa-on-the-cpu-and-on-a-gpu) builds the GPU demos and says what to expect of
+them; [Example programs](#example-programs-one-part-of-the-api-each) shows how each program calls the API, how to run
+it and what it prints.
 
 ## Demos: ML-KEM, ML-DSA and SLH-DSA on the CPU and on a GPU
 
 Small programs that show how to use OpenPQC's three schemes and what a GPU changes:
 
-| Program | What it shows |
-|---|---|
-| [`demo_cpu.c`](demo_cpu.c) | The C API, one scheme at a time: ML-KEM-768 (Alice and Bob agree on a shared secret), ML-DSA-65 and SLH-DSA-SHA2-128f (sign, verify, and reject a changed message, signature or context string). Then the speed of each operation on one CPU core. |
-| [`demo_gpu.cpp`](demo_gpu.cpp) | The same operations in batches on a SYCL device (a GPU), through the GPU API (`openpqc/sycl.h`), with one code path for every parameter set: copy the inputs over, one call per operation for the whole batch, copy the results back. It checks the GPU against the CPU library without testing interfaces: the same bytes where both compute from the same inputs (key pairs from seeds, Decaps, deterministic signatures), and the CPU's acceptance of what the GPU made with its own randomness (shared secrets, hedged signatures, SLH-DSA's key pairs). Then it times the CPU (1 thread and all threads) against the GPU (a batch of 1 and a full batch). |
-| [`live_demo.cpp`](live_demo.cpp) | **For presenting** ([below](#live-demo-for-a-presentation)): one scene per scheme with a story (Alice and Bob, a forged payment order, a backdoored firmware image), then three CPU-vs-GPU races with live progress bars and a scoreboard, on the GPU API. |
-| [`device_hash.cpp`](device_hash.cpp) | OpenPQC's hash functions inside the application's own SYCL kernel (`openpqc/sycl/device.hpp`, header-only): one work-item per record derives a 32-byte key with HMAC-SHA-256 and hashes the record with SHA3-256, in one launch; the CPU checks the hashes. |
+- **[`demo_cpu.c`](demo_cpu.c)**: The C API, one scheme at a time: ML-KEM-768 (Alice and Bob agree on a shared
+  secret), ML-DSA-65 and SLH-DSA-SHA2-128f (sign, verify, and reject a changed message, signature or context string).
+  Then the speed of each operation on one CPU core.
+- **[`demo_gpu.cpp`](demo_gpu.cpp)**: The same operations in batches on a SYCL device (a GPU), through the GPU API
+  (`openpqc/sycl.h`), with one code path for every parameter set: copy the inputs over, one call per operation for the
+  whole batch, copy the results back. It checks the GPU against the CPU library without testing interfaces (below).
+  Then it times the CPU (1 thread and all threads) against the GPU (a batch of 1 and a full batch).
+- **[`live_demo.cpp`](live_demo.cpp)**: **For presenting** ([below](#live-demo-for-a-presentation)): one scene per
+  scheme with a story (Alice and Bob, a forged payment order, a backdoored firmware image), then three CPU-vs-GPU
+  races with live progress bars and a scoreboard, on the GPU API.
+- **[`device_hash.cpp`](device_hash.cpp)**: OpenPQC's hash functions inside the application's own SYCL kernel
+  (`openpqc/sycl/device.hpp`, header-only): one work-item per record derives a 32-byte key with HMAC-SHA-256 and
+  hashes the record with SHA3-256, in one launch; the CPU checks the hashes.
+
+`demo_gpu` uses no testing interface. It checks that the GPU gives the same bytes as the CPU where both compute from
+the same inputs: KeyGen from seeds (`openpqc_gpu_kem_keygen_from_seed`, and `openpqc_gpu_sig_keygen_from_seed` for
+ML-DSA, against the CPU's `keygen_from_seed`), Decaps, and deterministic signatures (`OPENPQC_SIGN_DETERMINISTIC`);
+and it lets the CPU decapsulate the GPU's ciphertexts, verify its hedged signatures and check SLH-DSA's key pairs
+(`openpqc_sig_check_keypair`), all of which the GPU made with randomness of its own. Randomness that the caller
+chooses is for testing only (FIPS 203 §3.3, FIPS 204 §6, FIPS 205 §9;
+[API guide](../include/openpqc/README.md#c-and-c-apis)): on the GPU it is in `openpqc/sycl_testing.h`
+(`OpenPQC::sycl_testing`), as on the CPU in `openpqc/testing.h` (`OpenPQC::testing`).
 
 ### Build and run
 
-CPU only (any C11/C++20 compiler):
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target demo_cpu -j
-./build/examples/demo_cpu
-```
+CPU only (any C11/C++20 compiler): the commands of [Use it](#use-it); `cmake --build build --target demo_cpu -j`
+builds the demo alone.
 
 With the GPU backend, using DPC++ (here for an NVIDIA RTX 30xx and Intel GPUs). `OPENPQC_SLHDSA_SYCL_SETS=3` builds
 only the SLH-DSA set that the demo uses into the GPU backend: DPC++ generates the device code of every set when the
@@ -48,12 +93,15 @@ cmake --build build-gpu --target demo_cpu demo_gpu live_demo device_hash -j
 `demo_gpu` and `live_demo` link what an application links, `OpenPQC::sycl` and `OpenPQC::openpqc`; `device_hash` is a
 SYCL program of its own and links only `OpenPQC::openpqc`, for the CPU's check.
 
-AdaptiveCpp works as well (`-DAdaptiveCpp_DIR=<acpp>/lib/cmake/AdaptiveCpp -DACPP_TARGETS=generic`, see the top-level
-README); it compiles the kernels at their first launch, which the demo's untimed first call absorbs.
+AdaptiveCpp works as well (`-DAdaptiveCpp_DIR=<acpp>/lib/cmake/AdaptiveCpp -DACPP_TARGETS=generic`, see the
+[top-level README](../README.md#gpu)); it compiles the kernels at their first launch, which the demo's untimed first
+call absorbs.
 
 ### Using the GPU API, in five steps
 
 One context type serves every parameter set (`openpqc/sycl.h`); ML-DSA-65 as the example:
+
+<details><summary>Show the code (20 lines)</summary>
 
 ```c
 #include "openpqc/sycl.h"                           /* link OpenPQC::sycl */
@@ -78,6 +126,8 @@ if (rc != OPENPQC_OK)
 /* key pair i only if status[i] == OPENPQC_OK */
 ```
 
+</details>
+
 Every call returns an `openpqc_status`, and its result must be checked (`OPENPQC_MUST_CHECK`): a call that fails
 produces no usable output. Every call also takes a `status` buffer of n `int32_t`, which must be checked as well:
 `status[i] = OPENPQC_OK` means that operation i has a result (for a verification, that signature i is valid), and any
@@ -90,14 +140,6 @@ function; `openpqc/sycl.hpp` offers the same in C++, with host data staged for t
 (`openpqc::sycl::Context<openpqc::ML_DSA_65>`). The example programs below show both:
 [`example_mlkem_sycl`](#example_mlkem_sycl) uses the C++ layer, [`example_mldsa_sycl`](#example_mldsa_sycl) and
 [`example_slhdsa_sycl`](#example_slhdsa_sycl) the C API.
-
-`demo_gpu` uses no testing interface. It compares the GPU with the CPU where both compute from the same inputs: KeyGen
-from seeds (`openpqc_gpu_kem_keygen_from_seed`, and `openpqc_gpu_sig_keygen_from_seed` for ML-DSA, against the CPU's
-`keygen_from_seed`), Decaps, and deterministic signatures (`OPENPQC_SIGN_DETERMINISTIC`); and it lets the CPU
-decapsulate the GPU's ciphertexts, verify its hedged signatures and check SLH-DSA's key pairs
-(`openpqc_sig_check_keypair`), all of which the GPU made with randomness of its own. Randomness that the caller
-chooses is for testing only (FIPS 203 §3.3, FIPS 204 §6, FIPS 205 §9): on the GPU it is in `openpqc/sycl_testing.h`
-(`OpenPQC::sycl_testing`), as on the CPU in `openpqc/testing.h` (`OpenPQC::testing`).
 
 ### What to expect
 
@@ -130,9 +172,9 @@ SLH-DSA-SHA2-128f verify      627 /s    2.3 k/s     100 /s    44.6 k/s   1024   
 - The CPU columns are OpenPQC's portable C code (no AVX2). The numbers move by some percent between runs (clock,
   temperature); `bench/run_benchmarks.sh` measures them properly.
 - The table is from the demo's earlier version, whose KeyGen, Encaps and Sign rows timed the GPU backends' `_derand`
-  functions and their CPU counterparts, with the random values copied in as inputs. The demo now times the
-  randomized calls of the GPU API and of the CPU library, which draw the randomness on the host (on the GPU, copied
-  over in each call), so these GPU rows of the table are an upper bound for them; they have not been measured again.
+  functions and their CPU counterparts, with the random values copied in as inputs. The demo times the randomized
+  calls of the GPU API and of the CPU library, which draw the randomness on the host (on the GPU, copied over in each
+  call), so these GPU rows of the table are an upper bound for them; they have not been measured again.
 
 ### Live demo for a presentation
 
@@ -151,11 +193,14 @@ CPU alone. `NO_COLOR=1` turns the colours off.
 | Step | On screen | What to say |
 |---|---|---|
 | Title | the three standards, the CPU and the GPU | NIST standardised these in 2024 because a large quantum computer would break RSA and elliptic curves. OpenPQC implements all three, readably, for CPUs and for GPUs of any vendor. |
-| 1 · ML-KEM | Alice and Bob end up with the same 32-byte key; **Enter**; Eve flips one bit and Alice's key comes out unrelated | This is the key exchange that HTTPS, SSH and VPNs are moving to (browsers already use it next to X25519), in place of Diffie-Hellman. The secret itself never travels. Tampering doesn't make it fail loudly: the attacker simply learns nothing. |
+| 1 · ML-KEM | Alice and Bob end up with the same 32-byte key | This is the key exchange that HTTPS, SSH and VPNs are moving to (browsers already use it next to X25519), in place of Diffie-Hellman. The secret itself never travels. |
+| | **Enter**; Eve flips one bit and Alice's key comes out unrelated | Tampering doesn't make it fail loudly: the attacker simply learns nothing. |
 | 2 · ML-DSA | a bank signs "Pay 100 coins to Bob": ✓ VALID; **Enter**; "Pay 900": ✗ REJECTED | The general-purpose signature (certificates, documents). Change one character and the signature no longer fits. |
 | 3 · SLH-DSA | a vendor signs a 64 KiB firmware image: ✓; **Enter**; one changed bit: ✗ | Built from a hash function alone, so its security rests only on SHA-256. That makes it the conservative choice, at the price of larger (17 KB) and slower signatures. |
-| 4 · Races | the CPU on all threads, then the GPU, on the same work: 65,536 ML-KEM handshakes, 16,384 ML-DSA signatures, 1,024 SLH-DSA signatures | A server does these by the thousand. The CPU bar crawls (up to 7 s for SLH-DSA); the GPU finishes in about 0.1 s. Every GPU result is checked: each handshake key against its client's, each signature verified. |
+| 4 · Races | the CPU on all threads, then the GPU, on the same work: 65,536 ML-KEM handshakes, 16,384 ML-DSA signatures, 1,024 SLH-DSA signatures | A server does these by the thousand. The CPU bar crawls (up to 7 s for SLH-DSA); the GPU finishes in about 0.1 s. |
 | Results | the scoreboard | 10-17x for the lattice schemes, about 70x for SLH-DSA. The GPU wins on volume; a single ML-KEM or ML-DSA operation is still quicker on the CPU. |
+
+Every GPU result of the races is checked: each handshake key against its client's, each signature verified.
 
 On the laptop above (DPC++, RTX 3050 Laptop, quiet machine, 2026-10-23, with the demo's earlier version, which called
 the GPU backends' own functions; not measured again) the scoreboard read:
@@ -179,20 +224,8 @@ Before the meeting:
 ## Example programs, one part of the API each
 
 Small programs that show how to call OpenPQC. Each one does one job, checks its own results, and exits with 0 when
-everything worked, so CTest runs them as tests.
-
-| Program | What it does | Uses |
-|---|---|---|
-| [`example_mlkem`](#example_mlkem) | Alice and Bob agree on a shared key; damaged ciphertexts and bad keys | ML-KEM-768, C API |
-| [`example_mlkem_cxx`](#example_mlkem_cxx) | the same with the C++ API, for all three sizes | ML-KEM-512/768/1024, C++ API |
-| [`example_mldsa`](#example_mldsa) | sign a message, verify it, and catch every kind of tampering | ML-DSA-65, HashML-DSA, C API |
-| [`example_mldsa_cxx`](#example_mldsa_cxx) | the C++ API, and signing when the signer only sees a 64-byte digest | ML-DSA-44/65/87, external mu |
-| [`example_hash`](#example_hash) | hash functions checked against known answers | SHA-3, SHAKE, SHA-2 |
-| [`example_slhdsa`](#example_slhdsa) | sign and verify with a hash-based signature; tampering, checking a stored key, the small (s) and fast (f) sets | SLH-DSA-SHA2-128f/128s, HashSLH-DSA, C API |
-| [`example_slhdsa_cxx`](#example_slhdsa_cxx) | the C++ API over the parameter sets: sizes and speed | SLH-DSA (4 sets, all 12 with `--all`), C++ API |
-| [`example_mlkem_sycl`](#example_mlkem_sycl) | many key exchanges in one call on a GPU | ML-KEM-768, GPU API in C++ (`openpqc/sycl.hpp`) |
-| [`example_mldsa_sycl`](#example_mldsa_sycl) | many signatures in one call on a GPU | ML-DSA-65, GPU API in C (`openpqc/sycl.h`) |
-| [`example_slhdsa_sycl`](#example_slhdsa_sycl) | many hash-based signatures in one call on a GPU, the parameter set chosen at run time | SLH-DSA-SHA2-128f (or any of the 12), GPU API in C (`openpqc/sycl.h`) |
+everything worked, so CTest runs them as tests. [Files](#files) lists them, with what each one does and the API it
+uses; [The programs](#the-programs) shows how each one calls the API, how to run it, and its output.
 
 ### The APIs in one table
 
@@ -210,10 +243,8 @@ everything worked, so CTest runs them as tests.
 
 The GPU functions do n operations per call: every buffer holds n keys, ciphertexts or signatures back to back, in
 memory from `openpqc_gpu_malloc` (in C++, an `openpqc::sycl::Buffer<T>`), and every call fills a status entry per
-operation. The example programs link what an application links, `OpenPQC::openpqc` and, for the GPU,
-`OpenPQC::sycl`; none of them uses a testing interface (`openpqc/testing.h` in `OpenPQC::testing`,
-`openpqc/sycl_testing.h` in `OpenPQC::sycl_testing`), whose randomness chosen by the caller FIPS 203, 204 and 205
-reserve for testing.
+operation. The example programs link what an application links, `OpenPQC::openpqc` and, for the GPU, `OpenPQC::sycl`;
+like [`demo_gpu`](#demos-ml-kem-ml-dsa-and-slh-dsa-on-the-cpu-and-on-a-gpu), none of them uses a testing interface.
 
 ### Build and run
 
@@ -224,9 +255,9 @@ ctest --test-dir build -L examples       # all examples as tests
 build/examples/example_mlkem             # one of them
 ```
 
-The GPU examples are built only with the SYCL backend (see the top-level README.md); without a GPU they exit with 77,
-which CTest reports as skipped. On HiPerGator, `bench/hipergator/build.sh` builds them all; run the C++ programs of
-its CPU tree after `module load gcc/14.2.0`.
+The GPU examples are built only with the SYCL backend (see the [top-level README](../README.md#gpu)); without a GPU
+they exit with 77, which CTest reports as skipped. On HiPerGator, `bench/hipergator/build.sh` builds them all; run the
+C++ programs of its CPU tree after `module load gcc/14.2.0`.
 
 ### The programs
 
@@ -234,7 +265,13 @@ its CPU tree after `module load gcc/14.2.0`.
 
 #### `example_mlkem` — ML-KEM-768 key exchange, failure cases and timing (C API)
 
-Alice makes an ML-KEM-768 key pair and sends the public encapsulation key ek to Bob. Bob encapsulates against ek: he gets a fresh 32-byte secret K and a ciphertext c that only Alice's secret decapsulation key dk can open, and Alice decapsulates c to get the same K. The program then checks three things: implicit rejection (a damaged ciphertext gives a random-looking secret instead of an error), that a malformed ek or dk is refused with an error code, and that a key pair kept as its 64-byte seed (the random input of KeyGen) is rebuilt byte for byte. Last, it times the three operations on one thread, and it exits with 0 only if all 12 checks pass. Every call returns an `openpqc_status` (`openpqc/common.h`): `OPENPQC_OK`, or an `OPENPQC_ERR_*` code after which the outputs must not be used.
+Alice makes an ML-KEM-768 key pair and sends the public encapsulation key ek to Bob. Bob encapsulates against ek: he
+gets a fresh 32-byte secret K and a ciphertext c that only Alice's secret decapsulation key dk can open, and Alice
+decapsulates c to get the same K. The program then checks three things: implicit rejection (a damaged ciphertext gives
+a random-looking secret instead of an error), that a malformed ek or dk is refused with an error code, and that a key
+pair kept as its 64-byte seed (the random input of KeyGen) is rebuilt byte for byte. Last, it times the three
+operations on one thread, and it exits with 0 only if all 12 checks pass. Every call returns an `openpqc_status`
+(`openpqc/common.h`): `OPENPQC_OK`, or an `OPENPQC_ERR_*` code after which the outputs must not be used.
 
 **Where each technique is used**
 
@@ -252,6 +289,8 @@ Alice makes an ML-KEM-768 key pair and sends the public encapsulation key ek to 
 | Secrets are wiped after use | zeroization | `opqc_zeroize` |
 
 **How the API is called** (from `cpu/example_mlkem.c`, error checks left out)
+
+<details><summary>Show the code (35 lines)</summary>
 
 ```c
 #include "Core/openpqc_core.h"        /* opqc_ct_memcmp, opqc_sponge_*, opqc_randombytes, opqc_zeroize */
@@ -291,6 +330,8 @@ opqc_zeroize(seed, sizeof seed);                 /* wipe each secret after use *
 /* (d) times keygen, encaps and decaps in loops of `runs` calls */
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -298,6 +339,10 @@ build/examples/example_mlkem              # 500 runs per timing loop; exit code 
 build/examples/example_mlkem 2000         # runs: iterations of each timing loop (1 to 1000000)
 # output below: the first command, one core of an Intel Core i7-11370H
 ```
+
+**Output**
+
+<details><summary>Show the output (19 lines)</summary>
 
 ```
 ML-KEM-768 (FIPS 203), C API
@@ -321,11 +366,20 @@ key establishment
 all 12 checks passed
 ```
 
+</details>
+
 <a id="example_mlkem_cxx"></a>
 
 #### `example_mlkem_cxx` — ML-KEM-512, -768 and -1024 round trips with the C++ API
 
-This is the same exchange as `example_mlkem` (Alice makes a key pair, Bob encapsulates, Alice decapsulates), run for all three ML-KEM parameter sets: 512, 768 and 1024. A higher number means stronger security, larger keys and slower operations. In the C++ API (`openpqc/openpqc.hpp`) each parameter set is a type, `openpqc::ML_KEM_512`, `openpqc::ML_KEM_768` and `openpqc::ML_KEM_1024`. Its public keys and ciphertexts are `std::array`s of the right size, and its secret keys and shared secrets `openpqc::secret<N>`, which overwrite themselves with zeros when they are destroyed and compare in constant time; a buffer of the wrong size or a key from another parameter set does not compile. Every function returns an `openpqc::status`. For each parameter set the program checks that both sides got the same secret and measures operations per second on one thread, and it exits with 0 if all three round trips agree.
+This is the same exchange as `example_mlkem` (Alice makes a key pair, Bob encapsulates, Alice decapsulates), run for
+all three ML-KEM parameter sets: 512, 768 and 1024. A higher number means stronger security, larger keys and slower
+operations. In the C++ API (`openpqc/openpqc.hpp`) each parameter set is a type, `openpqc::ML_KEM_512`,
+`openpqc::ML_KEM_768` and `openpqc::ML_KEM_1024`. Its public keys and ciphertexts are `std::array`s of the right size,
+and its secret keys and shared secrets `openpqc::secret<N>`, which overwrite themselves with zeros when they are
+destroyed and compare in constant time; a buffer of the wrong size or a key from another parameter set does not
+compile. Every function returns an `openpqc::status`. For each parameter set the program checks that both sides got
+the same secret and measures operations per second on one thread, and it exits with 0 if all three round trips agree.
 
 **Where each technique is used**
 
@@ -342,6 +396,8 @@ This is the same exchange as `example_mlkem` (Alice makes a key pair, Bob encaps
 | keygen, encaps and decaps are timed | ML-KEM KeyGen / Encaps / Decaps | the same three calls in loops |
 
 **How the API is called** (from `cpu/example_mlkem.cpp`, error checks left out)
+
+<details><summary>Show the code (29 lines)</summary>
 
 ```cpp
 #include "openpqc/openpqc.hpp"   // openpqc::ML_KEM_768, ...; link OpenPQC::openpqc
@@ -375,6 +431,8 @@ ok = run<openpqc::ML_KEM_768>(runs) && ok;
 ok = run<openpqc::ML_KEM_1024>(runs) && ok;
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -400,7 +458,13 @@ all round trips agree
 
 #### `example_mldsa` — ML-DSA-65 signatures with the C API, and what verification rejects
 
-A signer makes an ML-DSA-65 key pair and signs a message under a context string (a label that is signed with the message, so a signature made for one purpose fails for another). The verifier accepts the signature, and rejects it under another context string, with one bit of the message or the signature flipped, or when it is one byte too short or too long. The program also shows hedged signing (fresh random bytes in every signature, so two signatures of one message differ) against deterministic signing (the same bytes twice), and HashML-DSA (signing a SHA2-512 hash of a 4 MiB message) next to plain ML-DSA. Every call returns an `openpqc_status`; a verification returns `OPENPQC_OK` for a valid signature and nothing else.
+A signer makes an ML-DSA-65 key pair and signs a message under a context string (a label that is signed with the
+message, so a signature made for one purpose fails for another). The verifier accepts the signature, and rejects it
+under another context string, with one bit of the message or the signature flipped, or when it is one byte too short
+or too long. The program also shows hedged signing (fresh random bytes in every signature, so two signatures of one
+message differ) against deterministic signing (the same bytes twice), and HashML-DSA (signing a SHA2-512 hash of a 4
+MiB message) next to plain ML-DSA. Every call returns an `openpqc_status`; a verification returns `OPENPQC_OK` for a
+valid signature and nothing else.
 
 **Where each technique is used**
 
@@ -418,6 +482,8 @@ A signer makes an ML-DSA-65 key pair and signs a message under a context string 
 | Average KeyGen, Sign and Verify over `runs` new key pairs, then wipe the secret key | ML-DSA-65 KeyGen / Sign / Verify; zeroization | `openpqc_mldsa65_keygen`, `openpqc_mldsa65_sign`, `openpqc_mldsa65_verify`, `opqc_zeroize` |
 
 **How the API is called** (from `cpu/example_mldsa.c`, error checks left out)
+
+<details><summary>Show the code (33 lines)</summary>
 
 ```c
 #include "ML/DSA/openpqc_mldsa.h"     /* link OpenPQC::openpqc */
@@ -455,6 +521,8 @@ openpqc_mldsa65_verify(hash_sig, OPENPQC_MLDSA65_BYTES, large, LARGE_BYTES, ctx,
 opqc_zeroize(sk, sizeof sk);   /* at the end: wipe the secret key */
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -486,7 +554,13 @@ all checks passed
 
 #### `example_mldsa_cxx` — ML-DSA-44/65/87 in C++, and a signer that sees only mu
 
-Part 1 runs ML-DSA-44, -65 and -87 (three security levels: a larger number means more security and larger keys and signatures) through one C++ function template over the types `openpqc::ML_DSA_44`, `_65` and `_87`, and prints their sizes and times. Part 2 shows external mu, the 64-byte digest of public key, context string and message that ML-DSA actually signs: a client computes mu from a 1 MiB document, a signer that holds the secret key (an HSM, say) signs mu without seeing the document, and an ordinary verifier checks the signature against the full document. A mu made under another context string gives a signature that fails. The secret keys are `openpqc::secret<N>`, which overwrite themselves with zeros when they are destroyed, also when an exception leaves the function.
+Part 1 runs ML-DSA-44, -65 and -87 (three security levels: a larger number means more security and larger keys and
+signatures) through one C++ function template over the types `openpqc::ML_DSA_44`, `_65` and `_87`, and prints their
+sizes and times. Part 2 shows external mu, the 64-byte digest of public key, context string and message that ML-DSA
+actually signs: a client computes mu from a 1 MiB document, a signer that holds the secret key (an HSM, say) signs mu
+without seeing the document, and an ordinary verifier checks the signature against the full document. A mu made under
+another context string gives a signature that fails. The secret keys are `openpqc::secret<N>`, which overwrite
+themselves with zeros when they are destroyed, also when an exception leaves the function.
 
 **Where each technique is used**
 
@@ -502,6 +576,8 @@ Part 1 runs ML-DSA-44, -65 and -87 (three security levels: a larger number means
 | Sign a mu made under context `...-v2`. The signature is rejected under `...-v1` (`openpqc::status::invalid_signature`) and accepted under `...-v2` | context string | `ML_DSA_65::external_mu`, `ML_DSA_65::sign_mu`, `ML_DSA_65::verify` |
 
 **How the API is called** (from `cpu/example_mldsa.cpp`, error checks left out)
+
+<details><summary>Show the code (35 lines)</summary>
 
 ```cpp
 #include "openpqc/openpqc.hpp"   // openpqc::ML_DSA_44, _65, _87; link OpenPQC::openpqc
@@ -541,6 +617,8 @@ DSA::verify(other_sig, document, pk, as_bytes(ctx));            // must fail und
 DSA::verify(other_sig, document, pk, as_bytes(other_ctx));      // valid under "...-v2"
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -574,7 +652,12 @@ The keygen time of ML-DSA-44 includes the first calls of the process, which warm
 
 #### `example_hash` — SHA-3, SHAKE and SHA-2 checked against known answers
 
-ML-KEM and ML-DSA are built from SHA-3 and SHAKE, and HashML-DSA can pre-hash a message with SHA-2. This program calls those hash functions directly and compares each result with a known answer (KAT, computed with Python's `hashlib`). Then it feeds a 1000-byte message in uneven pieces to the incremental interfaces (the SHA-3 sponge: absorb input in pieces, finalize, then squeeze output in pieces; SHA-256 has its own init / absorb / finalize) and checks that each result equals the one-shot call and a known answer. SHAKE128 and SHAKE256 are XOFs (extendable-output functions: the caller chooses how many output bytes to read).
+ML-KEM and ML-DSA are built from SHA-3 and SHAKE, and HashML-DSA can pre-hash a message with SHA-2. This program calls
+those hash functions directly and compares each result with a known answer (KAT, computed with Python's `hashlib`).
+Then it feeds a 1000-byte message in uneven pieces to the incremental interfaces (the SHA-3 sponge: absorb input in
+pieces, finalize, then squeeze output in pieces; SHA-256 has its own init / absorb / finalize) and checks that each
+result equals the one-shot call and a known answer. SHAKE128 and SHAKE256 are XOFs (extendable-output functions: the
+caller chooses how many output bytes to read).
 
 **Where each technique is used**
 
@@ -589,6 +672,8 @@ ML-KEM and ML-DSA are built from SHA-3 and SHAKE, and HashML-DSA can pre-hash a 
 | Check each piece-by-piece result against the one-shot call and a known answer (for SHAKE, the known answer covers output bytes 480..511) | the one-shot functions above | `opqc_sha3_256`, `opqc_shake128`, `opqc_shake256`, `opqc_sha256` |
 
 **How the API is called** (from `cpu/example_hash.c`, error checks left out)
+
+<details><summary>Show the code (35 lines)</summary>
 
 ```c
 #include "Core/openpqc_core.h"                // SHA-3, SHAKE and SHA-2, header-only
@@ -628,6 +713,8 @@ opqc_sha256_finalize(&h, pieces, 32);
 opqc_sha256(whole, m, MESSAGE_BYTES);         // one-shot: same 32 bytes
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -656,7 +743,15 @@ all 18 checks passed
 
 #### `example_slhdsa` — SLH-DSA-SHA2-128f signatures with the C API, and what verification rejects
 
-A signer makes an SLH-DSA-SHA2-128f key pair and signs a bootloader version string under a context string (a label signed with the message, so a signature made for one purpose fails for another). SLH-DSA's security rests only on hash functions, and "128f" means security category 1 with fast signing and large signatures (17,088 bytes), where "128s" has small signatures (7,856 bytes) and slow signing. The verifier accepts the signature, and rejects it under another context string, with one bit of the message or the signature flipped, and when it is one byte too short or too long. The program also compares hedged signing (fresh random bytes in every signature) with deterministic signing, signs a 4 MiB message both through its SHA2-256 hash (HashSLH-DSA) and directly, checks a key pair read back from storage by regenerating its public key, shows what that check cannot see, and times SLH-DSA-SHA2-128s against 128f. Every call returns an `openpqc_status`.
+A signer makes an SLH-DSA-SHA2-128f key pair and signs a bootloader version string under a context string (a label
+signed with the message, so a signature made for one purpose fails for another). SLH-DSA's security rests only on hash
+functions, and "128f" means security category 1 with fast signing and large signatures (17,088 bytes), where "128s"
+has small signatures (7,856 bytes) and slow signing. The verifier accepts the signature, and rejects it under another
+context string, with one bit of the message or the signature flipped, and when it is one byte too short or too long.
+The program also compares hedged signing (fresh random bytes in every signature) with deterministic signing, signs a 4
+MiB message both through its SHA2-256 hash (HashSLH-DSA) and directly, checks a key pair read back from storage by
+regenerating its public key, shows what that check cannot see, and times SLH-DSA-SHA2-128s against 128f. Every call
+returns an `openpqc_status`.
 
 **Where each technique is used**
 
@@ -670,7 +765,8 @@ A signer makes an SLH-DSA-SHA2-128f key pair and signs a bootloader version stri
 | Sign twice with the deterministic variant (no addrnd: opt_rand = PK.seed). The signatures must be identical and valid | SLH-DSA Sign, deterministic variant (FIPS 205, Sections 9.2 and 10.2) | `openpqc_slhdsa_sha2_128f_sign_deterministic` |
 | Sign and verify a 4 MiB message through its SHA2-256 hash, then directly, and time both | HashSLH-DSA (pre-hash SHA2-256), SLH-DSA | `openpqc_slhdsa_sha2_128f_prehash_sign`, `openpqc_slhdsa_sha2_128f_prehash_verify`, `openpqc_slhdsa_sha2_128f_sign`, `openpqc_slhdsa_sha2_128f_verify` |
 | Check that neither kind of signature verifies as the other, and that the HashSLH-DSA signature fails with SHAKE128 as the pre-hash | separation of SLH-DSA, HashSLH-DSA and the pre-hash functions | `openpqc_slhdsa_sha2_128f_verify`, `openpqc_slhdsa_sha2_128f_prehash_verify` |
-| Check the key pair as read back from storage; with one bit of SK.seed flipped, or one bit of PK.root in the stored pk, it must be refused with `OPENPQC_ERR_INVALID_SECRET_KEY`; with one bit of SK.prf flipped it is accepted, and its signatures still verify | assurance of private-key possession via regeneration (FIPS 205, Section 3.1) | `openpqc_slhdsa_sha2_128f_check_keypair`, `openpqc_slhdsa_sha2_128f_check_sk` |
+| Check the key pair as read back from storage; with one bit of SK.seed flipped, or one bit of PK.root in the stored pk, it must be refused with `OPENPQC_ERR_INVALID_SECRET_KEY` | assurance of private-key possession via regeneration (FIPS 205, Section 3.1) | `openpqc_slhdsa_sha2_128f_check_keypair`, `openpqc_slhdsa_sha2_128f_check_sk` |
+| With one bit of SK.prf flipped it is accepted, and its signatures still verify | the same | the same |
 | Time KeyGen, Sign and Verify: SLH-DSA-SHA2-128s once, 128f averaged over `runs` new key pairs. Then wipe the secret keys | SLH-DSA-SHA2-128s / 128f KeyGen / Sign / Verify; zeroization | `openpqc_slhdsa_sha2_128s_keygen`, `_sign`, `_verify` (the same for `sha2_128f`), `opqc_zeroize` |
 
 FIPS 205 has no provision for keeping the seeds in place of the private key (FIPS 203 and 204 have one), so the
@@ -679,6 +775,8 @@ seeds, and checks it with `check_sk` or `check_keypair` when it reads it back. K
 testing interface (`openpqc/testing.h`), which this program does not use.
 
 **How the API is called** (from `cpu/example_slhdsa.c`, error checks left out)
+
+<details><summary>Show the code (36 lines)</summary>
 
 ```c
 #include "Core/openpqc_core.h"        /* opqc_zeroize */
@@ -719,6 +817,8 @@ openpqc_slhdsa_sha2_128s_sign(sig_s, m, sizeof m, ctx, CTX_LEN, sk_s);   /* m: 3
 opqc_zeroize(sk, sizeof sk);   /* at the end: wipe the secret key (stored_sk, sk_s, sk_f before) */
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -727,6 +827,10 @@ build/examples/example_slhdsa 50          # runs (1 to 10000): SLH-DSA-SHA2-128f
 ctest --test-dir build -R '^example_slhdsa(_cxx)?$'   # runs both SLH-DSA CPU examples as tests
 # output below: the first command, one core of an Intel Core i7-11370H
 ```
+
+**Output**
+
+<details><summary>Show the output (21 lines)</summary>
 
 ```
 SLH-DSA-SHA2-128f (FIPS 205), C API
@@ -752,11 +856,21 @@ s against f on one core, 32-byte message: sizes in bytes, times in ms
 all checks passed
 ```
 
+</details>
+
 <a id="example_slhdsa_cxx"></a>
 
 #### `example_slhdsa_cxx` — SLH-DSA parameter sets in C++, signing variants and HashSLH-DSA
 
-Part 1 runs SLH-DSA parameter sets through one C++ function template over the types `openpqc::SLH_DSA_SHA2_128s`, `openpqc::SLH_DSA_SHAKE_128s`, ... (`openpqc/openpqc.hpp`), whose public keys and signatures are `std::array`s of the right size and whose secret keys are `openpqc::secret<N>`, which overwrite themselves with zeros when they are destroyed. By default it runs the four sets of security category 1, and with `--all` all twelve (SHA2 or SHAKE is the hash family; s means small signatures and slow signing, f fast signing and large signatures). For each set it prints the sizes and the times of KeyGen, Sign and Verify, and checks that the signature verifies and fails once one bit is flipped. Part 2 uses SLH-DSA-SHAKE-128f: deterministic signing gives the same signature twice, hedged signing gives a different valid one, and a HashSLH-DSA signature of a 1 MiB document (signed through its SHAKE128 hash) verifies but is rejected as a plain SLH-DSA signature and under SHA2-256.
+Part 1 runs SLH-DSA parameter sets through one C++ function template over the types `openpqc::SLH_DSA_SHA2_128s`,
+`openpqc::SLH_DSA_SHAKE_128s`, ... (`openpqc/openpqc.hpp`), whose public keys and signatures are `std::array`s of the
+right size and whose secret keys are `openpqc::secret<N>`, which overwrite themselves with zeros when they are
+destroyed. By default it runs the four sets of security category 1, and with `--all` all twelve (SHA2 or SHAKE is the
+hash family; s means small signatures and slow signing, f fast signing and large signatures). For each set it prints
+the sizes and the times of KeyGen, Sign and Verify, and checks that the signature verifies and fails once one bit is
+flipped. Part 2 uses SLH-DSA-SHAKE-128f: deterministic signing gives the same signature twice, hedged signing gives a
+different valid one, and a HashSLH-DSA signature of a 1 MiB document (signed through its SHAKE128 hash) verifies but
+is rejected as a plain SLH-DSA signature and under SHA2-256.
 
 **Where each technique is used**
 
@@ -764,7 +878,7 @@ Part 1 runs SLH-DSA parameter sets through one C++ function template over the ty
 |---|---|---|
 | The parameter set is chosen at compile time, and the sizes come from the types | FIPS 205, Table 2 | `openpqc::SLH_DSA_SHA2_128s`, ... (`openpqc::slhdsa::SLHDSA<Set>`), `DSA::public_key`, `DSA::secret_key`, `DSA::signature`, `DSA::n` |
 | The name of the parameter set | the algorithm's description | `openpqc_alg_info_get(DSA::alg)->name` |
-| For each set, make a key pair, sign a 32-byte message, verify it, and time the three calls (one run for an s set, the average of 5 for an f set) | SLH-DSA KeyGen / Sign (hedged) / Verify, 4 or 12 sets | `DSA::keygen`, `DSA::sign`, `DSA::verify` |
+| For each set, make a key pair, sign a 32-byte message, verify it, and time the three calls | SLH-DSA KeyGen / Sign (hedged) / Verify, 4 or 12 sets | `DSA::keygen`, `DSA::sign`, `DSA::verify` |
 | Flip one bit of the last signature of each set. Verification must fail with `openpqc::status::invalid_signature` | SLH-DSA Verify | `DSA::verify` |
 | Wipe each secret key when it goes out of scope | zeroization | `openpqc::secret<N>` (`DSA::secret_key`) |
 | Sign the archive manifest twice under `example_slhdsa_cxx/archive-v1`. The signatures must be identical and valid | SLH-DSA-SHAKE-128f Sign, deterministic variant (FIPS 205, Sections 9.2 and 10.2) | `SLH_DSA_SHAKE_128f::sign_deterministic`, `SLH_DSA_SHAKE_128f::verify` |
@@ -773,6 +887,8 @@ Part 1 runs SLH-DSA parameter sets through one C++ function template over the ty
 | Check that this signature fails as a plain SLH-DSA signature and with SHA2-256 as the pre-hash | separation of SLH-DSA, HashSLH-DSA and the pre-hash functions | `SLH_DSA_SHAKE_128f::verify`, `SLH_DSA_SHAKE_128f::prehash_verify`, `openpqc::PreHash::SHA2_256` |
 
 **How the API is called** (from `cpu/example_slhdsa.cpp`, error checks left out)
+
+<details><summary>Show the code (31 lines)</summary>
 
 ```cpp
 #include "openpqc/openpqc.hpp"   // openpqc::SLH_DSA_SHA2_128s, ...; link OpenPQC::openpqc
@@ -808,6 +924,8 @@ DSA::verify(*sig1, document, pk, as_bytes(ctx));                                
 DSA::prehash_verify(*sig1, document, openpqc::PreHash::SHA2_256, pk, as_bytes(ctx));  // another pre-hash
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -839,16 +957,25 @@ all checks passed
 
 #### `example_mlkem_sycl` — batched ML-KEM-768 on the GPU, checked against the CPU (C++ layer)
 
-The GPU makes n ML-KEM-768 key pairs, encapsulates to each public key and decapsulates each ciphertext, with one call per step for all n operations (encapsulate: make a fresh shared secret and a ciphertext that only the key's owner can open). The program checks that both sides of each exchange get the same 32-byte secret. Then the CPU library opens the GPU's ciphertexts and the GPU opens ciphertexts made by the CPU, which shows that keys and ciphertexts work on either side. Last, it flips one bit in each ciphertext: the GPU and the CPU return the same substitute secret, not the real one, and report no error (implicit rejection: a damaged ciphertext gives a random-looking key instead of an error).
+The GPU makes n ML-KEM-768 key pairs, encapsulates to each public key and decapsulates each ciphertext, with one call
+per step for all n operations (encapsulate: make a fresh shared secret and a ciphertext that only the key's owner can
+open). The program checks that both sides of each exchange get the same 32-byte secret. Then the CPU library opens the
+GPU's ciphertexts and the GPU opens ciphertexts made by the CPU, which shows that keys and ciphertexts work on either
+side. Last, it flips one bit in each ciphertext: the GPU and the CPU return the same substitute secret, not the real
+one, and report no error (implicit rejection: a damaged ciphertext gives a random-looking key instead of an error).
 
-It uses the GPU API's C++ layer, `openpqc/sycl.hpp`: a context `openpqc::sycl::Context<openpqc::ML_KEM_768>`, device memory as `openpqc::sycl::Buffer<T>` typed with the scheme's key, ciphertext and secret types, and both kinds of calls: device calls (`keygen_async`, `encaps_async`, `decaps_async`) on Buffers, which only queue the work, and host calls (`decaps`) on `std::vector`s, which copy the data to the device and back through page-locked memory, wait, and return a `Results` with the status of the call and of every operation.
+It uses the GPU API's C++ layer, `openpqc/sycl.hpp`: a context `openpqc::sycl::Context<openpqc::ML_KEM_768>`, device
+memory as `openpqc::sycl::Buffer<T>` typed with the scheme's key, ciphertext and secret types, and both kinds of
+calls: device calls (`keygen_async`, `encaps_async`, `decaps_async`) on Buffers, which only queue the work, and host
+calls (`decaps`) on `std::vector`s, which copy the data to the device and back through page-locked memory, wait, and
+return a `Results` with the status of the call and of every operation.
 
 **Where each technique is used**
 
 | Step | Technique | API |
 |---|---|---|
 | List the SYCL devices; the second argument picks one by index | SYCL device list | `openpqc_gpu_device_count`, `openpqc_gpu_implementation`, `openpqc_gpu_device_name`, `openpqc_gpu_device_platform` |
-| Make a context and device buffers for n operations | GPU API (setup); in FIPS 140-3 mode, or with the developer definition `OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST`, the context runs a known-answer self-test on the device (an ordinary GPU build runs none and has no known-answer check of the device) | `openpqc::sycl::Context<KEM>` (`openpqc_gpu_create`), `openpqc::sycl::Buffer<T>` (`openpqc_gpu_malloc`) |
+| Make a context and device buffers for n operations | GPU API (setup); a known-answer self-test on the device only in FIPS 140-3 mode or with `OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST` (`openpqc/sycl.h`, Self-test) | `openpqc::sycl::Context<KEM>` (`openpqc_gpu_create`), `openpqc::sycl::Buffer<T>` (`openpqc_gpu_malloc`) |
 | The GPU makes n key pairs, then the program waits for the device (it waits like this after every device call) | ML-KEM-768 KeyGen, device call | `Context::keygen_async`, `Context::sync` |
 | The GPU encapsulates to each public key | ML-KEM-768 Encaps, device call | `Context::encaps_async` |
 | The GPU decapsulates; the host copies the results back and compares the secrets; every status entry must be `OPENPQC_OK` | ML-KEM-768 Decaps, device call; constant-time compare (its run time does not depend on the bytes) | `Context::decaps_async`, `Buffer::copy_to`, `openpqc::secret<N>::operator==` |
@@ -858,6 +985,8 @@ It uses the GPU API's C++ layer, `openpqc/sycl.hpp`: a context `openpqc::sycl::C
 | Wipe the secrets on the host and the device, then free the memory | zeroization (overwrite secrets with zeros) | the destructors of `openpqc::secret<N>`, `Buffer` (`openpqc_gpu_free` overwrites before it frees) and `Context` |
 
 **How the API is called** (from `gpu/example_mlkem_sycl.cpp`, error checks left out)
+
+<details><summary>Show the code (34 lines)</summary>
 
 ```cpp
 #include "openpqc/openpqc.hpp"   // openpqc::ML_KEM_768, the CPU library (OpenPQC::openpqc)
@@ -896,6 +1025,8 @@ r = gpu.decaps(ss_dec, ct, sk);             // every r[i] stays status::ok: a re
 // Cleanup: the destructors of the vectors of secrets, the Buffers (memory overwritten with zeros) and the Context
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -905,6 +1036,10 @@ OPENPQC_SYCL_DEVICE=2 build/examples/example_mlkem_sycl   # makes device 2 the d
 # needs a build with the SYCL backend (OPENPQC_SYCL); exit code 77 means no SYCL device was found
 # output below: the first command on the Intel Iris Xe of a laptop (DPC++), its default device
 ```
+
+**Output**
+
+<details><summary>Show the output (25 lines)</summary>
 
 ```
 OpenPQC ML-KEM-768 (FIPS 203) on a SYCL device, 10 operations per call
@@ -934,17 +1069,25 @@ device buffers: ek 11840 B, dk 24000 B, c 10880 B, K 2 x 320 B, status 40 B
 all checks passed
 ```
 
+</details>
+
 <a id="example_mldsa_sycl"></a>
 
 #### `example_mldsa_sycl` — ML-DSA-65 key generation, signing and verification in GPU batches (C API)
 
-The GPU signs and verifies a batch of 10 ML-DSA-65 messages of different lengths, one call per step for all of them. It shows three ways to use the GPU API: each message with its own key; all messages with one key (the way a server signs with its own key); and signing only each message's external mu (the 64-byte digest that ML-DSA actually signs, computed on the host). The CPU library re-checks every signature, and a message with one flipped bit must fail while the other nine pass. It uses the C API, `openpqc/sycl.h`: a context made from `OPENPQC_ML_DSA_65`, the messages of a call described by one `openpqc_gpu_messages` (a buffer and the offsets that delimit them), the options by one `openpqc_sign_opts` (context string, flags), and a status array filled by every call.
+The GPU signs and verifies a batch of 10 ML-DSA-65 messages of different lengths, one call per step for all of them.
+It shows three ways to use the GPU API: each message with its own key; all messages with one key (the way a server
+signs with its own key); and signing only each message's external mu (the 64-byte digest that ML-DSA actually signs,
+computed on the host). The CPU library re-checks every signature, and a message with one flipped bit must fail while
+the other nine pass. It uses the C API, `openpqc/sycl.h`: a context made from `OPENPQC_ML_DSA_65`, the messages of a
+call described by one `openpqc_gpu_messages` (a buffer and the offsets that delimit them), the options by one
+`openpqc_sign_opts` (context string, flags), and a status array filled by every call.
 
 **Where each technique is used**
 
 | Step | Technique | API |
 |---|---|---|
-| List the SYCL devices, open a context on one (in FIPS 140-3 mode, or with the developer definition `OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST`, it runs a known-answer self-test; an ordinary GPU build runs none), allocate device memory, copy the messages and their offsets over | GPU API (setup) | `openpqc_gpu_device_count`, `openpqc_gpu_device_name`, `openpqc_gpu_create`, `openpqc_gpu_malloc`, `openpqc_gpu_memcpy` |
+| List the SYCL devices, open a context on one, allocate device memory, copy the messages and their offsets over | GPU API (setup); a known-answer self-test on the device only in FIPS 140-3 mode or with `OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST` (`openpqc/sycl.h`, Self-test) | `openpqc_gpu_device_count`, `openpqc_gpu_device_name`, `openpqc_gpu_create`, `openpqc_gpu_malloc`, `openpqc_gpu_memcpy` |
 | Make n key pairs on the GPU, then wait for the device (the program waits like this after every device call); every status entry must be `OPENPQC_OK` | ML-DSA-65 KeyGen, GPU batch | `openpqc_gpu_sig_keygen`, `openpqc_gpu_sync` |
 | Sign message i with key i; report the rounds of the signing loop | ML-DSA-65 Sign (hedged), GPU batch | `openpqc_gpu_sig_sign`, `openpqc_gpu_experimental_sign_stats` |
 | Verify the signatures on the GPU, then again after one bit of one message is flipped: its status entry must be `OPENPQC_ERR_INVALID_SIGNATURE`, the others `OPENPQC_OK` | ML-DSA-65 Verify, GPU batch | `openpqc_gpu_sig_verify` |
@@ -955,6 +1098,8 @@ The GPU signs and verifies a batch of 10 ML-DSA-65 messages of different lengths
 | Free the memory (overwritten with zeros), close the context | GPU API (cleanup) | `openpqc_gpu_free`, `openpqc_gpu_destroy` |
 
 **How the API is called** (from `gpu/example_mldsa_sycl.cpp`, error checks left out)
+
+<details><summary>Show the code (40 lines)</summary>
 
 ```cpp
 #include "ML/DSA/openpqc_mldsa.h"         // the CPU library (OpenPQC::openpqc)
@@ -999,6 +1144,8 @@ openpqc_gpu_sig_verify_mu(gpu, d_sig, d_mu, nullptr, d_pk, d_status, n);  // the
 openpqc_gpu_free(gpu, d_sk);  /* ... */  openpqc_gpu_destroy(gpu);
 ```
 
+</details>
+
 HashML-DSA has no GPU call (`opts.prehash` other than 0 gives `OPENPQC_ERR_UNSUPPORTED`): compute mu on the host as
 HashML-DSA does (FIPS 204, Algorithm 4) and sign it with `openpqc_gpu_sig_sign_mu`.
 
@@ -1011,6 +1158,10 @@ OPENPQC_SYCL_DEVICE=2 build/examples/example_mldsa_sycl   # pick the default dev
 # needs a build with the SYCL backend (CMake option OPENPQC_SYCL not OFF); exit 0 = all checks passed, 1 = a check failed, 77 = no SYCL device
 # output below: the first command on the Intel Iris Xe of a laptop (DPC++), its default device
 ```
+
+**Output**
+
+<details><summary>Show the output (22 lines)</summary>
 
 ```
 ...
@@ -1037,17 +1188,26 @@ messages: 10 of 16 to 915 bytes, 4655 bytes in all; context string "example_mlds
 all checks passed
 ```
 
+</details>
+
 <a id="example_slhdsa_sycl"></a>
 
 #### `example_slhdsa_sycl` — SLH-DSA-SHA2-128f key generation, signing and verification in GPU batches (C API)
 
-The GPU makes 16 SLH-DSA-SHA2-128f key pairs, then signs and verifies 16 messages of different lengths, with one call per step for the whole batch (SLH-DSA: the FIPS 205 signature scheme whose security rests only on hash functions). The CPU library accepts the GPU's signatures and the GPU accepts the CPU's. A message with one flipped bit fails while the other 15 pass. The program also signs every message with one key, as a server does, and signs only each message's SHA-256 hash, computed on the host (HashSLH-DSA, the pre-hash form); the CPU verifies those signatures against the full messages, and plain verification must reject them. The parameter set is chosen at run time (any of the twelve), so the program uses the C API with an `openpqc_alg` on both sides: `openpqc/sycl.h` on the GPU and `openpqc/sig.h` on the CPU, with the sizes from `openpqc_alg_info_get`.
+The GPU makes 16 SLH-DSA-SHA2-128f key pairs, then signs and verifies 16 messages of different lengths, with one call
+per step for the whole batch (SLH-DSA: the FIPS 205 signature scheme whose security rests only on hash functions). The
+CPU library accepts the GPU's signatures and the GPU accepts the CPU's. A message with one flipped bit fails while the
+other 15 pass. The program also signs every message with one key, as a server does, and signs only each message's
+SHA-256 hash, computed on the host (HashSLH-DSA, the pre-hash form); the CPU verifies those signatures against the
+full messages, and plain verification must reject them. The parameter set is chosen at run time (any of the twelve),
+so the program uses the C API with an `openpqc_alg` on both sides: `openpqc/sycl.h` on the GPU and `openpqc/sig.h` on
+the CPU, with the sizes from `openpqc_alg_info_get`.
 
 **Where each technique is used**
 
 | Step | Technique | API |
 |---|---|---|
-| Look up the set's name and sizes, list the SYCL devices, open a context (`OPENPQC_ERR_UNSUPPORTED`: the set is not in this build's GPU library, exit code 77), allocate device memory, copy the messages and their offsets over | GPU API (setup) | `openpqc_alg_info_get`, `openpqc_gpu_device_count`, `openpqc_gpu_device_name`, `openpqc_gpu_create`, `openpqc_gpu_malloc`, `openpqc_gpu_memcpy` |
+| Look up the set's name and sizes, list the SYCL devices, open a context, allocate device memory, copy the messages and their offsets over | GPU API (setup) | `openpqc_alg_info_get`, `openpqc_gpu_device_count`, `openpqc_gpu_device_name`, `openpqc_gpu_create`, `openpqc_gpu_malloc`, `openpqc_gpu_memcpy` |
 | Make n key pairs on the GPU, then wait for the device (the program waits like this after every device call) | SLH-DSA-SHA2-128f KeyGen, GPU batch | `openpqc_gpu_sig_keygen`, `openpqc_gpu_sync` |
 | Sign message i with key i (hedged: each signature mixes in fresh random bytes from the host's OS) | SLH-DSA-SHA2-128f Sign, GPU batch | `openpqc_gpu_sig_sign` |
 | Verify on the GPU, then again after one bit of one message is flipped; copy back one status entry per message (`OPENPQC_OK` = valid) | SLH-DSA-SHA2-128f Verify, GPU batch | `openpqc_gpu_sig_verify`, `openpqc_gpu_memcpy` |
@@ -1058,6 +1218,8 @@ The GPU makes 16 SLH-DSA-SHA2-128f key pairs, then signs and verifies 16 message
 | Wipe the CPU's secret keys as soon as it has signed, free the device memory (overwritten with zeros), close the context | zeroization (overwrite secrets with zeros) | `opqc_zeroize`, `openpqc_gpu_free`, `openpqc_gpu_destroy` |
 
 **How the API is called** (from `gpu/example_slhdsa_sycl.cpp`, error checks left out)
+
+<details><summary>Show the code (46 lines)</summary>
 
 ```cpp
 #include "Core/openpqc_core.h"   // opqc_sha256, ... for PH(M); opqc_zeroize
@@ -1108,6 +1270,8 @@ openpqc_gpu_sig_verify(gpu, d_sig, messages, &opts, d_pk, d_status, n);   // mus
 openpqc_gpu_free(gpu, d_sk);  /* ... */  openpqc_gpu_destroy(gpu);
 ```
 
+</details>
+
 **Run**
 
 ```sh
@@ -1123,6 +1287,10 @@ OPENPQC_SYCL_DEVICE=2 build/examples/example_slhdsa_sycl   # makes device 2 the 
 # each signature over many threads. The first run on an Intel GPU also compiles the kernels from SPIR-V
 # (about four minutes here, in a build with all twelve sets), which the driver then keeps in its cache.
 ```
+
+**Output**
+
+<details><summary>Show the output (25 lines)</summary>
 
 ```
 ...
@@ -1151,3 +1319,19 @@ sizes: public key 32 bytes, secret key 64, signature 17088
 
 all checks passed
 ```
+
+</details>
+
+## Limits
+
+- For the maturity of the library that the programs call, see [SECURITY.md](../SECURITY.md#maturity-and-scope).
+- The code under "How the API is called" is an excerpt of each program, with the error checks left out.
+- The demos' numbers move by some percent between runs; `bench/run_benchmarks.sh` measures them properly. The table of
+  [What to expect](#what-to-expect) and the live demo's scoreboard are from the demo's earlier version and have not
+  been measured again.
+- A single ML-KEM or ML-DSA operation, and a single SLH-DSA verification, are slower on the GPU than on one CPU core:
+  the GPU is for batches ([What to expect](#what-to-expect)).
+- The GPU programs are built only with the SYCL backend, and exit with 77 (a skipped test) without a SYCL device or,
+  for `example_slhdsa_sycl`, when the set is not in the build's GPU library.
+- HashML-DSA has no GPU call: the host computes mu ([`example_mldsa_sycl`](#example_mldsa_sycl)).
+- No known-answer self-test of the device in an ordinary GPU build ([SECURITY.md](../SECURITY.md#known-issues)).
