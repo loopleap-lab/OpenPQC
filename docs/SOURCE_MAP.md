@@ -544,8 +544,8 @@ mlkem-native's C code, so that its outputs are byte-identical. The design is in 
 ## 6. Compliance notes for OpenPQC integrators
 
 This section describes OpenPQC as it is now (November 2026), not the vendored mlkem-native of the sections above. FIPS
-203 and NIST SP 800-227 place some requirements on the module as a whole, beyond the code; the top-level README
-("Maturity and scope", "Security notes"), [SECURITY.md](../SECURITY.md) and
+203 and NIST SP 800-227 place some requirements on the module as a whole, beyond the code;
+[SECURITY.md](../SECURITY.md#maturity-and-scope), the [security notes](SECURITY-NOTES.md) and
 [src/ML/KEM/README.md](../src/ML/KEM/README.md) ("Using ML-KEM in an application") give them in full.
 
 1. **RBG.** The random values must come from an approved RBG (SP 800-90A/B/C), with at least 128, 192 or 256 bits of

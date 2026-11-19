@@ -4,16 +4,27 @@ The implementation, in groups: Core, shared by every scheme, and one group per s
 that maps its standard to the code. The headers an application includes are in
 [`include/openpqc/`](../include/openpqc/README.md) and, per scheme, next to the sources here.
 
-## Groups
+## Files
 
 | Path | Contents |
 | --- | --- |
-| [src/Core/](Core/README.md) | Hash functions (Keccak-f[1600], SHA-3, SHAKE, SHA-2; C11, header-only), constant-time helpers, randomness, zeroization, C++ wrappers and the pre-hash functions of HashML-DSA and HashSLH-DSA (`prehash.hpp`); `sycl/`: the GPU runtime, team, sponge, SHA-2 and message helpers shared by the GPU backends |
-| [src/ML/](ML/README.md) | Utilities shared by the module-lattice schemes: `math/ml_bitpack.h`, the bit packing of both standards |
-| [src/ML/KEM/](ML/KEM/README.md) | ML-KEM-512/768/1024 (FIPS 203): `math/` (C11 math core: Z_q, NTT, compression, encoding, sampling), `scheme/` (C++20: K-PKE, ML-KEM, input checks, one function per FIPS 203 algorithm), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_mlkem.h` and the C++ API `mlkem.hpp` |
-| [src/ML/DSA/](ML/DSA/README.md) | ML-DSA-44/65/87 and HashML-DSA (FIPS 204): `math/` (C11 math core: Z_q, NTT, rounding and hints, encoding, sampling), `scheme/` (C++20: one function per FIPS 204 algorithm, HashML-DSA, external mu), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_mldsa.h` and the C++ API `mldsa.hpp` |
-| [src/SLH/DSA/](SLH/DSA/README.md) | The twelve SLH-DSA parameter sets and HashSLH-DSA (FIPS 205): `math/` (C11 math core: toInt, toByte, base_2b, the address ADRS, HMAC and MGF1), `scheme/` (C++20: WOTS+, XMSS, the hypertree, FORS, one function per FIPS 205 algorithm), `sycl/` (the GPU backend under the GPU API), the C API `openpqc_slhdsa.h` and the C++ API `slhdsa.hpp` |
-| [src/FN/DSA/](FN/DSA/README.md) | FN-DSA (FIPS 206): a placeholder with the integration plan; not implemented |
+| [`Core/`](Core/README.md) | Shared by every scheme: hash functions (SHA-3, SHAKE, SHA-2), constant-time helpers, randomness, zeroization, pre-hash functions, the FIPS 140-3 mode; `sycl/`: helpers of the GPU backends |
+| [`ML/`](ML/README.md) | What the module-lattice schemes share: `math/ml_bitpack.h`, the bit packing of both standards |
+| [`ML/KEM/`](ML/KEM/README.md) | ML-KEM-512/768/1024 (FIPS 203): the C API `openpqc_mlkem.h`, the C++ API `mlkem.hpp`, and the layers below |
+| [`ML/DSA/`](ML/DSA/README.md) | ML-DSA-44/65/87 and HashML-DSA (FIPS 204), with external mu: `openpqc_mldsa.h`, `mldsa.hpp`, and the layers below |
+| [`SLH/DSA/`](SLH/DSA/README.md) | The twelve SLH-DSA parameter sets and HashSLH-DSA (FIPS 205): `openpqc_slhdsa.h`, `slhdsa.hpp`, and the layers below |
+| [`FN/DSA/`](FN/DSA/README.md) | FN-DSA (FIPS 206): a placeholder with the integration plan; not implemented |
+
+## Use it
+
+The top-level `CMakeLists.txt` builds these sources into the libraries `openpqc` and `openpqc_sycl`
+([docs/BUILDING.md](../docs/BUILDING.md)); what an application includes and links is in the
+[API guide](../include/openpqc/README.md). To read the code:
+
+- Hashing, constant time, randomness and zeroization: [Core/README.md](Core/README.md).
+- A scheme next to its standard: the "FIPS 20x in the code" table of its README, which names the function and the
+  file of every algorithm.
+- How the documentation is organised: [docs/DOCUMENTATION.md](../docs/DOCUMENTATION.md).
 
 ## Layers
 
@@ -41,8 +52,8 @@ and the GPU therefore run the same arithmetic code (`Core/opqc_common.h` says wh
 | `opqc_sycl_` | The GPU backends' own C functions: internal, not installed | `opqc_sycl_mldsa_free` |
 | `openpqc_testing_` | The testing interfaces, never in the library `openpqc` | `openpqc_testing_mlkemNNN_encaps_derand` |
 
-## Where to read next
+## Limits
 
-- Hashing, constant time, randomness and zeroization: [Core/README.md](Core/README.md).
-- A scheme next to its standard: the "FIPS 20x in the code" table of its README.
-- How the documentation is organised: [docs/DOCUMENTATION.md](../docs/DOCUMENTATION.md).
+FN-DSA is not implemented: `FN/DSA/` holds its plan only. What each group does not do or does not claim is under
+"Limits" in its README, and the open issues of the whole library are in
+[SECURITY.md](../SECURITY.md#known-issues).

@@ -17,6 +17,7 @@ turn their CSV output into tables and figures. They are built with the project (
 | `compare_gpu.py`, `compare_latency.py` | Tables from the CSV files |
 | `plot_cpu_vs_gpu.py`, `plot_platforms.py`, `plot_latency.py` | Figures from the CSV files |
 | `bench_common.hpp` | Statistics, timing and GPU monitoring shared by the benchmarks |
+| `CMakeLists.txt` | The benchmark targets, built with `OPENPQC_BUILD_BENCHMARKS` |
 | [`hipergator/`](hipergator/README.md) | Scripts and results for HiPerGator (University of Florida) |
 
 ## Use it

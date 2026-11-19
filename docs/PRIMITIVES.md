@@ -21,8 +21,8 @@ maps FIPS 203 to OpenPQC's own code.
 | **FN-DSA** | [`src/FN/DSA`](../src/FN/DSA/README.md) | FIPS 206 (not yet published) | placeholder: primitive inventory and integration plan |
 
 "Implemented" means every algorithm and parameter set of the standard with outputs byte-identical to the reference;
-it does not mean ready for production or validated: see the top-level README ("Maturity and scope", "Security notes")
-and [SECURITY.md](../SECURITY.md).
+it does not mean ready for production or validated: see [SECURITY.md](../SECURITY.md#maturity-and-scope) and the
+[security notes](SECURITY-NOTES.md).
 
 ## 1. How primitives were assigned to groups
 

@@ -14,7 +14,9 @@ against itself on every SYCL device. They are CTest tests, built with the projec
 | `test_*_cxx.cpp`, `test_hash.cpp` | The C++ APIs; FIPS 202, SHA-2 and the pre-hash functions |
 | `*.cmake`, `check_must_check.py`, `consumer/`, `test_c_link.c` | Checks of the built libraries: exported symbols, results that must be checked, a C-only link, the installed headers and package |
 | `test_mlkem_ntt.cpp`, `test_reduce.cpp` | The Kyber-arithmetic learning port in `src/ML/KEM` (`ntt.*`, `reduce.*`), which ML-KEM does not use |
+| `test_fips_*.c`, `fips_services/`, `fips_vectors/` | The FIPS 140-3 mode: the module's state and self-tests when it is loaded, its random bit generation, the indicator after every service, NIST's ACVP vectors through the module |
 | `check.hpp`, `as_int.hpp` | The test harness, and a wrapper that lets the tests share function tables with the references |
+| `CMakeLists.txt` | How the tests are registered with CTest: the labels, the timeouts, and the tests that configuring leaves out |
 
 ## Use it
 
@@ -57,13 +59,70 @@ test integration, and update instructions.
 "Implemented" below means every algorithm and parameter set of the standard, with outputs byte-identical to the
 reference implementations; it does not mean ready for production ([Maturity and scope](../SECURITY.md#maturity-and-scope)).
 
-| Group | CPU | GPU | Tests |
-| --- | --- | --- | --- |
-| Core | Keccak-f[1600], SHA-3, SHAKE, SHA-2, HMAC-SHA-256 and HMAC-SHA-512 (C11); HMAC_DRBG with SHA-512 (SP 800-90A), the random bit generator of the FIPS 140-3 mode; the twelve pre-hash functions of HashML-DSA and HashSLH-DSA with their OIDs; constant-time helpers, randomness that fails closed (the operating system's, or a source the application registers or links; in FIPS 140-3 mode the DRBG), zeroization and stack clearing; the FIPS 140-3 mode's state, self-tests, integrity test and indicator | the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message and workspace helpers; the context that the three backends share: a lock, a failed state after a device error, wiping of the workspace, page-locked coin staging | known answers, incremental vs one-shot, the sponge's phase checks, stack and register residue (also 32-bit x86), constant time at -O0 to -Os (valgrind) and branch-free assembly on seven processors (compile only), the RNG's failure paths and registered sources, NIST ACVP for SHA-2, SHA-3 and SHAKE (with the large-data tests), HMAC against RFC 4231, the DRBG against NIST's CAVP vectors, the OID table; in FIPS 140-3 mode the module's boundary, integrity test, forced self-test failures and indicator; on the GPU the helpers and the context's failure handling |
-| ML-KEM | implemented (512/768/1024), C11/C++20; a pair-wise consistency test after KeyGen in FIPS 140-3 mode; the stack burn can be left out (`OPENPQC_MLKEM_STACK_BURN`) | SYCL: batched KeyGen (also from seeds d ‖ z)/Encaps/Decaps through the GPU API (`openpqc/sycl.h`), all parameter sets; status required on every call and fail-closed; Encaps with given randomness only in the testing library (`OpenPQC::sycl_testing`); a known-answer self-test when a context is created and a pair-wise consistency test of every key pair, in FIPS 140-3 mode only | KAT, ACVP (435 cases), Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind constant-time tests (also of the library at fixed optimization levels, and of Encaps and Decaps in the library as built), stack-residue tests, fresh randomness, the pair-wise consistency test; SYCL: byte identity, the error contract and fault injection on every device |
-| ML-DSA | implemented (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20; malformed private keys refused, key checks; a pair-wise consistency test after KeyGen in FIPS 140-3 mode | SYCL: batched KeyGen (also from seeds xi)/Sign/Verify (messages or mu; hedged or deterministic; one key per operation or one for all), all parameter sets; status required on every call and fail-closed; a known-answer self-test when a context is created and a pair-wise consistency test of every key pair, in FIPS 140-3 mode only; HashML-DSA through mu; signing with given randomness only in the testing library; malformed private keys refused, verification's values zeroized | KAT, ACVP (1335 vectors), Wycheproof (1138 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), exhaustive math tests, valgrind constant-time tests (also at fixed levels), malformed private keys, stack-residue and thread-stack tests, fresh randomness, the register clearing in the x86-64 code; SYCL: byte identity, the error contract and fault injection on every device |
-| SLH-DSA | implemented (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic and hedged signing, the internal functions), C11/C++20; a pair-wise consistency test after KeyGen in FIPS 140-3 mode | SYCL: batched KeyGen/Sign/Verify, also pre-hash (PH(M) given) and one-key, hedged or deterministic, all parameter sets; status required on every call and fail-closed; the internal functions and signing with given randomness only in the backend's internal API and the testing library; a known-answer self-test when a context is created and a pair-wise consistency test of every key pair, in FIPS 140-3 mode only; the baseline pipeline only (the optimisation experiments are planned, not done) | KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2), math-core tests against transcriptions of the standard, valgrind constant-time test (also at -O2), stack-residue and short-stack tests, fresh randomness; SYCL: byte identity, fresh randomness and fault injection on every device |
-| FN-DSA | planned, waiting for FIPS 206 | planned | - |
+| Group | CPU | GPU |
+| --- | --- | --- |
+| [Core](#core) | implemented | implemented (SYCL) |
+| [ML-KEM](#ml-kem) | implemented | implemented (SYCL) |
+| [ML-DSA](#ml-dsa) | implemented | implemented (SYCL) |
+| [SLH-DSA](#slh-dsa) | implemented | implemented (SYCL) |
+| FN-DSA | planned, waiting for FIPS 206 | planned |
+
+### Core
+
+- **CPU:** Keccak-f[1600], SHA-3, SHAKE, SHA-2, HMAC-SHA-256 and HMAC-SHA-512 (C11); HMAC_DRBG with SHA-512 (SP
+  800-90A), the random bit generator of the FIPS 140-3 mode; the twelve pre-hash functions of HashML-DSA and
+  HashSLH-DSA with their OIDs; constant-time helpers, randomness that fails closed (the operating system's, or a
+  source the application registers or links; in FIPS 140-3 mode the DRBG), zeroization and stack clearing; the FIPS
+  140-3 mode's state, self-tests, integrity test and indicator.
+- **GPU:** the same code in SYCL kernels (SHA-2 with its state in registers, HMAC, MGF1); device list, launch, message
+  and workspace helpers; the context that the three backends share: a lock, a failed state after a device error,
+  wiping of the workspace, page-locked coin staging.
+- **Tests:** known answers, incremental vs one-shot, the sponge's phase checks, stack and register residue (also
+  32-bit x86), constant time at -O0 to -Os (valgrind) and branch-free assembly on seven processors (compile only), the
+  RNG's failure paths and registered sources, NIST ACVP for SHA-2, SHA-3 and SHAKE (with the large-data tests), HMAC
+  against RFC 4231, the DRBG against NIST's CAVP vectors, the OID table; in FIPS 140-3 mode the module's boundary,
+  integrity test, forced self-test failures and indicator; on the GPU the helpers and the context's failure handling.
+
+### ML-KEM
+
+- **CPU:** implemented (512/768/1024), C11/C++20; a pair-wise consistency test after KeyGen in FIPS 140-3 mode; the
+  stack burn can be left out (`OPENPQC_MLKEM_STACK_BURN`).
+- **GPU:** SYCL: batched KeyGen (also from seeds d ‖ z)/Encaps/Decaps through the GPU API (`openpqc/sycl.h`), all
+  parameter sets; status required on every call and fail-closed; Encaps with given randomness only in the testing
+  library (`OpenPQC::sycl_testing`); a known-answer self-test when a context is created and a pair-wise consistency
+  test of every key pair, in FIPS 140-3 mode only.
+- **Tests:** KAT, ACVP (435 cases), Wycheproof, byte-identity with mlkem-native, exhaustive math tests, valgrind
+  constant-time tests (also of the library at fixed optimization levels, and of Encaps and Decaps in the library as
+  built), stack-residue tests, fresh randomness, the pair-wise consistency test; SYCL: byte identity, the error
+  contract and fault injection on every device.
+
+### ML-DSA
+
+- **CPU:** implemented (44/65/87, HashML-DSA with all 12 pre-hash functions, external mu), C11/C++20; malformed
+  private keys refused, key checks; a pair-wise consistency test after KeyGen in FIPS 140-3 mode.
+- **GPU:** SYCL: batched KeyGen (also from seeds xi)/Sign/Verify (messages or mu; hedged or deterministic; one key per
+  operation or one for all), all parameter sets; status required on every call and fail-closed; a known-answer
+  self-test when a context is created and a pair-wise consistency test of every key pair, in FIPS 140-3 mode only;
+  HashML-DSA through mu; signing with given randomness only in the testing library; malformed private keys refused,
+  verification's values zeroized.
+- **Tests:** KAT, ACVP (1335 vectors), Wycheproof (1138 vectors), the reference's test programs, byte-identity with
+  the reference (C and AVX2), exhaustive math tests, valgrind constant-time tests (also at fixed levels), malformed
+  private keys, stack-residue and thread-stack tests, fresh randomness, the register clearing in the x86-64 code;
+  SYCL: byte identity, the error contract and fault injection on every device.
+
+### SLH-DSA
+
+- **CPU:** implemented (all 12 parameter sets of FIPS 205, HashSLH-DSA with all 12 pre-hash functions, deterministic
+  and hedged signing, the internal functions), C11/C++20; a pair-wise consistency test after KeyGen in FIPS 140-3
+  mode.
+- **GPU:** SYCL: batched KeyGen/Sign/Verify, also pre-hash (PH(M) given) and one-key, hedged or deterministic, all
+  parameter sets; status required on every call and fail-closed; the internal functions and signing with given
+  randomness only in the backend's internal API and the testing library; a known-answer self-test when a context is
+  created and a pair-wise consistency test of every key pair, in FIPS 140-3 mode only; the baseline pipeline only (the
+  optimisation experiments are planned, not done).
+- **Tests:** KAT, ACVP (1248 vectors), the reference's test programs, byte-identity with the reference (C and AVX2),
+  math-core tests against transcriptions of the standard, valgrind constant-time test (also at -O2), stack-residue and
+  short-stack tests, fresh randomness; SYCL: byte identity, fresh randomness and fault injection on every device.
 
 ## Running the tests
 

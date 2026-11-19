@@ -12,12 +12,14 @@ with their sources under [`src/`](../../src/README.md), and an installation puts
 | `openpqc.h`, `openpqc.hpp` | All of the C API, and all of the C++ API (`ML_KEM_768`, ..., `visit_kem`, `visit_sig`) |
 | `common.h`, `common.hpp` | `openpqc_status`, `openpqc_alg` and the algorithm table; `openpqc::status`, `openpqc::secret<N>` |
 | `kem.h`, `sig.h` | KEMs and signature schemes with the parameter set chosen at run time |
+| `fips.h` | FIPS 140-3 mode: the state of the module (`openpqc_fips_status`) and the approved-service indicator (`openpqc_fips_service_approved`) |
 | `sycl.h`, `sycl.hpp` | The GPU API: one context type, `openpqc_gpu`, for all 18 parameter sets, and its C++ layer |
 | `sycl/interop.hpp` | A GPU context in an application's own SYCL context |
 | `sycl/device.hpp` | Hash functions to call inside an application's own SYCL kernels |
 | `sycl_experimental.h` | Tuning knobs of the GPU contexts, for experiments; none changes a result |
 | `testing.h`, `testing.hpp`, `sycl_testing.h` | The testing interfaces: randomness chosen by the caller, the internal functions. Never installed |
 | `dispatch.c`, `testing_dispatch.c`, `sycl.cpp` | The implementations: the algorithm table, the run-time dispatch, and the GPU API over the three backends |
+| `CMakeLists.txt` | Builds the implementations into the libraries |
 
 ## Use it
 
