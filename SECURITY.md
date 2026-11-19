@@ -176,9 +176,9 @@ case in the project's suite (435 ML-KEM, 1335 ML-DSA and 1248 SLH-DSA cases), th
 Wycheproof ML-KEM vectors. In every comparison made, its outputs were byte-identical to the reference implementations
 (mlkem-native, the Dilithium and SPHINCS+ references), and they agreed with OpenSSL 3.6.5. The GPU backends returned
 the same bytes as the CPU library on an NVIDIA RTX 3050 and an Intel Iris Xe, with DPC++ and AdaptiveCpp, on seven
-device and toolchain combinations (for SLH-DSA the review ran five of them, the project's own runs all seven). All
-testing used x86-64 Linux with GCC 16 and Clang 23. Windows with MSVC, macOS, ARM and RISC-V processors and AMD GPUs
-have not been tested.
+device and toolchain combinations (for SLH-DSA the review ran five of them, not the two of AdaptiveCpp on the Iris Xe;
+the project's own runs all seven). All testing used x86-64 Linux with GCC 16 and Clang 23. Windows with MSVC, macOS,
+ARM and RISC-V processors and AMD GPUs have not been tested.
 
 Since then the suite has gained Wycheproof's ML-DSA vectors (`mldsa_wycheproof`) and NIST's ACVP vectors of SHA-2, SHA-3
 and SHAKE (`core_hash_acvp`: the messages of whole bytes), both network tests, which the review ran from fresh downloads
@@ -250,3 +250,74 @@ status buffer on every call, the length of the message buffer, against which the
 signature calls (review finding F073; test `gpu_api`), and a shared GPU library that exports this API only, with its
 testing interfaces in `OpenPQC::sycl_testing` and the backends' own C APIs internal (test `sycl_exports`). The review
 has not re-verified these changes.
+
+**SLH-DSA's own reviews.** A review of the CPU library (four lenses: FIPS 205 conformance, interfaces and style,
+secrets and constant time, tests; with the mutation run, its findings went to two adversarial verifiers, which
+confirmed 16 and rejected 5) led to these changes, besides additions to the tests: the `ParameterSet` concept requires
+8n to be a multiple of lg_w (a non-FIPS set with n = 16 and lg_w = 3 read past M); `slh_sign_internal` computes R
+locally and hashes the message before it writes SIG[0 : n], so that the signature may overlap the message (before, R
+was written first and could overwrite a message in the signature buffer before H_msg read it); PH(M) of the SHA-3 and
+SHAKE pre-hash functions was left on the stack, because Core's one-shot hashes did not wipe their state
+(`Core/prehash.hpp` then moved to wiped incremental states, and now hashes with Core's one-shot functions, which
+destroy their state and clear the stack and registers their computation used; this covers HashML-DSA as well, with
+unchanged outputs); `burn_stack` wrote past the end of 20–32 KiB thread stacks before it touched the stack first; the
+stack needs are documented in the headers; and Core's SHA-2 absorb no longer copies one byte at a time, which made
+SHA2 signing 6–23 % faster. A review of the GPU backend reported ten findings, nine distinct issues (two of its lenses
+found the pre-hash bug), all fixed:
+
+- The randomized pre-hash signing calls (`_prehash_sign`, `_prehash_sign_one_key`) refused their second chunk with −1,
+  after writing the first, when PH(M) is 28 bytes (SHA2-224, SHA2-512/224, SHA3-224) and max_batch is odd: the chunk's
+  PH(M) starts at 4 mod 8 and was checked for 8-byte alignment again (major). The library review found the cause
+  independently, from the design alone, as its finding S053 (the PH(M) of every odd operation lies at 4 mod 8). Fix:
+  the call is checked once and the chunks go to an internal path; the test uses 28-byte pre-hashes with odd chunk
+  sizes, and fails against the old backend.
+- The ragged test configurations used only 32- and 64-byte pre-hashes, so the suite passed with the bug. Fix: all
+  twelve pre-hash functions over the twelve sets.
+- A set filter that matched nothing, or sets missing from the build, still reported "all checks passed". Fix: strict
+  arguments, a result line per device, exit codes 2 and 77.
+- AdaptiveCpp kept a block root (an XMSS leaf, secret) in 24–32 bytes of private memory in the XMSS tree kernels of
+  SHAKE-192f and SHAKE-256f. Fix: the root is loaded lane by lane; 0 bytes of stack in every tree kernel of the sets
+  checked again (1 and 12; SHAKE-192f was not re-checked).
+- Core's `absorb` and `pad_and_permute` stayed out of line in the SPIR-V image (the instances of SHAKE's T_l), with
+  the state passed by pointer. Fix: forced inline, also the message helpers and `clear_local_words` (the effect on the
+  Iris Xe's speed was not measured).
+- `device_name`, `malloc_host`, `memcpy_async` and several refusals were not tested. Fix: an end-to-end block and the
+  refusals, with the status buffer read back.
+- The test's failure counter was incremented from several threads without synchronisation. Fix: `std::atomic`.
+- The random coins went to the device from pageable host memory, so a copy could stay in the driver's staging buffer.
+  Fix: a page-locked coin buffer in the context, wiped after every launch (shared with ML-DSA's backend).
+- NULL message buffers were refused even when every message is empty, unlike the CPU library. Documented, and tested
+  (refused; verification fails closed).
+
+**Before the fixes.** What the scheme READMEs used to say about earlier versions of the code, kept here because those
+pages describe the code as it is:
+
+- Status codes. Earlier versions had codes of their own per scheme. ML-DSA: -4 for the signing limit (now
+  `OPENPQC_ERR_SIGNING_LIMIT` = -8), -5 for the pair-wise consistency test (now `OPENPQC_ERR_PCT` = -6), -6 for a
+  malformed private key (now `OPENPQC_ERR_INVALID_SECRET_KEY` = -5). SLH-DSA: -4 for a failed pair-wise consistency
+  test (now -6). The ML-KEM GPU backend's code for no result, `OPQC_SYCL_MLKEM_FAILED`, was -2 (now -10, the value of
+  `OPENPQC_ERR_NOT_COMPUTED`).
+- Options. The CMake options `OPENPQC_MLKEM_KEYGEN_PCT` and `OPENPQC_MLDSA_KEYGEN_PCT` and the presets
+  `gcc-release-pct` and `clang-release-pct` went with the decision of 2026-11-17. The definition that removes ML-KEM's
+  stack burn was first called `OPENPQC_MLKEM_TEST_NO_STACK_BURN`, a name still accepted. `OPQC_NO_VALUE_BARRIERS` used
+  to turn the value barrier into the identity; it now stops a CPU build with an error.
+- Secrets left on the stack. ML-KEM: the review, with only the burn removed from its own copy of the code, whose Core
+  did not yet clear the stack after Keccak-f, measured 1,328 to 19,030 bytes below the calls that depended on their
+  data. ML-DSA: `mldsa_stack` fails on the code from before `Poly` destroyed itself (210 secret pieces left on the
+  stack with GCC 16, 258 with Clang 23). Core: with the incremental functions, `prehash` had left 15 to 26 of
+  SHA-256's 56 schedule words and 16 or 17 of SHA-512's 68. SLH-DSA: before the ring schedule of `Core/opqc_sha2.h`,
+  `slhdsa_stack` found all of SK.seed after signing with SLH-DSA-SHA2-192s and -256s.
+- Frames. ML-DSA's used to be larger (Sign of ML-DSA-87: 222 KiB with GCC 16, 299 KiB with Clang 23; now 176 KiB with
+  both): the operations on polynomials took their operands by value, two copies per operation that Clang did not
+  overlap with the rest of the frame, and s1, s2, t0 and the values of every signing attempt lived for the whole of
+  Sign. In SLH-DSA, Clang merged the signature of the pair-wise consistency test into KeyGen's frame, which had needed
+  about 99 KiB, until the test ran out of line.
+- Constant time. Clang had compiled the masks of ML-DSA's math core into branches in Sign on RV64GC at -O2 and -O3 and
+  on AArch64 at -O3; the masks now pass a value barrier where they are produced.
+- GPU ML-KEM. A freed buffer used to come back from the next allocation with the keys in it; freeing now overwrites
+  it.
+- Whose measurements. These figures of the READMEs are the review's: Keccak-f[1600] at 347 ns (Core); ML-KEM at 64–68
+  % of the speed of mlkem-native's portable C code; 193,822 wrong outputs in 586,998 operations of ML-KEM GPU contexts
+  that threads shared without the lock, on seven device and toolchain combinations, and none in 635,439 with it; the
+  4,592 bytes of a thread's own share of its stack with glibc (SLH-DSA); the second run of the timings of GPU ML-DSA's
+  zeroization.
