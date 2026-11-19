@@ -6,31 +6,13 @@
 // The C++ view of the C11 math core (ML/DSA/math): value types for the
 // algebraic objects of the standard, and the operations ML-DSA needs on them,
 // written so that the algorithms in mldsa_internal.hpp read like their
-// pseudocode:
+// pseudocode: w <- NTT^-1(A^ o NTT(y)) (Algorithm 7, line 12) is
+// invntt(matrix_vector_ntt(A_hat, ntt(y))). All coefficients are elements of
+// Z_q in [0, q); a vector of integers that FIPS 204 lets be negative (s1, s2,
+// t0, z, r0, ...) holds them mod q.
 //
-//   standard (Algorithm 7, line 12)       here
-//   w <- NTT^-1(A^ o NTT(y))              PolyVec<k> w = invntt(matrix_vector_ntt(A_hat, ntt(y)));
-//
-// All coefficients are elements of Z_q in [0, q); a vector of integers that
-// FIPS 204 lets be negative (s1, s2, t0, z, r0, ...) holds them mod q. As in
-// Section 7.4, the rounding functions apply to vectors coefficient by
-// coefficient. A hint h in R_2^k is a vector with coefficients 0 and 1.
-//
-// Destruction of intermediate values (Section 3.6.3). Expressions such as
-// invntt(scalar_vector_ntt(c_hat, s1_hat)) pass their results through unnamed
-// temporaries, which no ZeroizeOnExit can name; left on the stack, c^ o s1^ or
-// y of a signing attempt would give away s1. So every polynomial zeroizes
-// itself when its lifetime ends, named or not.
-//
-// Stack. A vector of polynomials takes up to 8 KiB, and every temporary of an
-// expression is another one in the caller's frame. The operations below take
-// their operands by const reference and build their result in the object they
-// return, so that an expression costs one temporary per intermediate result and
-// none for copies of its operands. By-value parameters (a copy of the operand,
-// modified and returned) cost two, which compilers do not always overlap with
-// the rest of the frame: with them, Clang 23 gave ML-DSA-87's Sign a frame of
-// 299 KiB, which is 175 KiB this way (see openpqc_mldsa.h for the stack each
-// operation needs).
+// Secrets: every polynomial, named or not, zeroizes itself when its lifetime ends (Poly).
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <array>
@@ -50,13 +32,28 @@ OPENPQC_ABI_BEGIN
 // An element of R_q (coefficients w_0, ..., w_255 of w = w_0 + w_1 X + ... + w_255 X^255)
 // or of T_q (an NTT representation w^[0], ..., w^[255]), Section 2.4.1. The derived
 // type gives the operators below their own namespace, and the destructor destroys the
-// coefficients (see above). Vectors and matrices of polynomials inherit it.
+// coefficients. Vectors and matrices of polynomials inherit it. Destruction of
+// intermediate values (Section 3.6.3): expressions such as
+// invntt(scalar_vector_ntt(c_hat, s1_hat)) pass their results through unnamed
+// temporaries, which no ZeroizeOnExit can name; left on the stack, c^ o s1^ or y of a
+// signing attempt would give away s1. So every polynomial zeroizes itself when its
+// lifetime ends, named or not.
 struct Poly : std::array<std::uint32_t, MLDSA_N> {
     ~Poly() { opqc_zeroize(data(), MLDSA_N * sizeof(std::uint32_t)); }
 };
 
 template <std::size_t N> using PolyVec = std::array<Poly, N>;                            // R_q^N or T_q^N
 template <std::size_t K, std::size_t L> using PolyMatrix = std::array<PolyVec<L>, K>;  // A[r][s], k x l
+
+// Stack. A vector of polynomials takes up to 8 KiB, and every temporary of an
+// expression is another one in the caller's frame. The operations below take
+// their operands by const reference and build their result in the object they
+// return, so that an expression costs one temporary per intermediate result and
+// none for copies of its operands. By-value parameters (a copy of the operand,
+// modified and returned) cost two, which compilers do not always overlap with
+// the rest of the frame: with them, Clang 23 gave ML-DSA-87's Sign a frame of
+// 299 KiB, which is 175 KiB this way (see openpqc_mldsa.h for the stack each
+// operation needs).
 
 // --- addition (Algorithms 44 and 46) and negation ----------------------------------
 // (operands by const reference, the result built in the returned object: see Stack above)
@@ -167,6 +164,7 @@ unsigned infnorm_geq(const PolyVec<N>& v, std::uint32_t bound) {
 }
 
 // --- rounding, coefficient by coefficient (Section 7.4) -----------------------------
+// (a hint h in R_2^k is a vector with coefficients 0 and 1)
 
 // Algorithm 35 on every coefficient: (r1, r0) <- Power2Round(r)
 template <std::size_t N>

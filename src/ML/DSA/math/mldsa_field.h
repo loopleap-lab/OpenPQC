@@ -6,48 +6,16 @@
 /*
  * mldsa_field.h -- arithmetic in Z_q, q = 8380417 (FIPS 204, Sections 2.3, 7.5, 7.6)
  *
- * Representation. An element of Z_q is a uint32_t in [0, q), the value
- * "x mod q" of FIPS 204, Section 2.3. Every function in ML/DSA/math takes and
- * returns elements of Z_q in this range, so a polynomial is always stored in
- * canonical form, as the algorithms of the standard are written (Algorithm 41,
- * line 12: t <- (z * w^[j + len]) mod q). Integers that FIPS 204 allows to be
- * negative -- the outputs of Power2Round, Decompose and LowBits, and the
- * coefficients of s1, s2, t0, y and z -- are int32_t where the math core
- * returns them, and enter R_q through mldsa_from_int ("mod q").
+ * The base of the math core: an element of Z_q is a uint32_t in [0, q), the
+ * value "x mod q" of Section 2.3, in every function of ML/DSA/math, so a
+ * polynomial is always in canonical form, as the algorithms are written
+ * (Algorithm 41, line 12: t <- (z * w^[j + len]) mod q). "mod q" is exact, by
+ * multiplications and shifts: no Montgomery form (Appendix A: a scaled form,
+ * x 2^32 mod q, that a reader has to keep track of), and no division.
  *
- * Reduction without division. FIPS 204 mentions Montgomery multiplication
- * (Appendix A) as a way to make "mod q" cheaper; it keeps values in a scaled
- * form (x 2^32 mod q) that a reader has to keep track of. The math core
- * computes "mod q" exactly, as the algorithms state it, with multiplications
- * and shifts:
- *
- *   x mod q = x - q floor(x M / 2^53),    M = ceil(2^53 / q) = 1074791297,
- *
- * which is exact for every 32-bit x (Granlund and Montgomery, PLDI 1994: with
- * e = M q - 2^53 = 2089857, the identity holds whenever x e < 2^53, i.e. for
- * x < 4309959607 > 2^32; the tests check all 2^32 inputs). A product of two
- * elements, or a sum of products, is a 64-bit integer; Barrett reduction first
- * brings it below 4q,
- *
- *   x - q floor(floor(x / 2^23) M' / 2^31) < 4q,    M' = floor(2^54 / q) = 2149582593,
- *
- * for every x < 2^54 (the estimate of floor(x / q) is never too large and at
- * most 3 too small; mldsa_reduce64 explains the shifts 23 and 31), and the
- * multiply-shift above finishes the reduction. Two reasons not to
- * write `x % q`:
- *
- *  - On some CPUs the division instruction takes a data-dependent number of
- *    cycles, which leaks secret values (KyberSlash, 2024), and a compiler is
- *    free to use that instruction for `%`.
- *  - The result needs no final conditional subtraction: no mask is derived
- *    from a secret here, so there is no selection that a compiler could turn
- *    into a secret-dependent branch (selections on secrets, as in
- *    mldsa_centered and mldsa_infnorm below, use the helpers of
- *    Core/opqc_ct.h, whose masks pass a value barrier).
- *
- * The modulus. q = 2^23 - 2^13 + 1 is prime and q - 1 = 2^13 * 1023, so Z_q
- * contains the 512-th roots of unity that the NTT uses (zeta = 1753,
- * Section 2.5), and every value fits in 23 bits.
+ * Secrets: selections on secrets (mldsa_centered, mldsa_infnorm) use the
+ *          helpers of Core/opqc_ct.h, whose masks pass a value barrier.
+ * Design:  ../README.md, "Choices that differ from the reference implementation".
  */
 
 #ifndef MLDSA_FIELD_H
@@ -56,6 +24,9 @@
 #include "../../../Core/opqc_common.h"
 #include "../../../Core/opqc_ct.h"
 
+/* q = 2^23 - 2^13 + 1 is prime and q - 1 = 2^13 * 1023, so Z_q contains the
+ * 512-th roots of unity that the NTT uses (zeta = 1753, Section 2.5), and every
+ * value fits in 23 bits. */
 #define MLDSA_N 256     /* polynomial degree n */
 #define MLDSA_Q 8380417 /* modulus q = 2^23 - 2^13 + 1 */
 #define MLDSA_D 13      /* bits dropped from t (Table 1), the same for all parameter sets */
@@ -65,7 +36,21 @@
 #define MLDSA_BARRETT_MULTIPLIER UINT64_C(2149582593) /* floor(2^54 / q) */
 #define MLDSA_REDUCE64_BOUND (UINT64_C(1) << 54)      /* mldsa_reduce64 is exact below this */
 
-/* x mod q for every 32-bit x */
+/*
+ * x mod q (Section 2.3) for every 32-bit x, with a multiplication and a shift:
+ *
+ *   x mod q = x - q floor(x M / 2^53),    M = ceil(2^53 / q) = 1074791297,
+ *
+ * which is exact for every 32-bit x (Granlund and Montgomery, PLDI 1994: with
+ * e = M q - 2^53 = 2089857, the identity holds whenever x e < 2^53, i.e. for
+ * x < 4309959607 > 2^32; the tests check all 2^32 inputs). Two reasons not to
+ * write `x % q`: on some CPUs the division instruction takes a data-dependent
+ * number of cycles, which leaks secret values (KyberSlash, 2024), and a
+ * compiler is free to use that instruction for `%`. And the result needs no
+ * final conditional subtraction: no mask is derived from a secret here, so
+ * there is no selection that a compiler could turn into a secret-dependent
+ * branch.
+ */
 OPQC_INLINE uint32_t mldsa_mod_q(uint32_t x)
 {
     uint32_t quotient = (uint32_t)((x * MLDSA_MOD_Q_MULTIPLIER) >> MLDSA_MOD_Q_SHIFT);
@@ -74,11 +59,11 @@ OPQC_INLINE uint32_t mldsa_mod_q(uint32_t x)
 
 /*
  * x mod q for 0 <= x < 2^54: a product of two elements of Z_q (< q^2 < 2^46),
- * or a sum of up to 256 of them. The estimate of floor(x / q) is
- * floor(floor(x / 2^23) M / 2^31) with M = floor(2^54 / q), computed from the
- * top bits of x: it is never too large and at most 3 too small, so the
- * remainder x - q * estimate is below 4q and its low 32 bits are the whole of
- * it; mldsa_mod_q finishes the reduction.
+ * or a sum of up to 256 of them, by Barrett reduction. The estimate of
+ * floor(x / q) is floor(floor(x / 2^23) M / 2^31) with M = floor(2^54 / q) =
+ * 2149582593, computed from the top bits of x: it is never too large and at
+ * most 3 too small, so the remainder x - q * estimate is below 4q and its low
+ * 32 bits are the whole of it; mldsa_mod_q finishes the reduction.
  *
  * The shifts are 23 and 31 rather than the 22 and 32 that would keep 1 bit more
  * of precision: "the high 32 bits of a 64-bit product" is a pattern that
@@ -111,7 +96,10 @@ OPQC_INLINE uint32_t mldsa_neg(uint32_t a)
 }
 
 /* x mod q for an integer x with |x| <= 2^30 (the typecast from Z to Z_q of
- * Section 2.4.1): x + 256 q lies in [0, 2^32) */
+ * Section 2.4.1): x + 256 q lies in [0, 2^32). Integers that FIPS 204 allows to
+ * be negative -- the outputs of Power2Round, Decompose and LowBits, and the
+ * coefficients of s1, s2, t0, y and z -- are int32_t where the math core
+ * returns them, and enter R_q here. */
 OPQC_INLINE uint32_t mldsa_from_int(int32_t x)
 {
     return mldsa_mod_q((uint32_t)x + 256u * MLDSA_Q);

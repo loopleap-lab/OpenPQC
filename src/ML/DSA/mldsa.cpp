@@ -6,24 +6,13 @@
 // The compiled file of ML-DSA's library (mldsa_testing.cpp has the testing
 // interfaces, in OpenPQC::testing): it instantiates the templates of
 // scheme/ml_dsa.hpp for the three parameter sets and exports them under the
-// C names. Each function turns its pointer arguments into spans.
+// C names; in FIPS 140-3 mode (OPENPQC_FIPS140_3; Core/opqc_fips.h) each is a
+// service of the module (fips_service). Each function turns its pointer
+// arguments into spans.
 //
-// Outputs on failure (openpqc_mldsa.h, Results): the checks of ctx and the RNG
-// run before anything is written to sig, mu, pk or sk, so their failures leave
-// them unchanged; Sign_internal zeroes sig when it fails (a malformed sk, the
-// signing limit) and a failed pair-wise consistency test zeroizes pk and sk
-// (scheme/mldsa_internal.hpp, scheme/ml_dsa.hpp). The check of ph below comes
-// before any write as well. In FIPS 140-3 mode, a call during which the module
-// enters its error state zeroizes its outputs instead (fips_service below).
-//
-// FIPS 140-3 mode (OPENPQC_FIPS140_3; Core/opqc_fips.h): every function is a
-// service of the module, run by fips_service below, which checks the module's
-// state before and after the call, sets the approved-service indicator last,
-// and puts the module in its error state when a key generation fails its
-// pair-wise consistency test. HashML-DSA with a pre-hash weaker than the
-// parameter set (prehash_approved) and the key checks are services that are
-// not approved. The ordinary build compiles exactly the calls it compiled
-// before.
+// Secrets: a failed call leaves its outputs unchanged or zeroed (CApi).
+// Design:  README.md, "C and C++ APIs".
+
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
 
@@ -63,6 +52,13 @@ openpqc_status result(Status s) {
 // rnd of the deterministic variant: {0}^32 (FIPS 204, Section 3.4; Algorithm 2, line 5)
 constexpr std::uint8_t deterministic_rnd[32] = {};
 
+// The C API for the parameter set P. Outputs on failure (openpqc_mldsa.h, Results): the checks
+// of ctx and the RNG run before anything is written to sig, mu, pk or sk, so their failures
+// leave them unchanged; Sign_internal zeroes sig when it fails (a malformed sk, the signing
+// limit) and a failed pair-wise consistency test zeroizes pk and sk (scheme/mldsa_internal.hpp,
+// scheme/ml_dsa.hpp). The check of ph below comes before any write as well. In FIPS 140-3 mode,
+// a call during which the module enters its error state zeroizes its outputs instead
+// (fips_service below).
 template <ParameterSet P>
 struct CApi {
     using S = Sizes<P>;
@@ -250,6 +246,7 @@ openpqc_status fips_service(bool approved, Call call, Zeroize zeroize) {
     return fips_service<Kind::kind>(                                                                             \
             approved, [&]() -> openpqc_status { return __VA_ARGS__; }, [&]() { zeroize_outputs outputs; })
 #else
+// Outside FIPS 140-3 mode a function is its call alone
 #define OPENPQC_MLDSA_SERVICE(kind, approved, outputs, ...) return __VA_ARGS__
 #endif
 

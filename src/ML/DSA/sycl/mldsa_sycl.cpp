@@ -5,88 +5,26 @@
 //
 // Runs many independent ML-DSA operations at once on a SYCL device, compiled with
 // Intel DPC++ or AdaptiveCpp (tested on NVIDIA and Intel GPUs and on CPUs; AMD GPUs
-// untested). The results are byte-identical to the CPU library.
+// untested). The results are byte-identical to the CPU library, whose C11 math core
+// (Core/opqc_keccak.h, Core/opqc_sha3.h, ML/DSA/math) the kernels run. This file
+// decides who computes what, as the ML-KEM backend does (ML/KEM/sycl/mlkem_sycl.cpp).
 //
-// The mathematics is the C11 math core -- Core/opqc_keccak.h, Core/opqc_sha3.h
-// and ML/DSA/math -- the same functions the CPU library runs. This file decides
-// who computes what, as the ML-KEM backend does (ML/KEM/sycl/mlkem_sycl.cpp):
-//
-//  * Hashing stages: one work-item per independent sponge, across the batch:
-//    the k l RejNTTPoly streams of ExpandA, the l + k RejBoundedPoly streams of
-//    ExpandS, the l streams of ExpandMask, and the single hashes (H(xi || k || l),
-//    tr, mu, rho'', and c~ followed by SampleInBall).
-//  * Arithmetic stages: a team of 32 work-items per operation, 4 teams per
-//    work-group. Work-item g of a team owns the 8 coefficients 8g .. 8g+7 of
-//    every polynomial (one chunk of the bit packing, ML/math/ml_bitpack.h) for all
-//    coefficient-wise steps. The NTTs run BATCH polynomials at a time through the
-//    team's local memory (transform); between them, polynomials wait in the
-//    workspace, where each work-item reads and writes only its own chunks.
-//
-// The signing loop (Algorithm 7, lines 10-32) makes a random number of attempts
-// -- 4.36, 5.14 and 3.91 on average for ML-DSA-44, -65 and -87 (FIPS 204,
-// Table 1, as corrected by NIST's errata) -- different for every signature, and
-// at most max_signing_attempts. Here it runs in rounds. A round
-// makes s attempts of every unfinished signature at once (attempts first ..
-// first + s - 1, each in a "slot"); then every signature takes the first of its
-// attempts that succeeded, which is the one the sequential loop returns, and the
-// others go on to the next round. s grows as signatures finish, so that the last
-// rounds still give the device enough work (opqc_sycl_mldsa_set_speculation);
-// the signatures do not depend on it.
-//
-// Between the stages, intermediate values wait in a workspace in device memory.
-// The secret ones are zeroized at the end of every call (FIPS 204, Section
-// 3.6.3), and the arithmetic stages clear their local memory before they end.
-// Signing also zeroizes mu and its copy of the context string, which come from
-// the message, as the CPU library destroys mu after Sign, and the challenges c
-// and the result flags of its attempts. Verification
-// zeroizes all of its values but A^, which the standard lets an
-// implementation keep: its inputs may have to stay confidential (Section 3.6.3:
-// a signature used as a bearer token, a confidential message). create zeroizes
-// the whole workspace after its self-test (a build with it, below), so that a new
-// context holds none of the self-test's values. What is public follows the CPU code
-// (scheme/mldsa_internal.hpp): rho and A^, the rejection decisions and c~ of
-// every attempt, z and h of the attempt that succeeds, and whether sk is well
-// formed; the kernels branch on nothing else derived from secrets. As the CPU
-// library does, the signer refuses a private key whose s1 or s2 has a
-// coefficient outside [-eta, eta] (Algorithm 25, lines 3 and 6): the check
-// examines every coefficient without a branch on it, and the operation gets an
-// all-zero signature and OPENPQC_ERR_INVALID_SECRET_KEY.
-//
-// When the device fails (Core/sycl/opqc_sycl_context.hpp): the context has failed
-// for good, every later call whose arguments are accepted returns -2 (refused
-// arguments still give -1), and the first call or sync that finds the failure
-// zeroizes the whole workspace (a copy does not: Core's copy takes no lock).
-// Signing reads its counters back after every round and stops as soon as the
-// context has failed, or when the counters are not those a complete round leaves.
-// Verification fills its status entries with OPENPQC_ERR_INVALID_SIGNATURE
-// before its first kernel, so that an entry no kernel decides never reads as
-// valid.
-//
-// FIPS 140-3 mode (OPENPQC_FIPS140_3), as the other two backends and the CPU
-// library do it:
-//  * create runs a known-answer self-test of the context's level on the device
-//    (self_test, mldsa_sycl_self_test.hpp: one KeyGen, one deterministic
-//    signature, and the verification of it and of a tampered copy, against the
-//    CPU library's answers) and fails with OPQC_SYCL_MLDSA_SELF_TEST_FAIL if the
-//    device computes a wrong result: FIPS 140-3 asks a module to test an
-//    algorithm before it uses it (IG 10.3.A), and the compilers of device code
-//    have been seen to miscompile code like this, some of them at run time on the
-//    machine that runs it. A build outside FIPS mode has no such check (the
-//    developer definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST compiles it in for
-//    the tests): there, only the tests compare the device's results with the CPU
-//    library's.
-//  * KeyGen tests every key pair it makes, as the CPU library does in this mode;
-//    a pair counts as passed only once the test's last kernel has seen it pass.
-//    Outside FIPS mode only test objects compiled with OPENPQC_MLDSA_KEYGEN_PCT
-//    have it.
+// Secrets: zeroized in the workspace after every call and in local memory before
+//          every arithmetic stage ends; what is public follows the CPU code, and the
+//          kernels branch on nothing else derived from secrets (Workspace).
+// Design:  ../README.md, "GPU backend".
 
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
 
-// Whether create runs the known-answer self-test (self_test): in FIPS 140-3 mode, and where the developer
-// definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST is given (the white-box test test_mldsa_sycl_faults; no target
-// of the libraries defines it). Without it, the self-test and its answers are not compiled at all, so that no
-// library of an ordinary build holds them (test gpu_self_test).
+// Whether create runs the known-answer self-test (self_test: one KeyGen, one deterministic signature, and the
+// verification of it and of a tampered copy, on the device, against the CPU library's answers). In FIPS 140-3
+// mode, as the other two backends do: FIPS 140-3 asks a module to test an algorithm before it uses it (IG 10.3.A),
+// and the compilers of device code have been seen to miscompile code like this, some of them at run time on the
+// machine that runs it. And where the developer definition OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST is given (the
+// white-box test test_mldsa_sycl_faults; no target of the libraries defines it). Without it, the self-test and its
+// answers are not compiled at all, so that no library of an ordinary build holds them (test gpu_self_test), and
+// only the tests compare the device's results with the CPU library's.
 #if defined(OPENPQC_FIPS140_3) || defined(OPENPQC_MLDSA_SYCL_CREATE_SELF_TEST)
 #define OPQC_MLDSA_SYCL_SELF_TEST 1
 #else
@@ -169,7 +107,12 @@ inline constexpr std::size_t sig_stride = (Sizes<P>::sig + 7) / 8 * 8;
 
 // Device workspace: struct of arrays over the operations of one launch. A "slot" is
 // one attempt of the signing loop (Sign) or one operation (Verify); there are as many
-// slots as operations per launch.
+// slots as operations per launch. Between the stages, intermediate values wait here;
+// the secret ones are zeroized at the end of every call (FIPS 204, Section 3.6.3; the
+// sections each operation zeroizes: SIGN_SECTIONS and the others, below). What is public
+// follows the CPU code (scheme/mldsa_internal.hpp): rho and A^, the rejection decisions
+// and c~ of every attempt, z and h of the attempt that succeeds, and whether sk is well
+// formed; the kernels branch on nothing else derived from secrets.
 struct Workspace {
     // per operation
     std::uint8_t* seeds;       // 128 B: (rho, rho', K) of KeyGen                              secret
@@ -215,7 +158,7 @@ constexpr bool KEYGEN_PCT = false;
 // code itself uses the preprocessor's answer
 [[maybe_unused]] constexpr bool CREATE_SELF_TEST = OPQC_MLDSA_SYCL_SELF_TEST != 0;
 
-// The scheduling of the signing loop (see the top of the file). On the RTX 3050, these
+// The scheduling of the signing loop (see sign, below). On the RTX 3050, these
 // defaults were within 9 % of the best setting measured for every batch size from 8 to
 // 4096 and every parameter set: about 512 attempts per round keep it busy without slowing
 // the round down (ML/DSA/README.md).
@@ -521,6 +464,10 @@ OPQC_KERNEL_INLINE inline void message_representative(std::uint64_t s[25], const
 
 // ------------------------------------------------------------------ hashing stages
 
+// One work-item per independent sponge, across the batch: the k l RejNTTPoly streams of
+// ExpandA, the l + k RejBoundedPoly streams of ExpandS, the l streams of ExpandMask, and
+// the single hashes (H(xi || k || l), tr, mu, rho'', and c~ followed by SampleInBall).
+
 // KeyGen: (rho, rho', K) <- H(xi || IntegerToBytes(k, 1) || IntegerToBytes(l, 1), 128)
 // (Algorithm 6, line 1)
 template <class P>
@@ -788,6 +735,13 @@ void verify_final(sycl::queue& q, const Workspace& ws, const std::uint8_t* sig_b
 }
 
 // ------------------------------------------------------------------ arithmetic stages
+
+// A team of 32 work-items per operation, 4 teams per work-group. Work-item g of a team
+// owns the 8 coefficients 8g .. 8g+7 of every polynomial (one chunk of the bit packing,
+// ML/math/ml_bitpack.h) for all coefficient-wise steps. The NTTs run BATCH polynomials at
+// a time through the team's local memory (transform); between them, polynomials wait in
+// the workspace, where each work-item reads and writes only its own chunks. Each stage
+// clears its local memory before it ends (clear_local).
 
 // KeyGen: t <- NTT^-1(A^ o NTT(s1)) + s2 and (t1, t0) <- Power2Round(t) (Algorithm 6,
 // lines 5-6), and the encodings of pk and sk (lines 8 and 10; Algorithms 22 and 24)
@@ -1255,6 +1209,16 @@ bool round_counters(Queue& q, Counters& counts, const std::uint32_t* device, std
 // (key_step 1) or one key for all signatures (key_step 0): then A^, s1^, s2^ and t0^ are
 // computed once. Stops after the round in which the context failed (round_counters); the
 // call's result is then -2.
+//
+// The signing loop (Algorithm 7, lines 10-32) makes a random number of attempts -- 4.36,
+// 5.14 and 3.91 on average for ML-DSA-44, -65 and -87 (FIPS 204, Table 1, as corrected by
+// NIST's errata) -- different for every signature, and at most max_signing_attempts. Here
+// it runs in rounds. A round makes s attempts of every unfinished signature at once
+// (attempts first .. first + s - 1, each in a "slot"); then every signature takes the first
+// of its attempts that succeeded, which is the one the sequential loop returns, and the
+// others go on to the next round. s grows as signatures finish, so that the last rounds
+// still give the device enough work (attempts_per_round, opqc_sycl_mldsa_set_speculation);
+// the signatures do not depend on it.
 template <class P, bool Message, class Queue, class Probe = NoProbe>
 std::size_t sign(Queue& q, const Workspace& ws, const Schedule& schedule, std::size_t max_slots, SignStats& stats,
                  std::uint8_t* sig, const std::uint8_t* sk, std::size_t key_step, Messages msgs,
@@ -1408,9 +1372,9 @@ constexpr std::array<std::size_t, SECTIONS> section_bytes() {
 // in the CPU code's leakage model), but they are intermediate values of Sign computed from mu and
 // the key, and c of an attempt that was rejected is published nowhere (Section 3.6.3); verification
 // every section it writes, but A^ (Section 3.6.3: its intermediate values may reveal its inputs,
-// which some applications must keep confidential, and A^, computed from the public key, may be
-// kept). The context string, which signing and verification also write, is zeroized by sign_any
-// and verify_any.
+// which some applications must keep confidential -- a signature used as a bearer token, a
+// confidential message -- and A^, computed from the public key, may be kept). The context string,
+// which signing and verification also write, is zeroized by sign_any and verify_any.
 constexpr unsigned bit(Section s) { return 1u << s; }
 constexpr unsigned SIGN_SECRETS = bit(SECRETS) | bit(RHO_PP) | bit(YBYTES) | bit(SCRATCH) | bit(W) | bit(W1) | bit(SIG);
 constexpr unsigned SIGN_SECTIONS = SIGN_SECRETS | bit(MU) | bit(C) | bit(FLAGS);
@@ -1423,6 +1387,11 @@ constexpr unsigned SLOT_SECTIONS = bit(YBYTES) | bit(SCRATCH) | bit(W) | bit(W1)
 } // namespace openpqc::mldsa::gpu
 
 // ====================================================================== C API
+
+// When the device fails (Core/sycl/opqc_sycl_context.hpp): the context has failed for good,
+// every later call whose arguments are accepted returns -2 (refused arguments still give -1),
+// and the first call or sync that finds the failure zeroizes the whole workspace (a copy does
+// not: Core's copy takes no lock).
 
 using namespace openpqc::mldsa;
 using openpqc::mldsa::gpu::Section;
@@ -1921,7 +1890,7 @@ extern "C" int opqc_sycl_mldsa_sign_stats(const opqc_sycl_mldsa* ctx, std::size_
 
 namespace {
 
-// Fail closed for KeyGen (openpqc_mldsa_sycl.h, Return values): a call that failed (no randomness,
+// Fail closed for KeyGen (openpqc_mldsa_sycl.h, Results): a call that failed (no randomness,
 // an exception, a device error) zeroes pk and sk of all n operations, behind the work it queued and
 // also on a context that has failed, as far as the device still accepts work, and waits for that,
 // so that no key pair of the call, whole (the chunks before the failure) or partial, is left in the

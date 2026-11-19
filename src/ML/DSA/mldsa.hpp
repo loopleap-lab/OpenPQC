@@ -5,39 +5,13 @@
 //
 // Header-only wrapper over the C API in ML/DSA/openpqc_mldsa.h, so that
 // including it does not pull in the algorithms (those are in ML/DSA/scheme/,
-// compiled once in ML/DSA/mldsa.cpp). Sizes are part of the types, and the
-// secrets (sk, the seed) are openpqc::secret<N>, which zeroize themselves
-// (openpqc/common.hpp):
+// compiled once in ML/DSA/mldsa.cpp). What openpqc_mldsa.h says about private
+// keys (sk from a trusted source; check_sk and check_keypair for a stored or
+// imported key) and about the stack each call needs applies here too.
 //
-//   using DSA = openpqc::ML_DSA_65;                 // openpqc/openpqc.hpp; = openpqc::mldsa::MLDSA<65>
-//   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
-//   openpqc::check(DSA::keygen(pk, sk));            // randomness from opqc_randombytes (below)
-//   openpqc::check(DSA::sign(sig, message, sk));    // hedged; optional context string last
-//   bool valid = DSA::verify(sig, message, pk) == openpqc::status::ok;    // ok and only ok: valid
-//   openpqc::check(DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk));   // HashML-DSA
-//
-// Every function returns an openpqc::status and is [[nodiscard]]. What
-// openpqc_mldsa.h says about private keys (sk from a trusted source; check_sk
-// and check_keypair for a stored or imported key) and about the stack each
-// call needs applies here too. keygen_from_seed expands a seed xi stored in
-// place of sk (FIPS 204, Section 3.6.3); the *_deterministic functions sign
-// with rnd = {0}^32 (Sections 3.4 and 5.2). Signing with rnd given and the
-// internal functions are for testing only, in openpqc/testing.hpp.
-//
-// keygen and the hedged signing functions (sign, prehash_sign, sign_mu) draw xi or rnd
-// through Core's opqc_randombytes (Core/opqc_platform.h): from the source that the
-// application registered with opqc_set_randombytes, else, in a library built with the
-// CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
-// opqc_external_randombytes, else from the operating system (the default). In FIPS
-// 140-3 mode they come from the module's own HMAC_DRBG, and registering another
-// source is refused.
-//
-// In FIPS 140-3 mode (openpqc_mldsa.h, "FIPS 140-3 mode") this C++ API is not part
-// of the module: it is compiled into the application, and each of its functions is
-// one call of one service of the C API, so the approved-service indicator
-// (openpqc_fips_service_approved, openpqc/fips.h) read right after it is that
-// service's. The pre-hash functions named below (prehash, prehash_oid,
-// prehash_bytes) run as the application's own code, outside the module.
+// Secrets: sk and the seed are openpqc::secret<N>, which zeroize themselves
+//          (openpqc/common.hpp).
+// Design:  README.md, "C and C++ APIs".
 #pragma once
 
 #include <array>
@@ -93,6 +67,25 @@ OPENPQC_MLDSA_CXX_API(87)
 
 } // namespace detail
 
+// ML-DSA-44, -65 or -87. Sizes are part of the types. Every function returns an
+// openpqc::status and is [[nodiscard]]:
+//
+//   using DSA = openpqc::ML_DSA_65;                 // openpqc/openpqc.hpp; = openpqc::mldsa::MLDSA<65>
+//   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
+//   openpqc::check(DSA::keygen(pk, sk));            // randomness from opqc_randombytes (keygen)
+//   openpqc::check(DSA::sign(sig, message, sk));    // hedged; optional context string last
+//   bool valid = DSA::verify(sig, message, pk) == openpqc::status::ok;    // ok and only ok: valid
+//   openpqc::check(DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk));   // HashML-DSA
+//
+// Signing with rnd given and the internal functions are for testing only, in
+// openpqc/testing.hpp.
+//
+// In FIPS 140-3 mode (openpqc_mldsa.h, "FIPS 140-3 mode") this C++ API is not part
+// of the module: it is compiled into the application, and each of its functions is
+// one call of one service of the C API, so the approved-service indicator
+// (openpqc_fips_service_approved, openpqc/fips.h) read right after it is that
+// service's. The pre-hash functions named above (prehash, prehash_oid,
+// prehash_bytes) run as the application's own code, outside the module.
 template <int Level>
 struct MLDSA {
     using api = detail::api<Level>;
@@ -119,13 +112,20 @@ struct MLDSA {
     using sig_out = std::span<std::uint8_t, signature_bytes>;
     using mu_in = std::span<const std::uint8_t, mu_bytes>;
 
-    // ML-DSA.KeyGen, FIPS 204 Algorithm 1 (xi from opqc_randombytes, above)
+    // ML-DSA.KeyGen, FIPS 204 Algorithm 1. keygen and the hedged signing functions (sign,
+    // prehash_sign, sign_mu) draw xi or rnd through Core's opqc_randombytes
+    // (Core/opqc_platform.h): from the source that the application registered with
+    // opqc_set_randombytes, else, in a library built with the CMake option
+    // OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes, else
+    // from the operating system (the default). In FIPS 140-3 mode they come from the
+    // module's own HMAC_DRBG, and registering another source is refused.
     [[nodiscard]] static status keygen(std::span<std::uint8_t, public_key_bytes> pk,
                                        std::span<std::uint8_t, secret_key_bytes> sk) {
         return to_status(api::keygen(pk.data(), sk.data()));
     }
 
-    // ML-DSA.KeyGen_internal(xi), Algorithm 6: the key pair of a stored seed
+    // ML-DSA.KeyGen_internal(xi), Algorithm 6: the key pair of a seed xi stored in place of sk
+    // (FIPS 204, Section 3.6.3)
     [[nodiscard]] static status keygen_from_seed(std::span<std::uint8_t, public_key_bytes> pk,
                                                  std::span<std::uint8_t, secret_key_bytes> sk,
                                                  std::span<const std::uint8_t, seed_bytes> xi) {
@@ -142,6 +142,7 @@ struct MLDSA {
     }
 
     // ML-DSA.Sign, Algorithm 2: hedged (rnd from opqc_randombytes, above), and the deterministic variant
+    // (rnd = {0}^32, Sections 3.4 and 5.2), as are all *_deterministic functions
     [[nodiscard]] static status sign(sig_out sig, bytes message, sk_in sk, bytes ctx = {}) {
         return to_status(api::sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data()));
     }

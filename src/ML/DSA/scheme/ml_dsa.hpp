@@ -3,29 +3,16 @@
 //
 // ml_dsa.hpp  --  ML-DSA and HashML-DSA (FIPS 204, Section 5)
 //
-// The algorithms an application uses: KeyGen (Algorithm 1), Sign and Verify
-// with a context string (Algorithms 2 and 3), and their pre-hash versions
-// HashML-DSA.Sign and HashML-DSA.Verify (Algorithms 4 and 5). They wrap the
-// internal algorithms of Section 6 (mldsa_internal.hpp), adding
+// The algorithms an application uses: KeyGen, Sign and Verify with a context
+// string (Algorithms 1-3), and HashML-DSA.Sign and Verify (Algorithms 4, 5).
+// They wrap the internal algorithms of Section 6 (mldsa_internal.hpp) and add
+// xi and rnd, the formatted message M' and the check of its context string, the
+// signature length check (Section 3.6.2), the pair-wise consistency test of FIPS
+// 140-3 (OPENPQC_MLDSA_KEYGEN_PCT) and key checks that FIPS 204 does not define.
 //
-//   - the random values xi (KeyGen) and rnd (hedged signing) from Core's
-//     opqc_randombytes (the system RNG by default; in FIPS 140-3 mode the
-//     module's HMAC_DRBG),
-//   - the formatted message M' = 0 || |ctx| || ctx || M, or for HashML-DSA
-//     M' = 1 || |ctx| || ctx || OID || PH(M), which separates the two domains,
-//   - the checks of the context string (at most 255 bytes) and of the signature
-//     length (Section 3.6.2),
-//   - optionally (OPENPQC_MLDSA_KEYGEN_PCT), a pair-wise consistency test after
-//     KeyGen, as FIPS 140-3 asks of validated modules: the library has it in
-//     FIPS 140-3 mode only (OPENPQC_FIPS140_3),
-//   - checks of a private key or a key pair from storage or from another party
-//     (check_secret_key, check_key_pair), which FIPS 204 does not define.
-//
-// The *_derand functions take rnd as an argument: rnd = {0}^32 is the
-// deterministic variant of Algorithms 2 and 4 (Section 3.4); other values are
-// for testing. keygen_derand expands a seed xi, which may be stored in place of
-// the private key (Section 3.6.3). The *_mu functions sign and verify a message
-// representative mu computed elsewhere ("external mu", Algorithm 7, line 6).
+// Secrets: xi, rnd and PH(M) are destroyed on return (Section 3.6.3); the key
+//          checks run in constant time, and only their outcome is public.
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <algorithm>
@@ -46,8 +33,8 @@
 namespace openpqc::mldsa {
 OPENPQC_ABI_BEGIN
 
-// The pre-hash functions PH of HashML-DSA, their OIDs and the limit on context strings are Core's
-// (Core/prehash.hpp), shared with HashSLH-DSA; their names in this namespace stay valid
+// The pre-hash functions PH of HashML-DSA, their OIDs and the limit on context strings (255 bytes)
+// are Core's (Core/prehash.hpp), shared with HashSLH-DSA; their names in this namespace stay valid
 using openpqc::max_context_bytes;
 using openpqc::max_prehash_bytes;
 using openpqc::PreHash;
@@ -166,7 +153,8 @@ bool check_key_pair(std::span<const std::uint8_t, Sizes<P>::pk> pk, std::span<co
 
 inline namespace OPENPQC_MLDSA_KEYGEN_CONFIGURATION {
 
-// Algorithm 1, line 5, with the seed xi given: ML-DSA.KeyGen_internal(xi)
+// Algorithm 1, line 5, with the seed xi given: ML-DSA.KeyGen_internal(xi). xi may be stored in
+// place of the private key (Section 3.6.3).
 template <ParameterSet P>
 Status keygen_derand(std::span<std::uint8_t, Sizes<P>::pk> pk, std::span<std::uint8_t, Sizes<P>::sk> sk,
                      std::span<const std::uint8_t, 32> xi) {
@@ -181,7 +169,8 @@ Status keygen_derand(std::span<std::uint8_t, Sizes<P>::pk> pk, std::span<std::ui
     return Status::ok;
 }
 
-// Algorithm 1: ML-DSA.KeyGen() -> (pk, sk)
+// Algorithm 1: ML-DSA.KeyGen() -> (pk, sk), xi from Core's opqc_randombytes (the system RNG by
+// default; in FIPS 140-3 mode the module's HMAC_DRBG), as rnd of the hedged signing functions
 template <ParameterSet P>
 Status keygen(std::span<std::uint8_t, Sizes<P>::pk> pk, std::span<std::uint8_t, Sizes<P>::sk> sk) {
     std::array<std::uint8_t, 32> xi;
@@ -194,7 +183,8 @@ Status keygen(std::span<std::uint8_t, Sizes<P>::pk> pk, std::span<std::uint8_t, 
 
 // --- ML-DSA (pure) -----------------------------------------------------------------------
 
-// Algorithm 2 with rnd given (lines 1-3 and 10-12)
+// Algorithm 2 with rnd given (lines 1-3 and 10-12). rnd = {0}^32 is the deterministic variant of
+// Algorithms 2 and 4 (Section 3.4); other values are for testing, in every *_derand function.
 template <ParameterSet P>
 Status sign_derand(std::span<std::uint8_t, Sizes<P>::sig> sigma, std::span<const std::uint8_t, Sizes<P>::sk> sk,
                    std::span<const std::uint8_t> M, std::span<const std::uint8_t> ctx,
@@ -233,7 +223,9 @@ Status verify(std::span<const std::uint8_t, Sizes<P>::pk> pk, std::span<const st
 // --- HashML-DSA ----------------------------------------------------------------------------
 
 // Algorithm 4 with rnd given, for a digest PH_M = PH(M) computed by the caller (lines 1-3, 23-25;
-// Section 5.4 allows PH(M) to be computed in a different module)
+// Section 5.4 allows PH(M) to be computed in a different module). The formatted message
+// M' = 1 || |ctx| || ctx || OID || PH(M), against 0 || |ctx| || ctx || M in ML-DSA (Algorithm 2,
+// line 10), separates the two domains.
 template <ParameterSet P>
 Status hash_sign_digest_derand(std::span<std::uint8_t, Sizes<P>::sig> sigma,
                                std::span<const std::uint8_t, Sizes<P>::sk> sk, std::span<const std::uint8_t> PH_M,

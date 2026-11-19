@@ -7,23 +7,14 @@
  * mldsa_ntt.h -- the number-theoretic transform and arithmetic in T_q
  * (FIPS 204, Sections 2.5, 7.5 and 7.6)
  *
- * zeta = 1753 is a primitive 512-th root of unity mod q, so X^256 + 1 splits
- * into 256 linear factors X - zeta^(2 BitRev8(i) + 1) and R_q is isomorphic to
- * T_q = Z_q^256:
+ * NTT and NTT^-1 (Algorithms 41, 42), in place on 256 coefficients in [0, q):
+ * the literal loops of the standard, and the same transforms in pieces for
+ * parallel code (one butterfly of a layer, or the butterfly on a pair of
+ * values); and AddNTT, MultiplyNTT and the sums of MatrixVectorNTT
+ * (Algorithms 44, 45, 48), coordinate-wise in T_q.
  *
- *     NTT(w) = (w(zeta_0), w(zeta_1), ..., w(zeta_255)),
- *     zeta_i = zeta^(2 BitRev8(i) + 1) mod q                    (equation 2.1).
- *
- * NTT computes this with 8 layers of butterflies (Algorithm 41), NTT^-1 undoes
- * it (Algorithm 42), and multiplication in T_q is coordinate-wise
- * (Algorithm 45), so a product in R_q costs O(n log n) instead of O(n^2).
- * Unlike ML-KEM's NTT (7 layers, pairs of coefficients multiplied by FIPS 203's
- * BaseCaseMultiply), this NTT is complete: every entry of T_q is one value.
- *
- * Both transforms work in place on 256 coefficients in [0, q). Besides the
- * literal loops of the standard, each transform is offered one butterfly at a
- * time (mldsa_ntt_butterfly, mldsa_invntt_butterfly), which lets a GPU kernel
- * give each of 128 work-items one butterfly per layer.
+ * Secrets: the coefficients (of s1, y, ...) decide no branch and no index.
+ * Design:  ../README.md, "Choices that differ from the reference implementation".
  */
 
 #ifndef MLDSA_NTT_H
@@ -74,7 +65,20 @@ static const uint32_t mldsa_zetas[256] = {
 
 #define MLDSA_INV_256 8347681 /* f = 256^-1 mod q, Algorithm 42, line 21 */
 
-/* Algorithm 41: w <- NTT(w) */
+/*
+ * Algorithm 41: w <- NTT(w). zeta = 1753 is a primitive 512-th root of unity
+ * mod q, so X^256 + 1 splits into 256 linear factors X - zeta^(2 BitRev8(i) + 1)
+ * and R_q is isomorphic to T_q = Z_q^256:
+ *
+ *     NTT(w) = (w(zeta_0), w(zeta_1), ..., w(zeta_255)),
+ *     zeta_i = zeta^(2 BitRev8(i) + 1) mod q                    (equation 2.1).
+ *
+ * NTT computes this with 8 layers of butterflies, NTT^-1 undoes it
+ * (Algorithm 42), and multiplication in T_q is coordinate-wise (Algorithm 45),
+ * so a product in R_q costs O(n log n) instead of O(n^2). Unlike ML-KEM's NTT
+ * (7 layers, pairs of coefficients multiplied by FIPS 203's BaseCaseMultiply),
+ * this NTT is complete: every entry of T_q is one value.
+ */
 OPQC_INLINE void mldsa_ntt(uint32_t w[MLDSA_N])
 {
     unsigned m = 0;                                                   /* 4 */
@@ -151,7 +155,8 @@ OPQC_INLINE uint32_t mldsa_invntt_zeta(unsigned layer, unsigned block)
  *     w[j], w[j + len]   with j = 2 len g + (k mod len), z = zetas[2^(L-1) + g],
  *
  * because the blocks of the earlier layers used zetas[1 .. 2^(L-1) - 1].
- * Running all k for L = 1, 2, ..., 8 computes exactly mldsa_ntt(w).
+ * Running all k for L = 1, 2, ..., 8 computes exactly mldsa_ntt(w). This lets
+ * a GPU kernel give each of 128 work-items one butterfly per layer.
  */
 OPQC_INLINE void mldsa_ntt_butterfly(uint32_t w[MLDSA_N], unsigned layer, unsigned k)
 {

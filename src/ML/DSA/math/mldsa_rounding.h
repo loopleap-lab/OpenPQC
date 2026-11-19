@@ -6,24 +6,15 @@
 /*
  * mldsa_rounding.h -- high-order and low-order bits and hints (FIPS 204, Section 7.4)
  *
- *   Power2Round(r) = (r1, r0)   r = r1 2^d + r0,      r0 = r mod± 2^d       (Algorithm 35)
- *   Decompose(r)   = (r1, r0)   r = r1 2 gamma2 + r0, r0 = r mod± 2 gamma2  (Algorithm 36),
- *                               except that r1 = (q - 1)/(2 gamma2) becomes 0
- *   HighBits, LowBits           r1 and r0 of Decompose                 (Algorithms 37, 38)
- *   MakeHint(z, r)              [[HighBits(r) != HighBits(r + z)]]     (Algorithm 39)
- *   UseHint(h, r)               HighBits(r), moved by one if h = 1     (Algorithm 40)
+ * Power2Round, Decompose, HighBits, LowBits, MakeHint and UseHint
+ * (Algorithms 35-40) for one coefficient. Inputs r, z are elements of Z_q in
+ * [0, q) (mldsa_field.h); r0 is returned as an int32_t, as the standard's
+ * integers can be negative.
  *
- * Inputs r, z are elements of Z_q in [0, q) (mldsa_field.h); r0 is returned as
- * an int32_t, as the standard's integers can be negative.
- *
- * gamma2 is (q - 1)/88 for ML-DSA-44 and (q - 1)/32 for ML-DSA-65/87
- * (Table 1). Decompose divides by 2 gamma2 = 190464 or 523776 with an exact
- * multiply-shift rather than a division instruction (see mldsa_field.h for
- * why); the tests compare it with ordinary division for every r in Z_q.
- *
- * These functions run on secret data while signing (w, w - cs2, ...), so they
- * are branch-free: the special case of Decompose and the cases of UseHint are
- * selected with masks.
+ * Secrets: these functions run on secret data while signing (w, w - cs2, ...),
+ *          so they are branch-free: the special case of Decompose and the
+ *          cases of UseHint are selected with masks.
+ * Design:  ../README.md, "Choices that differ from the reference implementation".
  */
 
 #ifndef MLDSA_ROUNDING_H
@@ -32,11 +23,12 @@
 #include "../../../Core/opqc_ct.h"
 #include "mldsa_field.h"
 
+/* gamma2 (Table 1) */
 #define MLDSA_GAMMA2_88 ((MLDSA_Q - 1) / 88) /* 95232, ML-DSA-44 */
 #define MLDSA_GAMMA2_32 ((MLDSA_Q - 1) / 32) /* 261888, ML-DSA-65 and ML-DSA-87 */
 
 /* Algorithm 35: Power2Round(r) for r in Z_q. Returns r1 in [0, 2^10) and sets
- * *r0 in (-2^(d-1), 2^(d-1)], so that r = r1 2^d + r0. */
+ * *r0 = r mod± 2^d, in (-2^(d-1), 2^(d-1)], so that r = r1 2^d + r0. */
 OPQC_INLINE uint32_t mldsa_power2round(int32_t *r0, uint32_t r)
 {
     /* 1: r+ = r mod q is r itself. 2: r0 = r+ mod± 2^d, so that
@@ -48,7 +40,10 @@ OPQC_INLINE uint32_t mldsa_power2round(int32_t *r0, uint32_t r)
 }
 
 /* floor(x / (2 gamma2)) for 0 <= x < 2^24: x M / 2^s with M = ceil(2^s / (2 gamma2)),
- * exact because x (M 2 gamma2 - 2^s) < 2^s for all such x */
+ * exact because x (M 2 gamma2 - 2^s) < 2^s for all such x. Decompose divides by
+ * 2 gamma2 = 190464 or 523776 with this multiply-shift rather than a division
+ * instruction (see mldsa_mod_q in mldsa_field.h for why); the tests compare it
+ * with ordinary division for every r in Z_q. */
 OPQC_INLINE uint32_t mldsa_div_2gamma2(uint32_t x, uint32_t gamma2)
 {
     if (gamma2 == MLDSA_GAMMA2_88) {
@@ -58,7 +53,8 @@ OPQC_INLINE uint32_t mldsa_div_2gamma2(uint32_t x, uint32_t gamma2)
 }
 
 /* Algorithm 36: Decompose(r) for r in Z_q. Returns r1 in [0, (q - 1)/(2 gamma2))
- * and sets *r0 in [-gamma2, gamma2], so that r = r1 2 gamma2 + r0 mod q. */
+ * and sets *r0 in [-gamma2, gamma2], so that r = r1 2 gamma2 + r0 mod q: r0 is
+ * r mod± 2 gamma2, except that r1 = (q - 1)/(2 gamma2) becomes 0. */
 OPQC_INLINE uint32_t mldsa_decompose(int32_t *r0, uint32_t r, uint32_t gamma2)
 {
     const uint32_t alpha = 2 * gamma2;
@@ -96,7 +92,8 @@ OPQC_INLINE uint32_t mldsa_make_hint(uint32_t z, uint32_t r, uint32_t gamma2)
     return opqc_ct_mask_nonzero_u32(r1 ^ v1) & 1u;            /* 3 */
 }
 
-/* Algorithm 40: UseHint(h, r) for h in {0, 1} and r in Z_q, in [0, (q - 1)/(2 gamma2)) */
+/* Algorithm 40: UseHint(h, r) for h in {0, 1} and r in Z_q: HighBits(r), moved by one
+ * if h = 1, in [0, (q - 1)/(2 gamma2)) */
 OPQC_INLINE uint32_t mldsa_use_hint(uint32_t h, uint32_t r, uint32_t gamma2)
 {
     const uint32_t m = (MLDSA_Q - 1) / (2 * gamma2);          /* 1 */

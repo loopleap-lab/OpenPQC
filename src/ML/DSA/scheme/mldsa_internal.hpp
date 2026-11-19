@@ -3,40 +3,16 @@
 //
 // mldsa_internal.hpp  --  the internal algorithms of ML-DSA (FIPS 204, Section 6)
 //
-// Deterministic: the seed xi (KeyGen) and the randomness rnd (Sign) are inputs,
-// and the message arrives as the formatted message M'. Section 5 (ml_dsa.hpp)
-// adds the generation of xi and rnd, the context string and HashML-DSA. As
-// Section 6 says, these interfaces should be offered to applications only for
-// testing: key generation and signing must generate their randomness inside the
-// cryptographic module.
+// Algorithms 6-8, deterministic: the seed xi (KeyGen) and the randomness rnd (Sign)
+// are inputs, and the message arrives as the formatted message M', or as mu computed
+// elsewhere (sign_mu, verify_mu). Section 5 (ml_dsa.hpp) adds the generation of xi
+// and rnd, the context string and HashML-DSA. As Section 6 says, these interfaces
+// should be offered to applications only for testing: key generation and signing
+// must generate their randomness inside the cryptographic module.
 //
-// Each function follows its algorithm line by line; the comment on a line gives
-// the line number of the pseudocode. Variables with a hat (A^, s1^, ...) hold
-// NTT representations and are spelled A_hat, s1_hat, ... here; <<cs1>> is cs1.
-//
-// The message representative mu may be computed outside the module (Algorithm 7,
-// line 6; Algorithm 8, line 7: "external mu"). sign_mu and verify_mu start from
-// a given mu; sign and verify compute it from M'.
-//
-// Constant time. What depends on secret data runs without secret-dependent
-// branches or memory indices, except where FIPS 204's design makes the
-// information public, as in the reference implementation (Dilithium round-3
-// specification, Section 5.5): whether a signing attempt is rejected, and the
-// challenge c~ of every attempt, rejected or not ("this does not reveal any
-// information about the secret key when H is modelled as a random oracle and
-// w1 has high min-entropy"). SampleInBall therefore branches on the bytes of
-// H(c~). Everything else of a rejected attempt (y, w, z, cs1, cs2, ...) stays
-// secret, and published side-channel attacks combine leaked challenges with
-// exactly such leakage. These values are marked as public with
-// OPQC_CT_DECLASSIFY, which tells the constant-time test (valgrind) that the
-// release is deliberate. So is whether sk is well formed (sign_mu, below).
-//
-// Stack. Every symbol of the standard is a variable, and A^ is kept whole, so
-// the frames are large (openpqc_mldsa.h gives the stack each operation needs).
-// Variables that a part of an algorithm needs only for itself are declared in
-// a block of their own (s1, s2 and t0 of Algorithm 7, the values of one signing
-// attempt), so that their stack is free for the rest; every polynomial among
-// them destroys itself at the end of its block (polynomials.hpp).
+// Secrets: no branch or memory index depends on them, except where FIPS 204 makes the
+//          information public (sign_mu); the polynomials destroy themselves (Section 3.6.3).
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <algorithm>
@@ -59,7 +35,7 @@
 namespace openpqc::mldsa {
 OPENPQC_ABI_BEGIN
 
-// Results. The values are those of the OPENPQC_MLDSA_ERR_* macros of the C API.
+// Results. The values are those of the OPENPQC_ERR_* codes of the C API (openpqc/common.h).
 enum class Status : int {
     ok = 0,
     invalid_signature = -1,  // Verify returns false: also for a signature of the wrong length and
@@ -85,6 +61,17 @@ enum class Status : int {
 inline constexpr unsigned max_signing_attempts = 821;
 
 namespace internal {
+
+// Each function follows its algorithm line by line; the comment on a line gives
+// the line number of the pseudocode. Variables with a hat (A^, s1^, ...) hold
+// NTT representations and are spelled A_hat, s1_hat, ... here; <<cs1>> is cs1.
+//
+// Stack. Every symbol of the standard is a variable, and A^ is kept whole, so
+// the frames are large (openpqc_mldsa.h gives the stack each operation needs).
+// Variables that a part of an algorithm needs only for itself are declared in
+// a block of their own (s1, s2 and t0 of Algorithm 7, the values of one signing
+// attempt), so that their stack is free for the rest; every polynomial among
+// them destroys itself at the end of its block (polynomials.hpp).
 
 // mu <- H(BytesToBits(tr) || M', 64): the message representative (Algorithm 7, line 6;
 // Algorithm 8, line 7), with M' given as a list of byte strings. mu is written in place:
@@ -129,8 +116,21 @@ void keygen(std::span<std::uint8_t, Sizes<P>::pk> pk, std::span<std::uint8_t, Si
 }
 
 // Algorithm 7, lines 1-5 and 7-34: ML-DSA.Sign_internal for a given message
-// representative mu (line 6). sigma is all zeros if the result is not ok. MaxAttempts is
-// the bound of Appendix C; only tests lower it, to reach the end of the loop.
+// representative mu (line 6; "external mu": mu may be computed outside the module).
+// sigma is all zeros if the result is not ok. MaxAttempts is the bound of Appendix C;
+// only tests lower it, to reach the end of the loop.
+//
+// Constant time. What depends on secret data runs without secret-dependent branches or
+// memory indices, except where FIPS 204's design makes the information public, as in the
+// reference implementation (Dilithium round-3 specification, Section 5.5): whether a
+// signing attempt is rejected, and the challenge c~ of every attempt, rejected or not
+// ("this does not reveal any information about the secret key when H is modelled as a
+// random oracle and w1 has high min-entropy"). SampleInBall therefore branches on the
+// bytes of H(c~). Everything else of a rejected attempt (y, w, z, cs1, cs2, ...) stays
+// secret, and published side-channel attacks combine leaked challenges with exactly such
+// leakage. These values are marked as public with OPQC_CT_DECLASSIFY, which tells the
+// constant-time test (valgrind) that the release is deliberate. So is whether sk is well
+// formed (next paragraph).
 //
 // A malformed sk, with a coefficient of s1 or s2 outside [-eta, eta] (Algorithm 25, lines 3
 // and 6), gives invalid_key and no signature: FIPS 204 leaves skDecode to trusted input
@@ -180,7 +180,7 @@ Status sign_mu(std::span<std::uint8_t, Sizes<P>::sig> sigma, std::span<const std
         const PolyVec<k> w1 = highbits<P>(w);                      // 13
         w1_encode<P>(w1_encoded, w1);
         H(c_tilde, {mu, w1_encoded});                              // 15: c~ <- H(mu || w1Encode(w1), lambda/4)
-        OPQC_CT_DECLASSIFY(c_tilde.data(), c_tilde.size());        // public, see the top of the file
+        OPQC_CT_DECLASSIFY(c_tilde.data(), c_tilde.size());        // public, see above
         Poly c;
         mldsa_sample_in_ball(c.data(), c_tilde.data(), c_tilde.size(), P::tau);   // 16
         const Poly c_hat = ntt(c);                                 // 17

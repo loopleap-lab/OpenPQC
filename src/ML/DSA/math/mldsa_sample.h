@@ -6,25 +6,13 @@
 /*
  * mldsa_sample.h -- pseudorandom sampling (FIPS 204, Section 7.3)
  *
- *   SampleInBall(rho)    c in B_tau: tau coefficients +-1, the rest 0       (Algorithm 29)
- *   RejNTTPoly(rho)      a uniform element of T_q from G = SHAKE128          (Algorithm 30)
- *   RejBoundedPoly(rho)  a polynomial with coefficients in [-eta, eta] from H = SHAKE256
- *                        (Algorithm 31; here one byte of H's output at a time)
+ * SampleInBall and RejNTTPoly (Algorithms 29, 30), and RejBoundedPoly
+ * (Algorithm 31) for one byte of H's output at a time.
  *
- * The standard squeezes the XOFs a few bytes at a time (G.Squeeze(ctx, 3),
- * H.Squeeze(ctx, 1)). Any sequence of squeezes yields the same byte stream
- * (Section 3.7), so RejNTTPoly squeezes a whole SHAKE128 block of 168 = 56 * 3
- * bytes at a time and parses it in 3-byte steps.
- *
- * Which inputs are secret. RejNTTPoly expands the public seed rho, and
- * SampleInBall the commitment hash c~, which a signature reveals; their loops
- * may branch on the XOF output. RejBoundedPoly expands the secret seed rho'
- * (ExpandS). Its rejections depend on secret bytes, but which bytes are
- * rejected says nothing about the accepted coefficients, so the acceptance
- * decisions are treated as public, as in the reference implementations; the
- * coefficients themselves are computed without branches. The hashing of rho'
- * itself is left to the caller (scheme/sampling.hpp), which also destroys the
- * XOF state afterwards (Section 3.6.3).
+ * Secrets: RejNTTPoly and SampleInBall expand public seeds, rho and c~, and may
+ *          branch on the XOF output; RejBoundedPoly's seed rho' is secret, and
+ *          only its acceptance decisions are treated as public.
+ * Design:  ../README.md, "Choices that differ from the reference implementation".
  */
 
 #ifndef MLDSA_SAMPLE_H
@@ -36,10 +24,12 @@
 #include "mldsa_field.h"
 
 /*
- * Algorithm 29: c <- SampleInBall(rho) for the seed rho = c~ of rho_len =
- * lambda/4 bytes and tau <= 64 nonzero coefficients. The Fisher-Yates shuffle
- * of lines 6-13 moves c[j] to position i and puts +-1 at j; the signs are the
- * bits of the first 8 bytes of H(rho).
+ * Algorithm 29: c <- SampleInBall(rho), c in B_tau (tau coefficients +-1, the
+ * rest 0), for the seed rho = c~ of rho_len = lambda/4 bytes and tau <= 64
+ * nonzero coefficients. The Fisher-Yates shuffle of lines 6-13 moves c[j] to
+ * position i and puts +-1 at j; the signs are the bits of the first 8 bytes of
+ * H(rho). c~ is the commitment hash, which a signature reveals: the loop may
+ * branch on H's output.
  */
 OPQC_INLINE void mldsa_sample_in_ball(uint32_t c[MLDSA_N], const uint8_t *rho, size_t rho_len,
                                       unsigned tau)
@@ -66,7 +56,14 @@ OPQC_INLINE void mldsa_sample_in_ball(uint32_t c[MLDSA_N], const uint8_t *rho, s
     }
 }
 
-/* Algorithm 30: a <- RejNTTPoly(rho) for the 34-byte seed rho = rho || s || r of ExpandA */
+/*
+ * Algorithm 30: a <- RejNTTPoly(rho), a uniform element of T_q from G = SHAKE128,
+ * for the 34-byte seed rho = rho || s || r of ExpandA. The standard squeezes G
+ * 3 bytes at a time (G.Squeeze(ctx, 3)); any sequence of squeezes yields the
+ * same byte stream (Section 3.7), so a whole SHAKE128 block of 168 = 56 * 3
+ * bytes is squeezed at a time and parsed in 3-byte steps. rho is public: the
+ * loop may branch on G's output.
+ */
 OPQC_INLINE void mldsa_rej_ntt_poly(uint32_t a[MLDSA_N], const uint8_t rho[34])
 {
     opqc_sponge ctx;
@@ -88,10 +85,18 @@ OPQC_INLINE void mldsa_rej_ntt_poly(uint32_t a[MLDSA_N], const uint8_t rho[34])
 }
 
 /*
- * Lines 6-15 of Algorithm 31 for one byte z of H's output: the candidates
+ * Lines 6-15 of Algorithm 31 (RejBoundedPoly: a polynomial with coefficients in
+ * [-eta, eta] from H = SHAKE256) for one byte z of H's output: the candidates
  * CoeffFromHalfByte(z mod 16) and CoeffFromHalfByte(floor(z / 16)) are
  * appended to a[0..256) unless they are ⊥; *j counts the coefficients so far
  * (the loop of line 4 runs while *j < 256). The coefficients are stored mod q.
+ * The standard squeezes H one byte at a time (H.Squeeze(ctx, 1)); the hashing of
+ * the secret seed rho' (ExpandS) is left to the caller (scheme/sampling.hpp),
+ * which also destroys the XOF state afterwards (Section 3.6.3). The rejections
+ * depend on secret bytes, but which bytes are rejected says nothing about the
+ * accepted coefficients, so the acceptance decisions are treated as public, as
+ * in the reference implementations; the coefficients themselves are computed
+ * without branches.
  */
 OPQC_INLINE void mldsa_rej_bounded_byte(uint32_t a[MLDSA_N], unsigned *j, uint8_t z, unsigned eta)
 {

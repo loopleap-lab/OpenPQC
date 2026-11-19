@@ -6,22 +6,14 @@
 /*
  * mldsa_encode.h -- conversions between bytes and coefficients (FIPS 204, Section 7.1)
  *
- *   CoeffFromThreeBytes   3 bytes -> a candidate coefficient of T_q      (Algorithm 14)
- *   CoeffFromHalfByte     4 bits  -> a candidate in [-eta, eta]          (Algorithm 15)
- *   SimpleBitPack/Unpack  coefficients in [0, b] <-> 32 bitlen(b) bytes  (Algorithms 16, 18)
- *   BitPack/BitUnpack     coefficients in [-a, b] <-> 32 bitlen(a+b) bytes (Algorithms 17, 19)
- *   HintBitPack/Unpack    the hint vector h <-> omega + k bytes          (Algorithms 20, 21)
+ * CoeffFromThreeBytes and CoeffFromHalfByte (Algorithms 14, 15), SimpleBitPack,
+ * BitPack and their inverses (Algorithms 16-19), for whole polynomials and for
+ * chunks of 8 coefficients, and HintBitPack and HintBitUnpack (Algorithms 20,
+ * 21). Coefficients are elements of Z_q in [0, q) (mldsa_field.h).
  *
- * The bit order is that of FIPS 203, and the chunk of 8 coefficients is
- * encoded by the code the two standards share (ML/math/ml_bitpack.h). The
- * functions take the number of bits per coefficient, c = bitlen b or
- * bitlen(a + b), rather than computing bitlen; the scheme layer knows it at
- * compile time from the parameter set (and FIPS 204, footnote 1, recommends
- * precomputing it).
- *
- * Coefficients are elements of Z_q in [0, q) (mldsa_field.h). A coefficient w
- * in [-a, b] is stored as w mod q, and BitPack's b - w is computed mod q,
- * which gives the integer b - w in [0, a + b] that the standard packs.
+ * Secrets: s1, s2 and t0 are packed here; CoeffFromHalfByte takes secret bytes
+ *          (ExpandS) and uses no division instruction. The hints are public.
+ * Design:  ../README.md, "Choices that differ from the reference implementation".
  */
 
 #ifndef MLDSA_ENCODE_H
@@ -56,6 +48,16 @@ OPQC_INLINE unsigned mldsa_coeff_from_half_byte(int32_t *z, uint32_t b, unsigned
 
 /* --- Bit packing (Algorithms 16-19), one chunk of 8 coefficients --------------------------- */
 
+/*
+ * The bit order is that of FIPS 203, and the chunk of 8 coefficients is
+ * encoded by the code the two standards share (ML/math/ml_bitpack.h). The
+ * functions take the number of bits per coefficient, c = bitlen b or
+ * bitlen(a + b), rather than computing bitlen; the scheme layer knows it at
+ * compile time from the parameter set (and FIPS 204, footnote 1, recommends
+ * precomputing it). A polynomial of coefficients in [0, b] takes 32 bitlen(b)
+ * bytes, one in [-a, b] 32 bitlen(a + b) bytes.
+ */
+
 /* SimpleBitPack of the coefficients w[0..8) in [0, 2^c) into c bytes */
 OPQC_INLINE void mldsa_simple_bit_pack8(uint8_t *out, const uint32_t w[8], unsigned c)
 {
@@ -63,7 +65,8 @@ OPQC_INLINE void mldsa_simple_bit_pack8(uint8_t *out, const uint32_t w[8], unsig
 }
 
 /* BitPack of w[0..8) in [-a, b] (stored mod q) into c = bitlen(a + b) bytes:
- * the integers b - w[i] in [0, a + b] */
+ * the integers b - w[i] in [0, a + b] that the standard packs, which b - w[i]
+ * computed mod q gives */
 OPQC_INLINE void mldsa_bit_pack8(uint8_t *out, const uint32_t w[8], uint32_t b, unsigned c)
 {
     uint32_t v[8];
