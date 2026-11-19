@@ -4,23 +4,11 @@
 // opqc_sycl_messages.hpp  --  the messages of a batched signature call, and M' as kernels read it (SYCL)
 //
 // The signature backends (ML/DSA/sycl, SLH/DSA/sycl) take the n messages of a call as one device buffer
-// with n + 1 offsets, and one context string for all of them in host memory. FIPS 204 and FIPS 205 sign
-// the same formatted message M':
+// with n + 1 offsets (Messages), and one context string for all of them in host memory (put_context).
+// FIPS 204 and FIPS 205 sign the same formatted message M', which a kernel never copies: it reads M' in
+// place (FormattedMessage), as bytes, SHAKE lanes or SHA-2 words. Messages may start at any byte.
 //
-//   pure        M' = 0 || |ctx| || ctx || M          FIPS 204, Algorithm 2, line 10, Algorithm 3, line 5;
-//                                                   FIPS 205, Algorithm 22, line 8, Algorithm 24, line 4
-//   pre-hash    M' = 1 || |ctx| || ctx || OID || PH(M)   FIPS 204, Algorithm 4, line 23, Algorithm 5,
-//                                                   line 18; FIPS 205, Algorithm 23, line 24, Algorithm
-//                                                   25, line 20 (OID: the DER encoding, Core/prehash.hpp)
-//   raw         M' given whole by the caller          the internal functions on M' (FIPS 205, Algorithms
-//                                                   19 and 20; ML-DSA's external mu is not a message)
-//
-// (|ctx| and the domain separator are single bytes: IntegerToBytes(x, 1) in FIPS 204, toByte(x, 1) in
-// FIPS 205.) A kernel never copies M': FormattedMessage reads it byte by byte from where its pieces
-// are -- the context string (and the OID after it) in the workspace, where put_context put it, and the
-// message in the caller's buffer -- and assembles the words that the hash functions absorb: little-endian
-// 64-bit lanes for SHAKE (opqc_sycl_sponge.hpp), big-endian 32- or 64-bit words for SHA-2
-// (opqc_sycl_sha2.hpp). Messages may start at any byte.
+// Design: ../README.md, "GPU helpers".
 #pragma once
 
 #include <sycl/sycl.hpp>
@@ -44,8 +32,8 @@ inline constexpr std::size_t MAX_HEAD_BYTES = MAX_CONTEXT_BYTES + MAX_OID_BYTES;
 // device memory), or, without offsets, msg[i * stride .. (i + 1) * stride); the context string, ctxlen
 // bytes shared by all, is in the workspace. len is the size of the caller's buffer msg: a message whose
 // range does not lie in msg[0 .. len) (offsets[i] > offsets[i + 1], or an end past len) is out of range
-// (in_range) and is read as the empty message, so that no kernel reads outside the buffer (review
-// findings F073, G013); the unified API (openpqc/sycl.h) then fails that operation's status entry and
+// (in_range) and is read as the empty message, so that no kernel reads outside the buffer; the
+// unified API (openpqc/sycl.h) then fails that operation's status entry and
 // zeroes its signature. UNCHECKED_LENGTH (the per-scheme entry points) checks only the order of the two
 // offsets: a decreasing pair is read as the empty message there too.
 inline constexpr std::uint64_t UNCHECKED_LENGTH = UINT64_MAX;
@@ -75,7 +63,24 @@ inline Messages chunk(const Messages& msgs, std::size_t first) {
     return part;
 }
 
-// M' of one operation, read in place (see the top of the file). Prefixed: domain || |ctx| || head || m,
+// M' of one operation, read in place. FIPS 204 and FIPS 205 sign the same formatted message M':
+//
+//   pure        M' = 0 || |ctx| || ctx || M          FIPS 204, Algorithm 2, line 10, Algorithm 3, line 5;
+//                                                   FIPS 205, Algorithm 22, line 8, Algorithm 24, line 4
+//   pre-hash    M' = 1 || |ctx| || ctx || OID || PH(M)   FIPS 204, Algorithm 4, line 23, Algorithm 5,
+//                                                   line 18; FIPS 205, Algorithm 23, line 24, Algorithm
+//                                                   25, line 20 (OID: the DER encoding, Core/prehash.hpp)
+//   raw         M' given whole by the caller          the internal functions on M' (FIPS 205, Algorithms
+//                                                   19 and 20; ML-DSA's external mu is not a message)
+//
+// (|ctx| and the domain separator are single bytes: IntegerToBytes(x, 1) in FIPS 204, toByte(x, 1) in
+// FIPS 205.) A kernel never copies M': FormattedMessage reads it byte by byte from where its pieces
+// are -- the context string (and the OID after it) in the workspace, where put_context put it, and the
+// message in the caller's buffer -- and assembles the words that the hash functions absorb: little-endian
+// 64-bit lanes for SHAKE (opqc_sycl_sponge.hpp), big-endian 32- or 64-bit words for SHA-2
+// (opqc_sycl_sha2.hpp).
+//
+// Prefixed: domain || |ctx| || head || m,
 // where head is ctx || OID (headlen = |ctx| + |OID| bytes; |OID| = 0 for the pure versions); not Prefixed:
 // M' = m (the head fields are not used).
 template <bool Prefixed = true>

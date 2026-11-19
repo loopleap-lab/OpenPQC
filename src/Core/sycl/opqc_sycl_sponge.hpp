@@ -11,17 +11,7 @@
 // is a constant and the 25 lanes stay in registers. (opqc_sponge keeps a
 // run-time byte position, which would push the state into slow private memory.)
 //
-//   absorb, pad_and_permute   inputs whose length is known at compile time
-//   absorb_and_pad            inputs whose length is known only at run time
-//                             (messages): the loop runs over whole blocks
-//
-// Lanes are little-endian 64-bit words (FIPS 202, Section 3.1.2); on the
-// little-endian devices SYCL runs on, a 64-bit load of 8 message bytes is the
-// lane value.
-//
-// The helpers are always inlined (as OPQC_KERNEL_INLINE of opqc_sycl_team.hpp,
-// which this header does not include): out of line, as DPC++ left absorb in its
-// SPIR-V image, the caller's state would be passed by pointer, through memory.
+// Design: ../README.md, "GPU helpers".
 #pragma once
 
 #include <cstddef>
@@ -37,7 +27,14 @@ inline constexpr unsigned SHA3_512_RATE_WORDS = OPQC_SHA3_512_RATE / 8;   // 9
 inline constexpr unsigned SHAKE128_RATE_WORDS = OPQC_SHAKE128_RATE / 8;   // 21
 inline constexpr unsigned SHAKE256_RATE_WORDS = OPQC_SHAKE256_RATE / 8;   // 17
 
+// The helpers are always inlined (as OPQC_KERNEL_INLINE of opqc_sycl_team.hpp,
+// which this header does not include): out of line, as DPC++ left absorb in its
+// SPIR-V image, the caller's state would be passed by pointer, through memory.
+
 // The 8 bytes at p as a little-endian word, and back; p must be 8-byte aligned.
+// Lanes are little-endian 64-bit words (FIPS 202, Section 3.1.2); on the
+// little-endian devices SYCL runs on, a 64-bit load of 8 message bytes is the
+// lane value.
 __attribute__((always_inline)) inline std::uint64_t load64(const std::uint8_t* p) {
     return *reinterpret_cast<const std::uint64_t*>(p);
 }
@@ -45,7 +42,8 @@ __attribute__((always_inline)) inline void store64(std::uint8_t* p, std::uint64_
     *reinterpret_cast<std::uint64_t*>(p) = v;
 }
 
-// Absorbs the message word(0), ..., word(N - 1) into the all-zero state s
+// Absorbs the message word(0), ..., word(N - 1), its length known at compile
+// time, into the all-zero state s
 // (Algorithm 8 of FIPS 202, steps 1-6, one block of RateWords words at a time).
 // The last N % RateWords words stay in the open block, which pad_and_permute closes.
 template <unsigned RateWords, unsigned N, class Word>

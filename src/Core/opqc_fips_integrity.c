@@ -12,167 +12,9 @@
  * integrity technique) over the module's image as the dynamic loader mapped
  * and relocated it, and compares it with the value that the build computed
  * from the file when it linked the library (cmake/openpqc_fips_seal.c, run
- * right after the link). Both compute the same message, described here.
+ * right after the link). Both compute the same message (measure, below).
  *
- * Covered bytes: every byte that the loader maps from the file, except the end
- * of a writable segment's last page. The loader maps each PT_LOAD segment in
- * whole pages (4096 bytes on x86-64), from the page that holds its first byte
- * through the page that holds its last, so the bytes of the file that share
- * those pages are mapped too, with the segment's protection, although no
- * section holds them. For each PT_LOAD program header, in program-header
- * order, writable segments included, the message holds
- *
- *   le64(start) || le64(end - start) || the canonical form of [start, end)
- *
- * (le64: 8 bytes, least significant first), where start is p_vaddr rounded
- * down to its page and end is p_vaddr + p_filesz, rounded up to the end of its
- * page for a segment that is not writable. The rest of a writable segment's
- * last page is not covered: there the zero-filled .bss begins, which the
- * module writes as it runs (without .bss, those bytes are mapped writable and
- * not executable, and nothing in the module refers to them).
- *
- * The canonical form of a byte is the byte as loaded, which is the file's byte
- * (zero past the end of the file, as the loader maps it), except at the places
- * below, where the loader writes or the packaging tools rewrite; there it is a
- * value that does not depend on the address the module was loaded at (the load
- * base B), which the seal tool takes from the file and this test from memory:
- *
- *   1. in a writable segment, the slots that the dynamic relocations write (the
- *      tables DT_RELA and DT_JMPREL, which lie in a covered read-only segment):
- *      the 8 bytes of an R_X86_64_RELATIVE slot as le64(value - B), which must
- *      be the relocation's addend, so that the module's pointers to itself (its
- *      tables in .data.rel.ro, .init_array, .fini_array, the GOT, .data) are
- *      checked as loaded; the slots of the other types (R_X86_64_64, GLOB_DAT,
- *      JUMP_SLOT, DTPMOD64, DTPOFF64, TPOFF64, IRELATIVE: 8 bytes; TLSDESC: 16),
- *      whose values are addresses in other objects, TLS module numbers and
- *      offsets or run-time resolutions, as zeros;
- *   2. in a writable segment, the entries of the dynamic section (PT_DYNAMIC)
- *      that the loader relocates in place, before the first DT_NULL: the value
- *      minus B, which is the value in the file. The GNU C library's loader adds
- *      B to the entries DT_HASH, DT_GNU_HASH, DT_PLTGOT, DT_STRTAB, DT_SYMTAB,
- *      DT_JMPREL and DT_VERSYM, and to DT_RELA when its value is not zero, of an
- *      object whose dynamic section is writable (elf/get-dynamic-info.h; it also
- *      does so for DT_RELR, which the module must not have; on x86-64 it leaves
- *      DT_REL as it is, which the module must not have either), and to no other.
- *      A DT_RELA of zero, which it leaves as it is, is refused below: zero minus
- *      B is an address above B. Every other entry is covered as loaded, and an
- *      entry whose value is an address (DT_INIT, DT_FINI, the three array tags,
- *      DT_VERDEF, DT_VERNEED, ...) must lie below B: such a value, changed in the
- *      file by B, would send the loader to another place of the module, and is
- *      not taken for a relocated one;
- *   3. the 64-byte record of the expected value (below), as zeros, wherever
- *      its bytes of the file are mapped;
- *   4. the ELF header's e_shoff, e_shnum and e_shstrndx (file offsets 40 to
- *      47 and 60 to 63), as zeros, wherever they are mapped: they locate the
- *      section header table, which is not loaded, and strip and objcopy rewrite
- *      them, so a stripped copy of the module, or one with a debug link, is
- *      still the sealed module.
- *
- * Immediate binding. The module is linked with -z now (DF_BIND_NOW in DT_FLAGS
- * and DF_1_NOW in DT_FLAGS_1; cmake/OpenPQCFips.cmake), and this test and the
- * seal tool refuse a module that has neither flag. With it, the value of every
- * JUMP_SLOT slot, which rule 1 leaves out, is the loader's: before any code of
- * the module runs, the loader resolves each JUMP_SLOT relocation from its
- * covered record and the symbol that record names, and it never reads the
- * slot's value in the file. Under lazy binding it would: it would add B to
- * that value and the first call through the slot would jump there, so a change
- * of the file would change what the module calls without changing a covered
- * byte. GOT[1] and GOT[2], the two words after the one DT_PLTGOT points to,
- * are covered as loaded: the loader writes its own data there only when it
- * prepares the module for lazy binding, which the flag rules out; if it does so
- * anyway (an auditing library with PLT hooks, LD_AUDIT, or LD_PROFILE naming
- * the module), the test fails.
- *
- * Why these bytes are the module: they are all of the module that is in
- * memory, as the loader made it from the file: its code (.init, .plt, .text,
- * .fini), its constants (.rodata, holding the CASTs' known answers and this
- * test's key, and the constant tables that contain pointers, .data.rel.ro),
- * its initialized data (.data), and the tables by which the loader links and
- * starts it (the ELF and program headers, dynamic symbols and strings, hash
- * tables, version records, relocation tables, the dynamic section, the GOT,
- * .init_array, .fini_array) and the unwinding tables (.eh_frame and its
- * header), with the file's bytes around them in the same pages. Not covered:
- * what the loader does not map (the section header table and the sections that
- * are not allocated, .symtab, .strtab, .comment, debugging sections, outside
- * the segments' pages), the zero-filled .bss and .tbss and the rest of a
- * writable segment's last page, the values of the relocation slots of rule 1
- * other than RELATIVE (the loader computes them from the covered relocation
- * records and from other objects' symbols), the record, and the three fields
- * of rule 4.
- *
- * Requirements, checked here and by the seal tool (otherwise the test fails,
- * or the build stops): an x86-64 ELF64 shared object, 4096-byte pages; every
- * PT_LOAD readable, its p_vaddr and p_offset equal modulo the page size, the
- * segments' pages in ascending order without overlap, a read-only one with
- * p_memsz == p_filesz (nothing of it zero-filled); the ELF header and the
- * program header table (e_phoff, e_phnum entries of 56 bytes) in the first page
- * of the file and in the file part of the read-only segment that maps file
- * offset 0, and a PT_PHDR, if there is one, naming that table: the loader maps
- * the segments that this table describes, so it is the covered one; one dynamic
- * section, in the file part of a segment whose writability its own program
- * header (PF_W) states, without an entry of rule 2 twice before DT_NULL;
- * DF_BIND_NOW or DF_1_NOW, with DT_FLAGS and DT_FLAGS_1 at most once each (the
- * loader honours the last entry of each, and this test must read the flags it
- * honours); relocation tables of type RELA (no DT_REL, no
- * DT_RELR, no text relocations) inside a read-only segment, every relocation of
- * a type listed in rule 1 (or R_X86_64_NONE), its slot inside the file part of
- * a writable segment; GOT[0..2] and the record inside the file part of a
- * writable segment; this function's code in an executable segment; and here, B
- * above the module's highest link-time address (rule 2). Nothing of the module
- * writes to the covered bytes of its writable segment as it runs (its state
- * variables start as zero, in .bss), so the test gives the same answer whenever
- * it runs. Several of these requirements are defence in depth: for a file that
- * the seal tool sealed, breaking one of them changes covered bytes, so the
- * integrity value differs anyway (an entry of rule 2 twice, no DT_NULL, the
- * PF_W of PT_DYNAMIC differing from its segment's, an address entry at or
- * above B, a PT_PHDR that names another table, a table past the file part of
- * the header's segment), and no test fails without them; they refuse a file
- * whose integrity value was computed by other means. The tests show such a
- * refusal for a program header table outside the header's page and for
- * DT_FLAGS and DT_FLAGS_1 twice (tests/fips_integrity.cmake).
- *
- * The algorithm before its use (ISO/IEC 19790:2012 AS10.20; FIPS 140-3 IG
- * 10.2.A): the test first computes HMAC-SHA-256 of RFC 4231's test cases 2 and
- * 7 and compares them with the known answers, with the same three compiled
- * functions that then compute the integrity value (integrity_hmac below), and
- * fails if either differs. The CAST of HMAC-SHA-256 in opqc_fips.c, which runs
- * before this test, checks the copy of the header-only opqc_hmac.h compiled
- * there.
- *
- * The key is fixed and public (an integrity technique, not authentication):
- * the 32 ASCII bytes "OpenPQC FIPS 140-3 integrity key".
- *
- * The record (section .openpqc_fips_mac, 64 bytes, written by the seal tool):
- *   bytes  0..15  "OpenPQC-FIPS-MAC" (in the source; the tool checks it)
- *   bytes 16..19  1 when sealed (le32); the source has 0, so an unsealed library
- *                 fails the test
- *   bytes 20..23  the number of covered segments (le32)
- *   bytes 24..31  the number of covered bytes, the sum of their end - start
- *                 (le64)
- *   bytes 32..63  the HMAC-SHA-256
- *
- * How the test finds the image, and reads it. Through two symbols that the
- * linker defines in the module itself, with hidden visibility: __ehdr_start,
- * the ELF header as loaded (from which e_phoff gives the program header table,
- * and the header's link-time address the load base B), and _DYNAMIC, the
- * dynamic section, which must be where the table says. The test calls no
- * function of the C library or of the loader to find or read the image, and
- * copies it with the module's own memcpy (opqc_fips_mem.c): the module imports
- * none of the functions on this path, so none can be replaced by the program's
- * own definition, a preloaded library or an auditing library (a memcpy that put
- * a changed byte back as the test copies it). The functions that read the image
- * (image_* below) are not instrumented by AddressSanitizer or
- * UndefinedBehaviorSanitizer: they read every byte of the module, the red zones
- * that AddressSanitizer puts between its global variables included, and at any
- * alignment the file gives.
- *
- * Platform. x86-64 ELF64 (this file does not compile elsewhere), and the GNU C
- * library's loader, the only one tested: rule 2 follows how it relocates the
- * dynamic section in place. Configuring refuses FIPS mode on other systems,
- * processors, pointer sizes and compilers (the top-level CMakeLists.txt), but
- * does not check the C library: with a loader that relocates the dynamic
- * section differently (musl's, for one), this test is expected to fail and
- * leave the module in its error state (not tested).
+ * Design: README.md, "FIPS 140-3 mode".
  */
 
 #include <elf.h>
@@ -184,6 +26,13 @@
 #include "opqc_hmac.h"
 #include "opqc_platform.h"
 
+/*
+ * Platform. x86-64 ELF64 (this file does not compile elsewhere), and the GNU C library's loader, the only one
+ * tested: rule 2 (the canonical form, below) follows how it relocates the dynamic section in place. Configuring
+ * refuses FIPS mode on other systems, processors, pointer sizes and compilers (the top-level CMakeLists.txt), but
+ * does not check the C library: with a loader that relocates the dynamic section differently (musl's, for one),
+ * this test is expected to fail and leave the module in its error state (not tested).
+ */
 #if !defined(__x86_64__) || !defined(__LP64__)
 #error "the integrity test knows the dynamic relocations of x86-64 ELF64 only; configure refuses FIPS mode elsewhere"
 #endif
@@ -195,7 +44,9 @@
 #define OPQC_FIPS_PHDR_BYTES 56u   /* sizeof(Elf64_Phdr), e_phentsize */
 #define OPQC_FIPS_MAX_SEGMENTS 64u
 
-/* The image readers below are not instrumented by the sanitizers, and not inlined into a function that is */
+/* The image readers below (image_*) are not instrumented by AddressSanitizer or UndefinedBehaviorSanitizer, and
+ * not inlined into a function that is: they read every byte of the module, the red zones that AddressSanitizer
+ * puts between its global variables included, and at any alignment the file gives. */
 #if defined(__has_attribute)
 #if __has_attribute(no_sanitize)
 #define OPQC_FIPS_IMAGE_READ __attribute__((noinline, no_sanitize("address", "undefined")))
@@ -206,14 +57,25 @@
 #endif
 
 /* The expected value, in a writable section of its own. Not static, and read through a volatile pointer: the
- * compiler must not assume it keeps the value written here. */
+ * compiler must not assume it keeps the value written here. The record (section .openpqc_fips_mac, 64 bytes,
+ * written by the seal tool):
+ *   bytes  0..15  "OpenPQC-FIPS-MAC" (in the source; the tool checks it)
+ *   bytes 16..19  1 when sealed (le32); the source has 0, so an unsealed library
+ *                 fails the test
+ *   bytes 20..23  the number of covered segments (le32)
+ *   bytes 24..31  the number of covered bytes, the sum of their end - start
+ *                 (le64)
+ *   bytes 32..63  the HMAC-SHA-256 */
 extern uint8_t opqc_fips_integrity_record[OPQC_FIPS_RECORD_BYTES];
 __attribute__((used, section(".openpqc_fips_mac"), aligned(64))) uint8_t
         opqc_fips_integrity_record[OPQC_FIPS_RECORD_BYTES] = {'O', 'p', 'e', 'n', 'P', 'Q', 'C', '-',
                                                               'F', 'I', 'P', 'S', '-', 'M', 'A', 'C'};
 
 /* Defined by the linker (GNU ld, gold, lld, mold) in the module itself: its ELF header and its dynamic section, as
- * loaded. Hidden: the compiler reaches them relative to the code, with no relocation and no import. */
+ * loaded: the test finds the image through them. __ehdr_start is the ELF header as loaded (from which e_phoff
+ * gives the program header table, and the header's link-time address the load base B), and _DYNAMIC the dynamic
+ * section, which must be where the table says. Hidden: the compiler reaches them relative to the code, with no
+ * relocation and no import. */
 extern const uint8_t __ehdr_start[] __attribute__((visibility("hidden")));
 extern const uint8_t _DYNAMIC[] __attribute__((visibility("hidden")));
 
@@ -242,6 +104,8 @@ void opqc_fips_glibcxx_assert_fail(const char *file, int line, const char *funct
     __builtin_trap();
 }
 
+/* The key is fixed and public (an integrity technique, not authentication): the 32 ASCII bytes
+ * "OpenPQC FIPS 140-3 integrity key". */
 static const uint8_t opqc_fips_integrity_key[32] = {'O', 'p', 'e', 'n', 'P', 'Q', 'C', ' ', 'F', 'I', 'P',
                                                      'S', ' ', '1', '4', '0', '-', '3', ' ', 'i', 'n', 't',
                                                      'e', 'g', 'r', 'i', 't', 'y', ' ', 'k', 'e', 'y'};
@@ -324,7 +188,12 @@ static int integrity_hmac_case(const uint8_t *key, size_t keylen, const char *da
     return ok;
 }
 
-/* 0 if integrity_hmac gives the known answers. The test library openpqc_fips_break compares the first with its
+/* 0 if integrity_hmac gives the known answers: the algorithm before its use (ISO/IEC 19790:2012 AS10.20; FIPS
+ * 140-3 IG 10.2.A). The integrity test first computes HMAC-SHA-256 of RFC 4231's test cases 2 and 7 and compares
+ * them with the known answers, with the same three compiled functions that then compute the integrity value
+ * (integrity_hmac_*, above), and fails if either differs. The CAST of HMAC-SHA-256 in opqc_fips.c, which runs
+ * before this test, checks the copy of the header-only opqc_hmac.h compiled there.
+ * The test library openpqc_fips_break compares the first with its
  * known answer changed in one bit when OPENPQC_FIPS_TEST_BREAK is "integrity_hmac" (opqc_fips.h), so that a correct
  * computation fails. */
 static int integrity_hmac_kat(void)
@@ -342,6 +211,11 @@ static int integrity_hmac_kat(void)
 
 /* --- reading the image ---------------------------------------------------------------------------------------- */
 
+/* The test calls no function of the C library or of the loader to find or read the image, and copies it with the
+ * module's own memcpy (opqc_fips_mem.c): the module imports none of the functions on this path, so none can be
+ * replaced by the program's own definition, a preloaded library or an auditing library (a memcpy that put a
+ * changed byte back as the test copies it). */
+
 /* n bytes at the address a of the process to buf, with the module's own memcpy (opqc_fips_mem.c) */
 static OPQC_FIPS_IMAGE_READ void image_copy(void *buf, uintptr_t a, size_t n)
 {
@@ -357,6 +231,45 @@ static OPQC_FIPS_IMAGE_READ uint64_t image_field(uintptr_t a, size_t n)
 }
 
 /* --- the canonical form ------------------------------------------------------------------------------------- */
+
+/*
+ * The canonical form of a byte is the byte as loaded, which is the file's byte
+ * (zero past the end of the file, as the loader maps it), except at the places
+ * below, where the loader writes or the packaging tools rewrite; there it is a
+ * value that does not depend on the address the module was loaded at (the load
+ * base B), which the seal tool takes from the file and this test from memory:
+ *
+ *   1. in a writable segment, the slots that the dynamic relocations write (the
+ *      tables DT_RELA and DT_JMPREL, which lie in a covered read-only segment):
+ *      the 8 bytes of an R_X86_64_RELATIVE slot as le64(value - B), which must
+ *      be the relocation's addend, so that the module's pointers to itself (its
+ *      tables in .data.rel.ro, .init_array, .fini_array, the GOT, .data) are
+ *      checked as loaded; the slots of the other types (R_X86_64_64, GLOB_DAT,
+ *      JUMP_SLOT, DTPMOD64, DTPOFF64, TPOFF64, IRELATIVE: 8 bytes; TLSDESC: 16),
+ *      whose values are addresses in other objects, TLS module numbers and
+ *      offsets or run-time resolutions, as zeros;
+ *   2. in a writable segment, the entries of the dynamic section (PT_DYNAMIC)
+ *      that the loader relocates in place, before the first DT_NULL: the value
+ *      minus B, which is the value in the file. The GNU C library's loader adds
+ *      B to the entries DT_HASH, DT_GNU_HASH, DT_PLTGOT, DT_STRTAB, DT_SYMTAB,
+ *      DT_JMPREL and DT_VERSYM, and to DT_RELA when its value is not zero, of an
+ *      object whose dynamic section is writable (elf/get-dynamic-info.h; it also
+ *      does so for DT_RELR, which the module must not have; on x86-64 it leaves
+ *      DT_REL as it is, which the module must not have either), and to no other.
+ *      A DT_RELA of zero, which it leaves as it is, is refused below: zero minus
+ *      B is an address above B. Every other entry is covered as loaded, and an
+ *      entry whose value is an address (DT_INIT, DT_FINI, the three array tags,
+ *      DT_VERDEF, DT_VERNEED, ...) must lie below B: such a value, changed in the
+ *      file by B, would send the loader to another place of the module, and is
+ *      not taken for a relocated one;
+ *   3. the 64-byte record of the expected value (opqc_fips_integrity_record),
+ *      as zeros, wherever its bytes of the file are mapped;
+ *   4. the ELF header's e_shoff, e_shnum and e_shstrndx (file offsets 40 to
+ *      47 and 60 to 63), as zeros, wherever they are mapped: they locate the
+ *      section header table, which is not loaded, and strip and objcopy rewrite
+ *      them, so a stripped copy of the module, or one with a debug link, is
+ *      still the sealed module.
+ */
 
 static void le64(uint8_t out[8], uint64_t v)
 {
@@ -503,7 +416,23 @@ static uint64_t dynamic_value(const opqc_fips_layout *m, uint64_t tag, uint64_t 
 }
 
 /* The dynamic section's entries that the canonical form needs, and the requirements on the dynamic section, the
- * relocations and immediate binding; 1 if they hold */
+ * relocations and immediate binding; 1 if they hold.
+ *
+ * Immediate binding. The module is linked with -z now (DF_BIND_NOW in DT_FLAGS
+ * and DF_1_NOW in DT_FLAGS_1; cmake/OpenPQCFips.cmake), and this test and the
+ * seal tool refuse a module that has neither flag. With it, the value of every
+ * JUMP_SLOT slot, which rule 1 leaves out, is the loader's: before any code of
+ * the module runs, the loader resolves each JUMP_SLOT relocation from its
+ * covered record and the symbol that record names, and it never reads the
+ * slot's value in the file. Under lazy binding it would: it would add B to
+ * that value and the first call through the slot would jump there, so a change
+ * of the file would change what the module calls without changing a covered
+ * byte. GOT[1] and GOT[2], the two words after the one DT_PLTGOT points to,
+ * are covered as loaded: the loader writes its own data there only when it
+ * prepares the module for lazy binding, which the flag rules out; if it does so
+ * anyway (an auditing library with PLT hooks, LD_AUDIT, or LD_PROFILE naming
+ * the module), the test fails.
+ */
 static int read_dynamic(opqc_fips_layout *m)
 {
     uint64_t at[2] = {0, 0}, bytes[2] = {0, 0}, rela_entry = 0, plt_type = 0;
@@ -642,6 +571,42 @@ static void canonical(const opqc_fips_layout *m, const Elf64_Phdr *ph, uint64_t 
 
 /* --- the image -------------------------------------------------------------------------------------------- */
 
+/*
+ * Covered bytes: every byte that the loader maps from the file, except the end
+ * of a writable segment's last page. The loader maps each PT_LOAD segment in
+ * whole pages (4096 bytes on x86-64), from the page that holds its first byte
+ * through the page that holds its last, so the bytes of the file that share
+ * those pages are mapped too, with the segment's protection, although no
+ * section holds them. For each PT_LOAD program header, in program-header
+ * order, writable segments included, the message holds
+ *
+ *   le64(start) || le64(end - start) || the canonical form of [start, end)
+ *
+ * (le64: 8 bytes, least significant first), where start is p_vaddr rounded
+ * down to its page and end is p_vaddr + p_filesz, rounded up to the end of its
+ * page for a segment that is not writable. The rest of a writable segment's
+ * last page is not covered: there the zero-filled .bss begins, which the
+ * module writes as it runs (without .bss, those bytes are mapped writable and
+ * not executable, and nothing in the module refers to them).
+ *
+ * Why these bytes are the module: they are all of the module that is in
+ * memory, as the loader made it from the file: its code (.init, .plt, .text,
+ * .fini), its constants (.rodata, holding the CASTs' known answers and this
+ * test's key, and the constant tables that contain pointers, .data.rel.ro),
+ * its initialized data (.data), and the tables by which the loader links and
+ * starts it (the ELF and program headers, dynamic symbols and strings, hash
+ * tables, version records, relocation tables, the dynamic section, the GOT,
+ * .init_array, .fini_array) and the unwinding tables (.eh_frame and its
+ * header), with the file's bytes around them in the same pages. Not covered:
+ * what the loader does not map (the section header table and the sections that
+ * are not allocated, .symtab, .strtab, .comment, debugging sections, outside
+ * the segments' pages), the zero-filled .bss and .tbss and the rest of a
+ * writable segment's last page, the values of the relocation slots of rule 1
+ * other than RELATIVE (the loader computes them from the covered relocation
+ * records and from other objects' symbols), the record, and the three fields
+ * of rule 4.
+ */
+
 static int in_segment(uint64_t a, const Elf64_Phdr *ph)
 {
     return a >= ph->p_vaddr && a - ph->p_vaddr < ph->p_memsz;
@@ -654,8 +619,40 @@ static void covered_range(const Elf64_Phdr *ph, uint64_t *start, uint64_t *end)
     *end = (ph->p_flags & PF_W) != 0 ? ph->p_vaddr + ph->p_filesz : page_up(ph->p_vaddr + ph->p_filesz);
 }
 
-/* The module's layout from its ELF header and program headers as loaded, and the requirements above; 1 if they
- * hold */
+/*
+ * The module's layout from its ELF header and program headers as loaded; 1 if the requirements hold.
+ *
+ * Requirements, checked here and by the seal tool (otherwise the test fails,
+ * or the build stops): an x86-64 ELF64 shared object, 4096-byte pages; every
+ * PT_LOAD readable, its p_vaddr and p_offset equal modulo the page size, the
+ * segments' pages in ascending order without overlap, a read-only one with
+ * p_memsz == p_filesz (nothing of it zero-filled); the ELF header and the
+ * program header table (e_phoff, e_phnum entries of 56 bytes) in the first page
+ * of the file and in the file part of the read-only segment that maps file
+ * offset 0, and a PT_PHDR, if there is one, naming that table: the loader maps
+ * the segments that this table describes, so it is the covered one; one dynamic
+ * section, in the file part of a segment whose writability its own program
+ * header (PF_W) states, without an entry of rule 2 twice before DT_NULL;
+ * DF_BIND_NOW or DF_1_NOW, with DT_FLAGS and DT_FLAGS_1 at most once each (the
+ * loader honours the last entry of each, and this test must read the flags it
+ * honours); relocation tables of type RELA (no DT_REL, no
+ * DT_RELR, no text relocations) inside a read-only segment, every relocation of
+ * a type listed in rule 1 (or R_X86_64_NONE), its slot inside the file part of
+ * a writable segment; GOT[0..2] and the record inside the file part of a
+ * writable segment; this function's code in an executable segment; and here, B
+ * above the module's highest link-time address (rule 2). Nothing of the module
+ * writes to the covered bytes of its writable segment as it runs (its state
+ * variables start as zero, in .bss), so the test gives the same answer whenever
+ * it runs. Several of these requirements are defence in depth: for a file that
+ * the seal tool sealed, breaking one of them changes covered bytes, so the
+ * integrity value differs anyway (an entry of rule 2 twice, no DT_NULL, the
+ * PF_W of PT_DYNAMIC differing from its segment's, an address entry at or
+ * above B, a PT_PHDR that names another table, a table past the file part of
+ * the header's segment), and no test fails without them; they refuse a file
+ * whose integrity value was computed by other means. The tests show such a
+ * refusal for a program header table outside the header's page and for
+ * DT_FLAGS and DT_FLAGS_1 twice (tests/fips_integrity.cmake).
+ */
 static int locate(opqc_fips_layout *m)
 {
     const uintptr_t ehdr = (uintptr_t)__ehdr_start;

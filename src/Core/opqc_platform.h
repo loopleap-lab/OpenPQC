@@ -54,7 +54,8 @@ OPENPQC_API void opqc_zeroize(void *p, size_t len);
  * output has full entropy, which the source's validation must support: SP
  * 800-90A Rev. 1, Table 2 and Section 8.6.7; the module asks for the same
  * number of bytes whatever the source's entropy rate), and a personalization
- * string of the process id and the time (not counted as entropy); reseeded
+ * string of a label, the process id and two clock readings (not counted as
+ * entropy); reseeded
  * with 32 fresh bytes before its reseed interval of 2^16 requests runs out,
  * and in both processes after fork() (pthread_atfork, and a check of the
  * process id on every draw); a request longer than 2^16 bytes is served in

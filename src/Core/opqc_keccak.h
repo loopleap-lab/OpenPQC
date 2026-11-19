@@ -6,36 +6,15 @@
 /*
  * opqc_keccak.h -- the permutation Keccak-f[1600] (FIPS 202, Section 3)
  *
- * State. FIPS 202 views the 1600-bit state as a 5 x 5 array of 64-bit lanes
- * A[x, y] (Section 3.1). Here lane (x, y) is the word A[x + 5y], and bit z of
- * the lane is bit z of the word. With this convention, byte i of the state
- * string S (Section 3.1.2) is byte i % 8 of word i / 8, in little-endian
- * order, which is how the sponge in opqc_sha3.h reads and writes it.
+ * The 24 rounds of Algorithm 7, written so that GPU kernels keep the state and
+ * the round's temporaries in registers; and, for CPU code, the clearing of
+ * what a computation leaves on the stack (OPQC_STACK_BURN), which opqc_sha2.h
+ * shares.
  *
- * Round. Each of the 24 rounds applies the five step mappings of Section 3.2
- * in the order theta, rho, pi, chi, iota (Algorithm 7, Keccak-p[1600, 24]).
- * The code below follows Algorithms 1-6 directly; rho and pi are merged into
- * one loop because pi only moves the lanes that rho has rotated.
- *
- * Destruction of intermediate values. A round keeps the column sums C and D
- * of theta and the lanes B (the state after rho and pi) in locals. After the
- * last round, B determines the output state (chi and iota are applied to it),
- * and the output determines the input, since Keccak-f is a permutation: when a
- * sponge has absorbed a secret block (d || k in ML-KEM's G, xi || k || l in
- * ML-DSA's H, SK.seed in SLH-DSA's PRF), they are as secret as the block
- * (FIPS 203, Section 3.3; FIPS 204, Section 3.6.3; FIPS 205, Section 3.1).
- * The C code cannot destroy them by name: an optimizing compiler keeps them in
- * registers and spills some of them to slots of its own. After one permutation
- * of a secret state, GCC 16 at -O3 had left 11 of the 25 lanes of the last
- * round's B and 19 of the 25 output lanes in its frame, Clang 23 at -O3 12
- * lanes of the state after theta, and at -O0 all of B, C and D stay in the
- * round's frame. So on CPUs (OPQC_STACK_BURN, below) the 24 rounds run in a
- * frame of their own, which is never inlined, and when it has returned,
- * OPQC_BURN_STACK overwrites the stack where it was with zeros; what is left
- * in registers is overwritten by the code that follows. The sponge's state
- * itself belongs to the caller, which destroys it (opqc_sha3.h). In GPU
- * kernels the state and the temporaries stay in registers, which is what the
- * round is written for, and nothing is cleared.
+ * Secrets: the state and the round's temporaries, as secret as what the
+ *          sponge absorbed; on CPUs the rounds' frame is cleared afterwards
+ *          (opqc_keccak_rounds).
+ * Design:  README.md, "Hashing: phases, errors, destruction".
  */
 
 #ifndef OPQC_KECCAK_H
@@ -43,6 +22,13 @@
 
 #include "opqc_common.h"
 
+/*
+ * The state. FIPS 202 views the 1600-bit state as a 5 x 5 array of 64-bit
+ * lanes A[x, y] (Section 3.1). Here lane (x, y) is the word A[x + 5y], and bit
+ * z of the lane is bit z of the word. With this convention, byte i of the
+ * state string S (Section 3.1.2) is byte i % 8 of word i / 8, in little-endian
+ * order, which is how the sponge in opqc_sha3.h reads and writes it.
+ */
 #define OPQC_KECCAK_LANES 25
 #define OPQC_KECCAK_ROUNDS 24
 
@@ -331,7 +317,12 @@ OPQC_INLINE uint64_t opqc_rotl64(uint64_t a, unsigned n)
     return (a << n) | (a >> ((64 - n) & 63));
 }
 
-/* Rnd(A, i_r) = iota(chi(pi(rho(theta(A)))), i_r)   (FIPS 202, Section 3.3) */
+/*
+ * Rnd(A, i_r) = iota(chi(pi(rho(theta(A)))), i_r)   (FIPS 202, Section 3.3):
+ * the five step mappings of Section 3.2 in the order theta, rho, pi, chi,
+ * iota. The code follows Algorithms 1-6 directly; rho and pi are merged into
+ * one loop because pi only moves the lanes that rho has rotated.
+ */
 OPQC_INLINE void opqc_keccak_round(uint64_t A[OPQC_KECCAK_LANES], unsigned ir)
 {
     uint64_t C[5], D[5], B[OPQC_KECCAK_LANES];
@@ -371,9 +362,29 @@ OPQC_INLINE void opqc_keccak_round(uint64_t A[OPQC_KECCAK_LANES], unsigned ir)
 
 #if defined(OPQC_STACK_BURN)
 /*
- * The 24 rounds of Keccak-f[1600] in a frame of their own (see the top of the
- * file), which on return also zero the registers that a function may change
- * without saving them (OPQC_STACK_FRAME_ROUNDS). GCC 16 calls the round from
+ * The 24 rounds of Keccak-f[1600] in a frame of their own, which on return
+ * also zero the registers that a function may change without saving them
+ * (OPQC_STACK_FRAME_ROUNDS).
+ *
+ * Why a frame of their own. A round keeps the column sums C and D of theta and
+ * the lanes B (the state after rho and pi) in locals. After the last round, B
+ * determines the output state (chi and iota are applied to it), and the output
+ * determines the input, since Keccak-f is a permutation: when a sponge has
+ * absorbed a secret block (d || k in ML-KEM's G, xi || k || l in ML-DSA's H,
+ * SK.seed in SLH-DSA's PRF), they are as secret as the block (FIPS 203,
+ * Section 3.3; FIPS 204, Section 3.6.3; FIPS 205, Section 3.1). The C code
+ * cannot destroy them by name: an optimizing compiler keeps them in registers
+ * and spills some of them to slots of its own. After one permutation of a
+ * secret state, GCC 16 at -O3 had left 11 of the 25 lanes of the last round's
+ * B and 19 of the 25 output lanes in its frame, Clang 23 at -O3 12 lanes of
+ * the state after theta, and at -O0 all of B, C and D stay in the round's
+ * frame. So on CPUs (OPQC_STACK_BURN) the 24 rounds run in this frame, which
+ * is never inlined, and when it has returned, OPQC_BURN_STACK overwrites the
+ * stack where it was with zeros (opqc_keccak_f1600); what is left in registers
+ * is overwritten by the code that follows. The sponge's state itself belongs
+ * to the caller, which destroys it (opqc_sha3.h).
+ *
+ * GCC 16 calls the round from
  * here instead of inlining it, and Clang 23 calls it 24 times in a row in some
  * translation units; the fence after the loop keeps the last call from
  * becoming a jump, which would return from the round to the caller with its
@@ -395,8 +406,9 @@ OPQC_STACK_FRAME_ROUNDS void opqc_keccak_rounds(uint64_t A[OPQC_KECCAK_LANES])
  * Keccak-f[1600] = Keccak-p[1600, 24]: rounds i_r = 0, ..., 23 (Alg. 7).
  * The round loop is deliberately not unrolled: on GPUs, unrolling 2 or 24
  * rounds made the ML-KEM kernels slower (larger code, measured with DPC++
- * on an RTX 3050). On CPUs the rounds' frame is cleared afterwards (see the
- * top of the file).
+ * on an RTX 3050). On CPUs the rounds' frame is cleared afterwards
+ * (opqc_keccak_rounds). In GPU kernels the state and the temporaries stay in
+ * registers, which is what the round is written for, and nothing is cleared.
  */
 OPQC_INLINE void opqc_keccak_f1600(uint64_t A[OPQC_KECCAK_LANES])
 {

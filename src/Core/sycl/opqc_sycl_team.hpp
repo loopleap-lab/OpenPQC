@@ -3,19 +3,15 @@
 //
 // opqc_sycl_team.hpp  --  how the kernels of the OpenPQC GPU backends share out work (SYCL device code)
 //
-// Two kinds of stages, for every scheme:
+// Two kinds of stages, for every scheme: hashing stages, one work-item per
+// independent unit of work across the whole batch (for_each_item), and
+// arithmetic stages, a team of work-items per operation, several teams per
+// work-group (for_each_team). And the conventions that the kernels rely on:
+// the alignment of the buffers, which the compiler is told about, kernels that
+// are always inlined, stores of 16 bytes at a time, and local memory cleared
+// before a kernel ends.
 //
-//  * Hashing stages: one work-item per independent unit of work (a sponge: one
-//    hash or one XOF stream), across the whole batch: for_each_item.
-//  * Arithmetic stages: a team of work-items per operation, several teams per
-//    work-group: for_each_team. Polynomials that the team shares (the inputs and
-//    outputs of NTTs) live in the team's part of local memory, and the team
-//    synchronizes with work-group barriers, which every SYCL device supports
-//    (no assumption is made about the sub-group size).
-//
-// And the conventions that the kernels rely on: the alignment of the buffers,
-// which the compiler is told about, kernels that are always inlined, stores of
-// 16 bytes at a time, and local memory cleared before a kernel ends.
+// Design: ../README.md, "GPU helpers".
 #pragma once
 
 #include <sycl/sycl.hpp>
@@ -84,7 +80,8 @@ struct Store16 {
     }
 };
 
-// f(i) for every i < n, one work-item each, in work-groups of GroupSize
+// f(i) for every i < n, one work-item each, in work-groups of GroupSize: the hashing stages, one
+// work-item per independent unit of work (a sponge: one hash or one XOF stream), across the whole batch
 template <unsigned GroupSize = 128, class F>
 void for_each_item(::sycl::queue& q, std::size_t n, F f) {
     const std::size_t global = (n + GroupSize - 1) / GroupSize * GroupSize;
@@ -110,7 +107,10 @@ struct Team {
 // f(team) for the n operations, TeamsPerGroup teams of TeamSize work-items per
 // work-group, with local_words words of local memory per team. Teams beyond n
 // repeat operation n - 1 without writing results, so that every work-item of a
-// work-group reaches every barrier.
+// work-group reaches every barrier. The arithmetic stages: polynomials that the
+// team shares (the inputs and outputs of NTTs) live in the team's part of local
+// memory, and the team synchronizes with work-group barriers, which every SYCL
+// device supports (no assumption is made about the sub-group size).
 template <class Word, unsigned TeamSize, unsigned TeamsPerGroup, class F>
 void for_each_team(::sycl::queue& q, std::size_t n, std::size_t local_words, F f) {
     const std::size_t groups = (n + TeamsPerGroup - 1) / TeamsPerGroup;

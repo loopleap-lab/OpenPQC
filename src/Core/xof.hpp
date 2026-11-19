@@ -5,21 +5,13 @@
 //              strings, and the incremental Init/Absorb/Squeeze API
 //
 // FIPS 203 and FIPS 204 hash concatenations of byte strings (G(m || H(ek)),
-// H(tr || M')) and use the incremental API of SP 800-185 (FIPS 204, Section 3.7):
+// H(tr || M')) and use the incremental API of SP 800-185 (FIPS 204, Section
+// 3.7): Xof is that API, and sponge() the one-shot version, for any SHA-3 or
+// SHAKE function.
 //
-//   ctx <- H.Init()                   Xof ctx = Xof::shake256();
-//   ctx <- H.Absorb(ctx, str)         ctx.absorb(str);
-//   (ctx, out) <- H.Squeeze(ctx, l)   ctx.squeeze(out);
-//
-// Any sequence of absorbs followed by any sequence of squeezes gives the same
-// output as one call on the concatenations. The input is padded at the first
-// squeeze. That order is the API's precondition, as in FIPS 204: an absorb
-// after the first squeeze is refused (it returns false and changes nothing),
-// since FIPS 202 has no way to add input to a sponge that has begun to give
-// output (opqc_sha3.h, Phases). Like every holder of intermediate values, an
-// Xof destroys its state when it goes out of scope (FIPS 203, Section 3.3;
-// FIPS 204, Section 3.6.3). sponge() is the one-shot version, for any SHA-3
-// or SHAKE function.
+// Secrets: both destroy their sponge (FIPS 203, Section 3.3; FIPS 204,
+//          Section 3.6.3).
+// Design:  README.md, "Hashing: phases, errors, destruction".
 #pragma once
 
 #include <cstddef>
@@ -58,7 +50,20 @@ inline bool sponge(unsigned rate, std::uint8_t suffix, std::span<std::uint8_t> o
     return opqc_sponge_squeeze(&s, out.data(), out.size()) == OPQC_SPONGE_OK;
 }
 
-// An incremental SHAKE128 or SHAKE256 context
+// An incremental SHAKE128 or SHAKE256 context:
+//
+//   ctx <- H.Init()                   Xof ctx = Xof::shake256();
+//   ctx <- H.Absorb(ctx, str)         ctx.absorb(str);
+//   (ctx, out) <- H.Squeeze(ctx, l)   ctx.squeeze(out);
+//
+// Any sequence of absorbs followed by any sequence of squeezes gives the same
+// output as one call on the concatenations. The input is padded at the first
+// squeeze. That order is the API's precondition, as in FIPS 204: an absorb
+// after the first squeeze is refused (it returns false and changes nothing),
+// since FIPS 202 has no way to add input to a sponge that has begun to give
+// output (opqc_sha3.h, Phases). Like every holder of intermediate values, an
+// Xof destroys its state when it goes out of scope (FIPS 203, Section 3.3;
+// FIPS 204, Section 3.6.3).
 class Xof {
 public:
     static Xof shake128() { return Xof(OPQC_SHAKE128_RATE); }

@@ -8,23 +8,10 @@
  * FIPS 140-3 mode, the module's state, its power-on self-tests and the
  * approved-service indicator (opqc_fips.h)
  *
- * The known answers of the CASTs come from published sources; each array names
- * its source, set, group and case:
- *   - NIST's ACVP vector files (usnistgov/ACVP-Server,
- *     gen-val/json-files/<set>/...) as they are at commit
- *     975de31eb83d87039ec88934fdc47d8c312b892d. The tests pin the same files by
- *     SHA-256 (tests/Core/acvp_hash.py, tests/ML-KEM/pinned_vectors.py,
- *     tests/ML-DSA/acvp/acvp_client.py, tests/SLH-DSA/acvp/acvp_client.py):
- *     the hash and ML-KEM tests download them by that commit, the ML-DSA and
- *     SLH-DSA clients by the tag v1.1.0.43, whose files have the same SHA-256
- *     (a file that changed under the tag would fail its pin);
- *   - for the rejection paths of ML-DSA signing, Table 1 of NIST's ACVP ML-DSA
- *     specification (draft-celi-acvp-ml-dsa, Section 6.1.2, "Known Answer Tests
- *     for Rejection Cases"), the list that IG 10.3.A, Note23, recommends;
- *   - for HMAC, RFC 4231, test case 2.
- * The long outputs (dk, c, the ML-DSA keys, the signatures) are compared
- * through their SHA-256, as IG 10.3.A, GeneralNote7, permits, after the SHA-256
- * CAST has passed; everything else byte for byte.
+ * Most of the file is the known answers of the CASTs, from published sources
+ * (the CASTs, below); each array names its source, set, group and case.
+ *
+ * Design: README.md, "FIPS 140-3 mode".
  */
 
 #if defined(__linux__) && !defined(_DEFAULT_SOURCE)
@@ -169,6 +156,23 @@ void opqc_fips_fail(void)
 
 /* --- the CASTs ------------------------------------------------------------------------------------------- */
 
+/*
+ * The known answers of the CASTs come from published sources; each array names
+ * its source, set, group and case:
+ *   - NIST's ACVP vector files (usnistgov/ACVP-Server,
+ *     gen-val/json-files/<set>/...) as they are at commit
+ *     975de31eb83d87039ec88934fdc47d8c312b892d. The tests pin the same files by
+ *     SHA-256 (tests/Core/acvp_hash.py, tests/ML-KEM/pinned_vectors.py,
+ *     tests/ML-DSA/acvp/acvp_client.py, tests/SLH-DSA/acvp/acvp_client.py):
+ *     the hash and ML-KEM tests download them by that commit, the ML-DSA and
+ *     SLH-DSA clients by the tag v1.1.0.43, whose files have the same SHA-256
+ *     (a file that changed under the tag would fail its pin);
+ *   - for the rejection paths of ML-DSA signing, Table 1 of NIST's ACVP ML-DSA
+ *     specification (draft-celi-acvp-ml-dsa, Section 6.1.2, "Known Answer Tests
+ *     for Rejection Cases"), the list that IG 10.3.A, Note23, recommends;
+ *   - for HMAC, RFC 4231, test case 2.
+ */
+
 #if OPENPQC_HAVE_MLKEM || OPENPQC_HAVE_MLDSA || OPENPQC_HAVE_SLHDSA
 /* A CAST's own call of a service of the module: the only call that opqc_fips_check lets run on the self-testing
  * thread, and only in the CAST section (after the integrity test has passed). CAST_CALL(f(...)) is f's result. */
@@ -263,7 +267,9 @@ static int cast_verdict(const char *name, int passed)
 }
 
 #if OPENPQC_HAVE_MLKEM || OPENPQC_HAVE_MLDSA || OPENPQC_HAVE_SLHDSA
-/* SHA-256(data) == digest (IG 10.3.A, GeneralNote7: SHA-256 has passed its own CAST before this is used) */
+/* SHA-256(data) == digest. The long outputs (dk, c, the ML-DSA keys, the signatures) are compared through their
+ * SHA-256, as IG 10.3.A, GeneralNote7, permits (SHA-256 has passed its own CAST before this is used); everything
+ * else byte for byte (cast_equal). */
 static int cast_digest_equal(const char *name, const uint8_t *data, size_t len, const uint8_t digest[32])
 {
     uint8_t d[OPQC_SHA256_BYTES];

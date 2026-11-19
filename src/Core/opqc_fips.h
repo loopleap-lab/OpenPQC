@@ -14,43 +14,124 @@
  * openpqc/fips.h (openpqc_fips_status, openpqc_fips_service_approved) and
  * opqc_fips_mark_non_approved (Core/openpqc_core.h).
  *
- * The module is the shared library libopenpqc. Its states (ISO/IEC 19790:2012,
- * Section 7.11; the finite state model of the security policy):
+ * Design: README.md, "FIPS 140-3 mode".
+ */
+
+/*
+ * States. The module is the shared library libopenpqc. Its states (ISO/IEC
+ * 19790:2012, Section 7.11; the finite state model of the security policy):
  *
  *   power-on     the library is loaded and its self-tests have not finished;
  *                no service runs
  *   self-test    the pre-operational self-test and the CASTs run, on one
- *                thread (below); no service runs but the CASTs' own calls
+ *                thread (the power-on self-tests, below); no service runs but
+ *                the CASTs' own calls
  *   operational  every self-test passed: the services run
  *   error        a self-test, a pair-wise consistency test, the entropy
- *                source or the DRBG failed: until the process loads the
- *                module again, every service returns OPENPQC_ERR_ERROR_STATE
- *                (-12) and outputs nothing; there is no way back. Each
- *                service checks the state when it begins, and again when its
- *                computation has ended, before it returns: a service during
- *                whose computation the module entered the error state
- *                (through another thread, or through the call's own draw)
- *                returns -12 too, with its outputs set to zero
- *                (opqc_randombytes checks under the DRBG's lock, after
- *                generating); a key generation whose own pair-wise
- *                consistency test failed returns OPENPQC_ERR_PCT, its keys
- *                zeroized. A result returned with OPENPQC_OK was complete
- *                while the module was operational: an error state that
- *                begins after the second check does not reach it.
+ *                source or the DRBG failed (opqc_fips_fail): until the process
+ *                loads the module again, every service returns
+ *                OPENPQC_ERR_ERROR_STATE (-12) and outputs nothing; there is
+ *                no way back. How the services check the state, and what a
+ *                failure during a service leaves: opqc_fips_check.
+ */
+
+#ifndef OPQC_FIPS_H
+#define OPQC_FIPS_H
+
+#include "opqc_common.h"
+
+/*
+ * Builds that are not the module, made for the tests (they never build the
+ * library openpqc, and the test fips_exports checks the library for their
+ * marker). The module's own objects are compiled with OPQC_FIPS_MODULE_BUILD,
+ * which stops the build if a test definition is present too (below):
  *
- * The power-on self-tests, in this order (opqc_fips.c):
+ *   OPQC_FIPS_TEST_STATIC_LIBRARY  the static libraries of the tests: the
+ *       CMake targets openpqc_core (openpqc::core) and, on it,
+ *       openpqc_mlkem, openpqc_mldsa and openpqc_slhdsa (openpqc::mlkem,
+ *       openpqc::mldsa, openpqc::slhdsa), and the targets
+ *       openpqc_core_testrng, openpqc_mlkem_testrng, openpqc_mldsa_testrng
+ *       and openpqc_slhdsa_testrng (no openpqc:: alias; defined only in a
+ *       build with OPENPQC_BUILD_TESTS). In FIPS 140-3 mode they are usable
+ *       only in a build with OPENPQC_BUILD_TESTS, which alone gives them this
+ *       build of opqc_fips.c (the top-level CMakeLists.txt); without the
+ *       tests, compiling anything that links openpqc::core or a per-scheme
+ *       one stops with an error (cmake/openpqc_fips_test_only.c). They
+ *       contain the module's code for the algorithm tests, linked into test
+ *       programs
+ *       instead of the shared module. They have the state, the error state,
+ *       the indicator and the RNG routing of the module, but run no power-on
+ *       self-test: the integrity value exists only for the shared library, and
+ *       the CASTs need every scheme of the module. So a program linked with
+ *       one of them is not using the module, although openpqc_fips_status()
+ *       answers 0 there and its services set the indicator to 1.
+ *   OPQC_FIPS_TEST_BREAK           the test library openpqc_fips_break: the
+ *       module with one self-test made to fail, or a failure or a call made
+ *       to happen, chosen at load time by the environment variable
+ *       OPENPQC_FIPS_TEST_BREAK (the forced-failure tests, tests/test_fips_load.c
+ *       and tests/test_fips_state.c). It also records the decisions of the
+ *       power-on self-tests in the order they were made, each with its verdict
+ *       (openpqc_fips_test_stages, opqc_fips.c), so that a test can check the
+ *       order of items 1 and 2 of the power-on self-tests (below).
+ */
+#if defined(OPQC_FIPS_MODULE_BUILD) && (defined(OPQC_FIPS_TEST_STATIC_LIBRARY) || defined(OPQC_FIPS_TEST_BREAK))
+#error "a test-only FIPS definition in an object of the module (OPQC_FIPS_MODULE_BUILD)"
+#endif
+
+OPQC_EXTERN_C_BEGIN
+
+/*
+ * 0 when the module is operational; OPENPQC_ERR_ERROR_STATE (-12) in the error
+ * state. Every service calls it before it does anything else and returns -12,
+ * with its outputs as its contract says, when it is nonzero, and calls it
+ * again when its computation has ended, before it returns: a service during
+ * whose computation the module entered the error state (through another
+ * thread, or through the call's own draw) returns -12 too, with its outputs
+ * set to zero (opqc_randombytes checks under the DRBG's lock, after
+ * generating); a key generation whose own pair-wise consistency test failed
+ * returns OPENPQC_ERR_PCT, its keys zeroized. A result returned with
+ * OPENPQC_OK was complete while the module was operational: an error state
+ * that begins after the second check does not reach it.
+ *
+ * Runs the power-on self-tests (below) first if they have not run yet, and
+ * waits for them if another thread runs them, with every signal that the
+ * calling thread can block blocked meanwhile. On the thread that runs the
+ * self-tests, while they run, it answers 0 only to a CAST's own call of a
+ * service, and only in the CAST section, after the integrity test has passed;
+ * it answers OPENPQC_ERR_ERROR_STATE to any other call there (from code that a
+ * replaced import runs, say), without changing the state: such a call cannot
+ * wait for the self-tests that it interrupted. The CASTs call the module's own
+ * C API (the services); every other thread waits.
+ */
+OPQC_MUST_CHECK int opqc_fips_check(void);
+
+/*
+ * Enters the error state, for good: after a failed self-test, pair-wise
+ * consistency test, entropy draw or DRBG call. Safe from any thread, any
+ * number of times. Also destroys the module's DRBG instance (opqc_platform.c),
+ * so no secret state stays behind; it must not be called while that instance's
+ * lock is held.
+ */
+void opqc_fips_fail(void);
+
+/*
+ * Sets the calling thread's indicator (IG 2.4.C): 1 for an approved service
+ * that succeeded, 0 otherwise (a non-approved service, a refusal, an error).
+ * Each service of the module sets it when it returns, last, after every other
+ * call it makes (opqc_randombytes sets it too, as a service of its own). It is
+ * thread-local, so a service called on another thread cannot change what this
+ * thread reads.
+ */
+void opqc_fips_set_approved(int approved);
+
+/*
+ * The power-on self-tests, in this order (opqc_fips.c, opqc_fips_self_tests):
  *
  *   1. the CASTs of SHA-256 and HMAC-SHA-256: the algorithm of the integrity
  *      test must pass its own self-test first (ISO/IEC 19790:2012, Section
  *      7.10.1, AS10.20; IG 10.2.A);
- *   2. the integrity test (opqc_fips_integrity.c, opqc_fips_integrity_test),
- *      which computes with its own compiled copy of SHA-256 and HMAC-SHA-256
- *      and checks that copy first with RFC 4231's test cases 2 and 7: an
- *      HMAC-SHA-256 over the module's image as loaded (every byte the
- *      loader maps from the file, writable segments included, with the places
- *      the loader writes in a canonical form), against the value computed when
- *      the library was linked (IG 10.3.A does not cover it: it is the
- *      pre-operational self-test of Section 7.10.2);
+ *   2. the integrity test (opqc_fips_integrity_test, below), the
+ *      pre-operational self-test;
  *   3. the remaining CASTs (IG 10.3.A): SHA-512, SHA3-256, SHAKE128, SHAKE256,
  *      HMAC-SHA-512, the HMAC_DRBG (opqc_drbg_cast), ML-KEM-512 (KeyGen,
  *      Encaps, Decaps on both of its paths), ML-DSA-44 (KeyGen, deterministic
@@ -122,105 +203,20 @@
  * without running a handler, but a C library whose
  * abort() unblocks SIGABRT first (glibc 2.39, for one) runs the application's
  * SIGABRT handler on that thread before the process ends; a service that
- * handler calls during a CAST's own call is served (the rule below for a call
- * made from inside a CAST's own call).
- *
- * On the self-testing thread, opqc_fips_check answers 0 only to a CAST's own
- * call of a service, and only in the CAST section, after the integrity test
- * has passed; it answers OPENPQC_ERR_ERROR_STATE to any other call there
- * (from code that a replaced import runs, say), without changing the state:
- * such a call cannot wait for the self-tests that it interrupted. The CASTs
- * call the module's own C API (the services); every other thread waits. The
- * CASTs that need randomness (ML-KEM Encaps and the pair-wise consistency
- * test inside KeyGen, SLH-DSA KeyGen) get known bytes from opqc_randombytes
- * through opqc_fips_cast_random, in a CAST's own call only, as IG 10.3.A asks
- * ("fixed/predetermined values ... m", "SK.seed, SK.prf, and PK.seed"). A
- * service called from inside a CAST's own call (by a replaced import's code,
- * outside the tested configuration of the security policy, Section 6.2) is not
- * told apart from the CAST's.
- *
- * The indicator (IG 2.4.C): one value per thread, set by each service of the
- * module when it returns: 1 for an approved service that succeeded, 0
- * otherwise (a non-approved service, a refusal, an error). It is thread-local,
- * so a service called on another thread cannot change what this thread reads.
- * The services set it last, after every other call they make (opqc_randombytes
- * sets it too, as a service of its own).
- *
- * Builds that are not the module, made for the tests (they never build the
- * library openpqc, and the test fips_exports checks the library for their
- * marker):
- *
- *   OPQC_FIPS_TEST_STATIC_LIBRARY  the static libraries of the tests: the
- *       CMake targets openpqc_core (openpqc::core) and, on it,
- *       openpqc_mlkem, openpqc_mldsa and openpqc_slhdsa (openpqc::mlkem,
- *       openpqc::mldsa, openpqc::slhdsa), and the targets
- *       openpqc_core_testrng, openpqc_mlkem_testrng, openpqc_mldsa_testrng
- *       and openpqc_slhdsa_testrng (no openpqc:: alias; defined only in a
- *       build with OPENPQC_BUILD_TESTS). In FIPS 140-3 mode they are usable
- *       only in a build with OPENPQC_BUILD_TESTS, which alone gives them this
- *       build of opqc_fips.c (the top-level CMakeLists.txt); without the
- *       tests, compiling anything that links openpqc::core or a per-scheme
- *       one stops with an error (cmake/openpqc_fips_test_only.c). They
- *       contain the module's code for the algorithm tests, linked into test
- *       programs
- *       instead of the shared module. They have the state, the error state,
- *       the indicator and the RNG routing of the module, but run no power-on
- *       self-test: the integrity value exists only for the shared library, and
- *       the CASTs need every scheme of the module. So a program linked with
- *       one of them is not using the module, although openpqc_fips_status()
- *       answers 0 there and its services set the indicator to 1.
- *   OPQC_FIPS_TEST_BREAK           the test library openpqc_fips_break: the
- *       module with one self-test made to fail, or a failure or a call made
- *       to happen, chosen at load time by the environment variable
- *       OPENPQC_FIPS_TEST_BREAK (the forced-failure tests, tests/test_fips_load.c
- *       and tests/test_fips_state.c). It also records the decisions of the
- *       power-on self-tests in the order they were made, each with its verdict
- *       (openpqc_fips_test_stages, opqc_fips.c), so that a test can check the
- *       order of item 1 and 2 above.
- *
- * The module's own objects are compiled with OPQC_FIPS_MODULE_BUILD, which
- * stops the build if a test definition is present too.
+ * handler calls during a CAST's own call is served (opqc_fips_self_testing,
+ * below).
  */
-
-#ifndef OPQC_FIPS_H
-#define OPQC_FIPS_H
-
-#include "opqc_common.h"
-
-#if defined(OPQC_FIPS_MODULE_BUILD) && (defined(OPQC_FIPS_TEST_STATIC_LIBRARY) || defined(OPQC_FIPS_TEST_BREAK))
-#error "a test-only FIPS definition in an object of the module (OPQC_FIPS_MODULE_BUILD)"
-#endif
-
-OPQC_EXTERN_C_BEGIN
-
-/*
- * 0 when the module is operational; OPENPQC_ERR_ERROR_STATE (-12) in the error
- * state. Runs the power-on self-tests first if they have not run yet, and waits
- * for them if another thread runs them, with every signal that the calling
- * thread can block blocked meanwhile (above). On the thread that runs the
- * self-tests, while they run: 0 for a CAST's own call of a service in the CAST
- * section, -12 for any other call (above). Every service calls it before it
- * does anything else and returns -12, with its outputs as its contract says,
- * when it is nonzero, and calls it again before it returns.
- */
-OPQC_MUST_CHECK int opqc_fips_check(void);
-
-/*
- * Enters the error state, for good: after a failed self-test, pair-wise
- * consistency test, entropy draw or DRBG call. Safe from any thread, any
- * number of times. Also destroys the module's DRBG instance (opqc_platform.c),
- * so no secret state stays behind; it must not be called while that instance's
- * lock is held.
- */
-void opqc_fips_fail(void);
-
-/* Sets the calling thread's indicator: 1 for an approved service that succeeded, 0 otherwise */
-void opqc_fips_set_approved(int approved);
 
 /*
  * The pre-operational software integrity test (opqc_fips_integrity.c): 0 if the
  * module's loaded image hashes to the value stored at link time, nonzero
- * otherwise. Part of the power-on self-tests; not a service.
+ * otherwise. Part of the power-on self-tests; not a service. It computes with
+ * its own compiled copy of SHA-256 and HMAC-SHA-256 and checks that copy first
+ * with RFC 4231's test cases 2 and 7: an HMAC-SHA-256 over the module's image
+ * as loaded (every byte the loader maps from the file, writable segments
+ * included, with the places the loader writes in a canonical form), against
+ * the value computed when the library was linked (IG 10.3.A does not cover it:
+ * it is the pre-operational self-test of Section 7.10.2).
  */
 OPQC_MUST_CHECK int opqc_fips_integrity_test(void);
 
@@ -228,14 +224,20 @@ OPQC_MUST_CHECK int opqc_fips_integrity_test(void);
  * 1 while the calling thread runs the power-on self-tests and a CAST's own call
  * of a service is in progress on it, in the CAST section; 0 otherwise. Then
  * opqc_fips_check answers 0 on it and opqc_randombytes serves the bytes set
- * with opqc_fips_cast_random.
+ * with opqc_fips_cast_random. A service called from inside a CAST's own call
+ * (by a replaced import's code, outside the tested configuration of the
+ * security policy, Section 6.2) is not told apart from the CAST's.
  */
 int opqc_fips_self_testing(void);
 
 /*
  * opqc_platform.c: the bytes opqc_randombytes gives the CASTs on the
  * self-testing thread, consumed in order (p == NULL: none; a draw that wants
- * more than is left fails). Used only by the self-tests.
+ * more than is left fails). Used only by the self-tests: the CASTs that need
+ * randomness (ML-KEM Encaps and the pair-wise consistency test inside KeyGen,
+ * SLH-DSA KeyGen) get known bytes from opqc_randombytes through it, in a
+ * CAST's own call only, as IG 10.3.A asks ("fixed/predetermined values ...
+ * m", "SK.seed, SK.prf, and PK.seed").
  */
 void opqc_fips_cast_random(const uint8_t *p, size_t len);
 

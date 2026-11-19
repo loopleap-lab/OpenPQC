@@ -9,58 +9,40 @@
  *
  *   MAC(text) = HMAC(K, text) = H((K0 xor opad) || H((K0 xor ipad) || text))
  *
- *   function       H         block B   output L
- *   HMAC-SHA-256   SHA-256   64 bytes  32 bytes
- *   HMAC-SHA-512   SHA-512  128 bytes  64 bytes
+ * Header-only C11, like opqc_sha2.h (static inline functions, no heap); also
+ * valid C++ and SYCL device code, although no GPU code uses it
+ * (Core/sycl/opqc_sycl_sha2.hpp has the kernels' HMAC).
  *
- * K0 is the key padded with zeros to B bytes, or, for a key longer than B
- * bytes, H(K) padded with zeros (Section 4, Table 1, steps 1-3); ipad and opad
- * are the bytes 0x36 and 0x5c repeated B times (Section 2.3).
- *
- * One-shot functions:
+ * Secrets: the key, K0 and a keyed state (opqc_hmac_sha256_state, below).
+ * Design:  README.md, "Hashing: phases, errors, destruction".
+ */
+
+/*
+ * Functions. One-shot:
  *   opqc_hmac_sha256(key, keylen, msg, msglen, out[32])
  *   opqc_hmac_sha512(key, keylen, msg, msglen, out[64])
- * Incremental functions (the text in pieces, a keyed state used for several
- * texts, and truncation):
+ * Incremental (the text in pieces, a keyed state used for several texts, and
+ * truncation):
  *   opqc_hmac_sha256_init(s, key, keylen)    steps 1-4 and 7
  *   opqc_hmac_sha256_absorb(s, text, len)    step 5, any number of times
  *   opqc_hmac_sha256_finalize(s, out, outlen)  steps 6, 8, 9, Section 5
  *   and the same for HMAC-SHA-512.
- *
- * The keyed state. Init compresses the blocks K0 xor ipad and K0 xor opad
- * at once and keeps the two SHA-2 states that follow them, as Section 6 allows
- * ("the intermediate results of the compression function on the B-byte
- * blocks (K0 xor ipad) and (K0 xor opad) can be precomputed once"): K0 is
- * never stored, and a state that init has keyed can be copied (plain struct
- * assignment) to authenticate several texts under one key without hashing the
- * key blocks again, which HMAC_DRBG does (opqc_drbg.c). Section 6: "These
- * stored intermediate values shall be treated and protected in the same manner
- * as secret keys": whoever holds a keyed state can compute the MAC of any text
- * under K.
- *
- * Truncation (Section 5). Finalize writes the leftmost outlen bytes of the
- * MAC, 0 <= outlen <= L, and refuses a larger outlen (OPQC_SHA2_ERR_INVALID_
- * ARGUMENT, nothing changed). The length a protocol may truncate to is set by
- * SP 800-107, not here.
- *
+ */
+
+/*
+ * Stack. The incremental functions run in the caller's frame and, like SHA-2's
+ * (opqc_sha2.h), leave the message schedule and the compiler's spills below
+ * it: a caller that MACs with them clears its stack itself (opqc_drbg.c does).
+ * The one-shot functions run in a frame of their own and, on CPUs, clear the
+ * stack where it was after they return (OPQC_BURN_STACK_HASH, opqc_sha2.h), as
+ * Core's one-shot hashes do; the test core_hmac checks that this clearing
+ * reaches as deep as their computation.
+ */
+
+/*
  * Constant time. The key and the text are processed with the same operations
  * whatever their values: the only branches depend on the lengths (keylen > B
  * selects step 2; SHA-2 itself branches on lengths only), which are public.
- *
- * Destruction of intermediate values. Finalize destroys the state it was given
- * (both SHA-2 states, set to zero) and the inner digest of step 6; init
- * destroys K0. A keyed state that the caller keeps or copies to use again is
- * the caller's to destroy (opqc_zeroize). The incremental functions run in the
- * caller's frame and, like SHA-2's (opqc_sha2.h), leave the message schedule
- * and the compiler's spills below it: a caller that MACs with them clears its
- * stack itself (opqc_drbg.c does). The one-shot functions run in a frame of
- * their own and, on CPUs, clear the stack where it was after they return
- * (OPQC_BURN_STACK_HASH, opqc_sha2.h), as Core's one-shot hashes do; the test
- * core_hmac checks that this clearing reaches as deep as their computation.
- *
- * Header-only C11, like opqc_sha2.h (static inline functions, no heap); also
- * valid C++ and SYCL device code, although no GPU code uses it
- * (Core/sycl/opqc_sycl_sha2.hpp has the kernels' HMAC).
  */
 
 #ifndef OPQC_HMAC_H
@@ -75,8 +57,20 @@
 #define OPQC_HMAC_SHA256_BYTES OPQC_SHA256_BYTES /* L of HMAC-SHA-256 */
 #define OPQC_HMAC_SHA512_BYTES OPQC_SHA512_BYTES /* L of HMAC-SHA-512 */
 
-/* A keyed HMAC-SHA-256 computation: the SHA-256 states after the block K0 xor ipad (and the text
- * absorbed so far) and after the block K0 xor opad */
+/*
+ * A keyed HMAC-SHA-256 computation: the SHA-256 states after the block K0 xor
+ * ipad (and the text absorbed so far) and after the block K0 xor opad. Init
+ * compresses both blocks at once and keeps these two states, as Section 6
+ * allows ("the intermediate results of the compression function on the B-byte
+ * blocks (K0 xor ipad) and (K0 xor opad) can be precomputed once"): K0 is
+ * never stored, and a state that init has keyed can be copied (plain struct
+ * assignment) to authenticate several texts under one key without hashing the
+ * key blocks again, which HMAC_DRBG does (opqc_drbg.c). Section 6: "These
+ * stored intermediate values shall be treated and protected in the same manner
+ * as secret keys": whoever holds a keyed state can compute the MAC of any text
+ * under K. A keyed state that the caller keeps or copies to use again is the
+ * caller's to destroy (opqc_zeroize).
+ */
 typedef struct {
     opqc_sha256_state inner; /* H((K0 xor ipad) || text ...: steps 5 and 6 */
     opqc_sha256_state outer; /* H((K0 xor opad) || ...: steps 8 and 9 */
@@ -92,8 +86,10 @@ typedef struct {
 
 /*
  * Steps 1-4 and 7 for the key key[0 .. keylen): K0, then the SHA-256 states
- * after K0 xor ipad and after K0 xor opad. Any keylen, 0 included (key may then
- * be NULL).
+ * after K0 xor ipad and after K0 xor opad. K0 is the key padded with zeros to
+ * B bytes, or, for a key longer than B bytes, H(K) padded with zeros (Section
+ * 4, Table 1, steps 1-3); init destroys it. Any keylen, 0 included (key may
+ * then be NULL).
  */
 OPQC_INLINE void opqc_hmac_sha256_init(opqc_hmac_sha256_state *s, const uint8_t *key, size_t keylen)
 {
@@ -130,8 +126,10 @@ OPQC_INLINE void opqc_hmac_sha256_absorb(opqc_hmac_sha256_state *s, const uint8_
 }
 
 /*
- * Steps 6, 8 and 9, and the leftmost outlen bytes of the MAC (Section 5).
- * Returns OPQC_SHA2_OK and destroys the state, or OPQC_SHA2_ERR_INVALID_ARGUMENT
+ * Steps 6, 8 and 9, and the leftmost outlen bytes of the MAC (Section 5),
+ * 0 <= outlen <= L; the length a protocol may truncate to is set by SP 800-107,
+ * not here. Returns OPQC_SHA2_OK and destroys the state (both SHA-2 states, set
+ * to zero) and the inner digest of step 6, or OPQC_SHA2_ERR_INVALID_ARGUMENT
  * for outlen > 32, changing nothing.
  */
 OPQC_INLINE int opqc_hmac_sha256_finalize(opqc_hmac_sha256_state *s, uint8_t *out, unsigned outlen)

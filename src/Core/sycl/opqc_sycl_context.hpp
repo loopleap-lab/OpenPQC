@@ -5,36 +5,98 @@
 //                            workspace, calls split into launches, zeroization, randomness, device memory,
 //                            and what happens when the device fails
 //
-// A backend's context (opaque in its C API) derives from Context<Sections>: an in-order queue, the
-// largest batch of a launch, and one device allocation, the workspace, divided into sections of a fixed
-// size per operation. Every call
+// A backend's context derives from Context<Sections> (below). Every call of a backend's C API takes the
+// context's lock, runs in launches of at most max_batch operations, zeroizes the secret sections after
+// each, and returns -2 once the context has failed (Device failures, below). Host code only; none of it
+// throws to the caller of a C API (guarded, opqc_sycl_runtime.hpp).
 //
-//   - takes the context's lock for the whole call (calls from several threads take turns: one call's
-//     per-call data in the workspace must not be overwritten by another's before its kernels have run;
-//     recursive, since the randomized calls call the derandomized ones),
-//   - runs in chunks of at most max_batch operations (chunked), each queued without waiting,
-//   - and zeroizes the sections that held secrets after every chunk, and the whole workspace if the call
-//     or the device fails (FIPS 204, Section 3.6.3; FIPS 205, Section 3.1, "Destruction of sensitive data").
-//
-// Every helper here that uses the workspace, the page-locked coin buffer or the record of the
-// zeroization after a failure takes the lock itself (allocate, zeroize, check, wipe_workspace,
-// coin_buffer, free_coin_buffer, release, sync, chunked, with_random_coins, fill_status), so that no
+// Secrets: the workspace's secret sections and the coins of randomized calls, zeroized on host and device.
+// Design:  ../README.md, "GPU helpers".
+#pragma once
+
+#include <sycl/sycl.hpp>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "../opqc_platform.h"
+#include "opqc_sycl_runtime.hpp"
+#include "opqc_sycl_team.hpp"
+
+namespace openpqc::gpu {
+
+// OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS (tests only) counts the USM allocations of the helpers below
+// (count_usm). It also puts everything in this file into an inline namespace of its own, so that the
+// names the linker sees are not the library's (as ml_kem.hpp does for its configurations): a test
+// program compiled with it and a backend library compiled without it each keep their own copies,
+// instead of the linker taking one of them for both. The library's targets never define it.
+#if defined(OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS)
+inline namespace test_count_allocations {
+#endif
+
+// The guard of a context's lock (Context::mutex). Every helper here that uses the workspace, the
+// page-locked coin buffer or the record of the zeroization after a failure takes the lock itself
+// (allocate, zeroize, check, wipe_workspace, coin_buffer, free_coin_buffer, release, sync, chunked,
+// with_random_coins, fill_status), so that no
 // helper's work can run between the steps of another thread's call, also when a backend calls the
 // helper without the lock. That a backend holds the lock across each whole call is still its own duty,
 // which nothing here checks: a call has several steps (the status fill, the context string, the chunks,
 // the fill after a failure), and only a lock held across all of them keeps another call from running in
 // between. The copies and the memory functions take none (they use none of it, and SYCL queues are
 // thread-safe), nor does the failed state need it (atomic).
-//
-// Randomized calls draw their coins on the host (with_random_coins), into page-locked memory of the
-// context, and wipe them there at once. That reaches every copy the library holds, not every copy that
-// exists: NVIDIA's CUDA driver has been seen to keep copies of such small host-to-device transfers (the
-// coins: ML-KEM's d || z and m, ML-DSA's xi and rnd, SLH-DSA's seeds and addrnd) in memory of its own
-// (mappings of /dev/nvidiactl), after the call and, under DPC++, after destroy, where the library cannot
-// reach them.
-// The queue is in order, so a memset queued after a kernel runs after it: zeroizing costs no wait.
-// Host code only; none of it throws to the caller of a C API (guarded, opqc_sycl_runtime.hpp).
-//
+using Lock = std::lock_guard<std::recursive_mutex>;
+
+// The bytes at the end of every workspace that sync writes (Context::sync_word)
+inline constexpr std::size_t SYNC_WORD_BYTES = 4;
+
+// The workspace's layout (Context::allocate): one section per entry of per_op, per_op[i] bytes per operation for
+// max_batch operations, each section WORKSPACE_ALIGN-aligned, then `extra` bytes and the SYNC_WORD_BYTES of sync.
+// section_span is the bytes of one section; workspace_bytes the whole workspace, or 0 if it does not fit in
+// size_t. The GPU API reports workspace_bytes before a context exists (openpqc_gpu_workspace_bytes), so both
+// come from here.
+inline bool section_span(std::size_t per_op, std::size_t max_batch, std::size_t& span) noexcept {
+    if (max_batch != 0 && per_op > (SIZE_MAX - (WORKSPACE_ALIGN - 1)) / max_batch) return false;
+    span = (per_op * max_batch + WORKSPACE_ALIGN - 1) / WORKSPACE_ALIGN * WORKSPACE_ALIGN;
+    return true;
+}
+template <std::size_t Sections>
+std::size_t workspace_bytes(const std::array<std::size_t, Sections>& per_op, std::size_t max_batch,
+                            std::size_t extra) noexcept {
+    std::size_t total = 0, span = 0;
+    for (const std::size_t b : per_op) {
+        if (!section_span(b, max_batch, span) || span > SIZE_MAX - total) return 0;
+        total += span;
+    }
+    if (extra > SIZE_MAX - SYNC_WORD_BYTES - total) return 0;
+    return total + extra + SYNC_WORD_BYTES;
+}
+
+// The USM allocations that the helpers of this file hold, in the whole process: the workspaces
+// (Context::allocate, until release), the coin buffers (coin_buffer, until free_coin_buffer) and what
+// device_malloc and host_malloc handed out and device_free has not freed yet. Counted only where this
+// header is compiled with OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS: a test then sees an allocation that a
+// failed create or a destroy leaves behind on every device, also on devices whose runtime reports no
+// free memory (AdaptiveCpp's OpenMP host device among them) and where the leak is too small for that
+// figure to show. In every other build count_usm is empty and there is no counter.
+#if defined(OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS)
+inline std::atomic<long> usm_allocations_held{0};
+inline long usm_allocations() noexcept { return usm_allocations_held.load(std::memory_order_relaxed); }
+inline void count_usm(const void* p, long change) noexcept {
+    if (p) usm_allocations_held.fetch_add(change, std::memory_order_relaxed);
+}
+#else
+inline void count_usm(const void*, long) noexcept {}
+#endif
+
 // Device failures
 //
 // A call only queues work, so most device errors (a kernel that touches an invalid address, a lost
@@ -81,36 +143,6 @@
 //   again) no zeroization of device memory can run, and what the kernels wrote stays in device memory
 //   until the driver reuses it.
 //
-//   Status: a verification call fills its status entries with the backend's failure code (fill_status)
-//   before its first kernel, so that an entry the kernels never reach reads as a failure, and again when
-//   the call returns non-zero. The fill after a refused (-1) or failed (-2) call is waited for before the
-//   call returns, so that no write into the caller's status buffer is left queued behind it: the caller
-//   may free the buffer at once, and device_free does not wait (on AdaptiveCpp's OpenMP host device a
-//   pending fill into a freed status buffer corrupted the heap). fill_status itself does not wait.
-//   Neither fill can run on a lost device, and the copy back then fails too (-2), leaving the host buffer
-//   as it was: a caller checks the results of the call, of sync and of the copy, not only the status
-//   entries.
-//
-//   What a backend's C API does:
-//     create         derive the context from Context and allocate(); delete it if that fails
-//     destroy        openpqc::gpu::destroy(ctx)
-//     sync           return openpqc::gpu::sync(ctx)
-//     memcpy, memcpy_async   return openpqc::gpu::copy(ctx, dst, src, bytes, wait)
-//     every call     take the lock for the whole call (the helpers take it too, but each only for its
-//                    own part) and queue the work through chunked or with_random_coins (both check
-//                    before and after); work queued outside them (put_context, ...) goes through
-//                    ctx->guard, after ctx->check() at the start of the call
-//     verification   check the status pointer with the other arguments (4-byte aligned), then, with the
-//                    lock held, fill_status(ctx, status, <failure code>, n) before the first kernel, and
-//                    again if the call is refused or ends with a non-zero result, followed then by a wait
-//                    (ctx->guard([&] { ctx->queue.wait(); return 0; })) so that the call returns with no
-//                    write into status queued
-//     a wait inside a call (ML-DSA's signing loop reads its counters back): copy(ctx, ..., true), or
-//                    ctx->check() after the wait; stop at -2, what was read may be stale
-//   Code that waits through ctx->queue.wait_and_throw() inside guarded, or copies through
-//   copy(ctx->queue, ...), reports a failed context as well (-2), and that wait zeroizes the workspace as
-//   sync does; sync(ctx) and copy(ctx, ...) are nevertheless the C APIs' functions.
-//
 //   AdaptiveCpp keeps one list of asynchronous errors for the whole process, and whichever queue asks
 //   first (a wait_and_throw, a throw_asynchronous, the destructor of any queue) gives all of it to its own
 //   handler, with nothing that says which queue's work failed. So, under AdaptiveCpp:
@@ -129,80 +161,6 @@
 //   (the default one, which ends the process), and failures that end the process inside the runtime
 //   itself (DPC++ on CUDA has been seen to abort in an event's destructor when a second context submits
 //   work after a sticky fault of a first).
-#pragma once
-
-#include <sycl/sycl.hpp>
-
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <cstddef>
-#include <cstdint>
-#include <exception>
-#include <memory>
-#include <mutex>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "../opqc_platform.h"
-#include "opqc_sycl_runtime.hpp"
-#include "opqc_sycl_team.hpp"
-
-namespace openpqc::gpu {
-
-// OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS (tests only) counts the USM allocations of the helpers below
-// (count_usm). It also puts everything in this file into an inline namespace of its own, so that the
-// names the linker sees are not the library's (as ml_kem.hpp does for its configurations): a test
-// program compiled with it and a backend library compiled without it each keep their own copies,
-// instead of the linker taking one of them for both. The library's targets never define it.
-#if defined(OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS)
-inline namespace test_count_allocations {
-#endif
-
-using Lock = std::lock_guard<std::recursive_mutex>;
-
-// The bytes at the end of every workspace that sync writes (Context::sync_word)
-inline constexpr std::size_t SYNC_WORD_BYTES = 4;
-
-// The workspace's layout (Context::allocate): one section per entry of per_op, per_op[i] bytes per operation for
-// max_batch operations, each section WORKSPACE_ALIGN-aligned, then `extra` bytes and the SYNC_WORD_BYTES of sync.
-// section_span is the bytes of one section; workspace_bytes the whole workspace, or 0 if it does not fit in
-// size_t. The GPU API reports workspace_bytes before a context exists (openpqc_gpu_workspace_bytes), so both
-// come from here.
-inline bool section_span(std::size_t per_op, std::size_t max_batch, std::size_t& span) noexcept {
-    if (max_batch != 0 && per_op > (SIZE_MAX - (WORKSPACE_ALIGN - 1)) / max_batch) return false;
-    span = (per_op * max_batch + WORKSPACE_ALIGN - 1) / WORKSPACE_ALIGN * WORKSPACE_ALIGN;
-    return true;
-}
-template <std::size_t Sections>
-std::size_t workspace_bytes(const std::array<std::size_t, Sections>& per_op, std::size_t max_batch,
-                            std::size_t extra) noexcept {
-    std::size_t total = 0, span = 0;
-    for (const std::size_t b : per_op) {
-        if (!section_span(b, max_batch, span) || span > SIZE_MAX - total) return 0;
-        total += span;
-    }
-    if (extra > SIZE_MAX - SYNC_WORD_BYTES - total) return 0;
-    return total + extra + SYNC_WORD_BYTES;
-}
-
-// The USM allocations that the helpers of this file hold, in the whole process: the workspaces
-// (Context::allocate, until release), the coin buffers (coin_buffer, until free_coin_buffer) and what
-// device_malloc and host_malloc handed out and device_free has not freed yet. Counted only where this
-// header is compiled with OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS: a test then sees an allocation that a
-// failed create or a destroy leaves behind on every device, also on devices whose runtime reports no
-// free memory (AdaptiveCpp's OpenMP host device among them) and where the leak is too small for that
-// figure to show. In every other build count_usm is empty and there is no counter.
-#if defined(OPENPQC_SYCL_TEST_COUNT_ALLOCATIONS)
-inline std::atomic<long> usm_allocations_held{0};
-inline long usm_allocations() noexcept { return usm_allocations_held.load(std::memory_order_relaxed); }
-inline void count_usm(const void* p, long change) noexcept {
-    if (p) usm_allocations_held.fetch_add(change, std::memory_order_relaxed);
-}
-#else
-inline void count_usm(const void*, long) noexcept {}
-#endif
 
 // Whether a context has failed, and the first message: written by the async handler of the context's
 // queue (in the thread that waits, or in the queue's destructor) and by the helpers that catch an
@@ -365,6 +323,18 @@ private:
     void* hook_arg_ = nullptr;
 };
 
+// A backend's context (opaque in its C API) derives from Context<Sections>: an in-order queue, the
+// largest batch of a launch, and one device allocation, the workspace, divided into sections of a fixed
+// size per operation. Every call
+//
+//   - takes the context's lock for the whole call (calls from several threads take turns: one call's
+//     per-call data in the workspace must not be overwritten by another's before its kernels have run;
+//     recursive, since the randomized calls call the derandomized ones),
+//   - runs in chunks of at most max_batch operations (chunked), each queued without waiting,
+//   - and zeroizes the sections that held secrets after every chunk, and the whole workspace if the call
+//     or the device fails (FIPS 204, Section 3.6.3; FIPS 205, Section 3.1, "Destruction of sensitive data").
+//
+// The queue is in order, so a memset queued after a kernel runs after it: zeroizing costs no wait.
 template <unsigned Sections>
 struct Context {
     ContextQueue queue;                    // in order, with recording_handler; whether the context has failed
@@ -376,7 +346,7 @@ struct Context {
     std::size_t bytes[Sections] = {};      // and its bytes per operation (or per other unit, see zeroize)
     std::uint8_t* coins_host = nullptr;    // page-locked host memory for the coins (with_random_coins), zero
     std::size_t coins_host_bytes = 0;      //   between calls
-    mutable std::recursive_mutex mutex;    // taken by every call and by the helpers (the top of the file)
+    mutable std::recursive_mutex mutex;    // taken by every call and by the helpers (Lock, above)
     bool wiped_after_failure = false;      // check has zeroized the workspace (under the lock)
 
     // app: the application's SYCL context to work in, or nullptr (ContextQueue)
@@ -440,7 +410,7 @@ struct Context {
         zeroize(mask, [&](unsigned) { return ops; });
     }
 
-    // Whether the context has failed (the top of the file): its handler was given an asynchronous error,
+    // Whether the context has failed (Device failures, above): its handler was given an asynchronous error,
     // a helper caught an exception (fail), or, under AdaptiveCpp, any context of the process was given an
     // asynchronous error after this one was created. Needs no lock.
     bool failed() const noexcept { return queue.failed(); }
@@ -557,6 +527,26 @@ struct Context {
     }
 };
 
+// What a backend's C API does with the helpers below:
+//   create         derive the context from Context and allocate(); delete it if that fails
+//   destroy        openpqc::gpu::destroy(ctx)
+//   sync           return openpqc::gpu::sync(ctx)
+//   memcpy, memcpy_async   return openpqc::gpu::copy(ctx, dst, src, bytes, wait)
+//   every call     take the lock for the whole call (the helpers take it too, but each only for its
+//                  own part) and queue the work through chunked or with_random_coins (both check
+//                  before and after); work queued outside them (put_context, ...) goes through
+//                  ctx->guard, after ctx->check() at the start of the call
+//   verification   check the status pointer with the other arguments (4-byte aligned), then, with the
+//                  lock held, fill_status(ctx, status, <failure code>, n) before the first kernel, and
+//                  again if the call is refused or ends with a non-zero result, followed then by a wait
+//                  (ctx->guard([&] { ctx->queue.wait(); return 0; })) so that the call returns with no
+//                  write into status queued
+//   a wait inside a call (ML-DSA's signing loop reads its counters back): copy(ctx, ..., true), or
+//                  ctx->check() after the wait; stop at -2, what was read may be stale
+// Code that waits through ctx->queue.wait_and_throw() inside guarded, or copies through
+// copy(ctx->queue, ...), reports a failed context as well (-2), and that wait zeroizes the workspace as
+// sync does; sync(ctx) and copy(ctx, ...) are nevertheless the C APIs' functions.
+
 // The C APIs' destroy: release(), then the context itself. Its destructor and the queue's are noexcept
 // (an exception inside them would end the process, and no try here could catch it), and nothing in them
 // throws: release() has handed the pending errors to the handler already, and the handler, which the
@@ -578,7 +568,7 @@ void destroy(C* ctx) noexcept {
 // have all been waited for may wait without asking the device (DPC++'s CUDA backend then makes no call to
 // the driver), and the sync of a context that queued nothing since its last wait would return 0 on a
 // device that a sticky fault of another context has made unusable. The command fails there, as every
-// command does (the top of the file), and sync returns -2.
+// command does (Device failures, above), and sync returns -2.
 template <unsigned Sections>
 int sync(Context<Sections>* ctx) noexcept {
     if (!ctx) return -1;
@@ -624,8 +614,10 @@ int chunked(Context<Sections>* ctx, std::size_t n, unsigned mask, F f, Wipe wipe
 // the workspace, whatever happened: randomness is as secret as what it becomes (FIPS 204, Section 3.6.1;
 // FIPS 205, Section 3.1). The host buffer is wiped again at the end. It is page-locked so that the copy
 // reads it directly: a copy from pageable memory goes through a staging buffer of the driver (CUDA, for
-// one), which keeps the coins after the call and which the library cannot wipe. Even so, NVIDIA's driver
-// has been seen to keep copies of these small page-locked transfers as well (top of this file): the wipes
+// one), which keeps the coins after the call and which the library cannot wipe. Even so, NVIDIA's CUDA driver
+// has been seen to keep copies of these small page-locked transfers as well (the coins: ML-KEM's d || z and
+// m, ML-DSA's xi and rnd, SLH-DSA's seeds and addrnd) in memory of its own (mappings of /dev/nvidiactl),
+// after the call and, under DPC++, after destroy, where the library cannot reach them: the wipes
 // here reach every copy the library holds, not every copy that exists. Takes the context's lock. A failed
 // context draws no coins (-2), after each copy, whose wait finds the faults of the work queued before it,
 // the context is checked again before f runs, and it is checked at the end however the chunks ended.
@@ -687,7 +679,13 @@ int with_random_coins(Context<Sections>* ctx, std::size_t n, std::size_t coin_by
 // context's lock (the call that runs it holds it already), so that the fill cannot land between the
 // kernels of another thread's call. Returns 0; -1 for a null context or a status pointer that is not
 // aligned for int32_t (refused before anything is queued: a misaligned fill would fault on the device,
-// and on CUDA that fault is sticky); -2 for an exception (the context has then failed).
+// and on CUDA that fault is sticky); -2 for an exception (the context has then failed). fill_status
+// itself does not wait; the call waits for the fill after a refused (-1) or failed (-2) call before it
+// returns, so that no write into the caller's status buffer is left queued behind it: the caller may
+// free the buffer at once, and device_free does not wait (on AdaptiveCpp's OpenMP host device a pending
+// fill into a freed status buffer corrupted the heap). Neither fill can run on a lost device, and the
+// copy back then fails too (-2), leaving the host buffer as it was: a caller checks the results of the
+// call, of sync and of the copy, not only the status entries.
 template <unsigned Sections>
 int fill_status(Context<Sections>* ctx, std::int32_t* status, std::int32_t code, std::size_t n) noexcept {
     if (!ctx) return -1;

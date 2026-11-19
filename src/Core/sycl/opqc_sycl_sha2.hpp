@@ -5,40 +5,12 @@
 //
 // The SHA-2 analogue of opqc_sycl_sponge.hpp. Every work-item hashes its own messages. The compression
 // functions are Core's opqc_sha256_compress_words / opqc_sha512_compress_words (opqc_sha2.h), the code
-// the CPU runs. Only the bookkeeping differs from the CPU's incremental functions (opqc_sha256_absorb /
-// opqc_sha256_finalize), which keep a run-time byte position in a 64-byte buffer: a run-time index into
-// a small array sends it to slow private memory. Here a message reaches the compression function as
-// words, and every position -- of the data, of the 1 bit of the padding and of the length (Section
-// 5.1) -- is a compile-time constant where the length is, so that the state, the block and the
-// schedule stay in registers.
+// the CPU runs; this file adds the bookkeeping, with every position a compile-time constant where the
+// length is (hashing, below).
 //
-// Words. SHA-2 is big-endian (Section 3.1): word t of a block is bytes 4t .. 4t+3 (SHA-256) or
-// 8t .. 8t+7 (SHA-512), most significant first. A message is given as a function word(i) returning
-// its i-th word; bytes past the end of the message in its last word are ignored (masked here).
-// On the little-endian devices that SYCL runs on, a word is a byte-swapped load (load32_be /
-// load64_be, be_word), and Concat joins byte strings that do not end on a word boundary with
-// constant shifts.
-//
-//   Sha256, Sha512               the two hash functions: word type, sizes, H(0), the compression
-//   sha2_block<Sha>              one compression of a block given as words
-//   sha2_fixed<Sha, P, L>        a message of L bytes, L known at compile time, after P bytes that the
-//                                given hash value already covers (a midstate, P a multiple of the block
-//                                size; P = 0 from Sha::init): data, padding and length, then H is the hash
-//   sha2_absorb_and_pad<Sha>     the same for a length known only at run time (messages)
-//   hmac_init / hmac_finish      HMAC (FIPS 198-1, Section 4), keys up to the block size
-//   mgf1<Sha, S, M>              MGF1 (RFC 8017, Appendix B.2.1) of a seed of S bytes, M bytes of mask
-//   trunc_lanes<Sha, B>          the first B bytes of a hash value (Trunc_n of FIPS 205, Section 11.2) as
-//                                little-endian 64-bit lanes, ready for store64 / store16
-//
-// Loops. The words of a block are always unrolled (compile-time indices). The loop over the blocks of
-// a message is not: in sha2_fixed it runs over the blocks before the one that holds the padding (none
-// for messages shorter than a block), in sha2_absorb_and_pad over all blocks. There, word(i) is called
-// with a run-time i, so it should read memory (the workspace, local memory, a device buffer), not index
-// an array of registers (as message_representative in ML/DSA/sycl/mldsa_sycl.cpp does for the SHAKE
-// helpers).
-//
-// None of this zeroizes: hash values and blocks live in registers; a caller that hashes secrets keeps
-// them out of memory or destroys what it writes (the backends' workspace zeroization).
+// Secrets: none of this zeroizes: hash values and blocks live in registers; a caller that hashes secrets
+//          keeps them out of memory or destroys what it writes (the backends' workspace zeroization).
+// Design:  ../README.md, "GPU helpers".
 #pragma once
 
 #include <cstddef>
@@ -51,6 +23,7 @@ namespace openpqc::gpu {
 
 // --- the two hash functions --------------------------------------------------------------------
 
+// Sha256, Sha512: word type, sizes, H(0), the compression
 struct Sha256 {
     using Word = std::uint32_t;
     static constexpr unsigned word_bytes = 4;
@@ -87,6 +60,13 @@ struct Sha512 {
 };
 
 // --- words ---------------------------------------------------------------------------------------
+
+// SHA-2 is big-endian (Section 3.1): word t of a block is bytes 4t .. 4t+3 (SHA-256) or
+// 8t .. 8t+7 (SHA-512), most significant first. A message is given as a function word(i) returning
+// its i-th word; bytes past the end of the message in its last word are ignored (masked here).
+// On the little-endian devices that SYCL runs on, a word is a byte-swapped load (load32_be /
+// load64_be, be_word), and Concat joins byte strings that do not end on a word boundary with
+// constant shifts.
 
 OPQC_KERNEL_INLINE inline std::uint32_t bswap32(std::uint32_t x) { return __builtin_bswap32(x); }
 OPQC_KERNEL_INLINE inline std::uint64_t bswap64(std::uint64_t x) { return __builtin_bswap64(x); }
@@ -168,6 +148,20 @@ OPQC_KERNEL_INLINE inline Concat<Word, XBytes, YBytes, X, Y> concat(X x, Y y) {
 
 // --- hashing ------------------------------------------------------------------------------------
 
+// Only the bookkeeping differs from the CPU's incremental functions (opqc_sha256_absorb /
+// opqc_sha256_finalize), which keep a run-time byte position in a 64-byte buffer: a run-time index into
+// a small array sends it to slow private memory. Here a message reaches the compression function as
+// words, and every position -- of the data, of the 1 bit of the padding and of the length (Section
+// 5.1) -- is a compile-time constant where the length is, so that the state, the block and the
+// schedule stay in registers.
+//
+// Loops. The words of a block are always unrolled (compile-time indices). The loop over the blocks of
+// a message is not: in sha2_fixed it runs over the blocks before the one that holds the padding (none
+// for messages shorter than a block), in sha2_absorb_and_pad over all blocks. There, word(i) is called
+// with a run-time i, so it should read memory (the workspace, local memory, a device buffer), not index
+// an array of registers (as message_representative in ML/DSA/sycl/mldsa_sycl.cpp does for the SHAKE
+// helpers).
+
 // H <- H(i) from H(i-1) and the block word(0), ..., word(15)
 template <class Sha, class WordFn>
 OPQC_KERNEL_INLINE inline void sha2_block(typename Sha::Word H[8], WordFn word) {
@@ -218,7 +212,7 @@ OPQC_KERNEL_INLINE inline void sha2_fixed(typename Sha::Word H[8], WordFn word) 
 
 // The same for a message of len bytes, len known only at run time (the analogue of absorb_and_pad in
 // opqc_sycl_sponge.hpp): word(i) is called only for words that hold message bytes, with a run-time i
-// (see the top of the file). The loop runs over whole blocks, the last of which holds the length, so
+// (see Loops, above). The loop runs over whole blocks, the last of which holds the length, so
 // every index into the block is still a constant.
 template <class Sha, class WordFn>
 OPQC_KERNEL_INLINE inline void sha2_absorb_and_pad(typename Sha::Word H[8], std::uint64_t prefix_bytes,
@@ -327,7 +321,8 @@ OPQC_KERNEL_INLINE inline void mgf1(typename Sha::Word out[], Seed seed) {
 
 // The first Bytes bytes (a multiple of 8, at most the digest) of the hash value H as little-endian 64-bit
 // lanes, lanes[j] = bytes 8j .. 8j+7: Trunc_n of FIPS 205, Section 11.2, in the form that store64 writes
-// and the SHAKE helpers read (an n-byte node of either family looks the same in memory)
+// and the SHAKE helpers read (an n-byte node of either family looks the same in memory), ready for store64 /
+// store16
 template <class Sha, std::size_t Bytes>
 OPQC_KERNEL_INLINE inline void trunc_lanes(std::uint64_t lanes[], const typename Sha::Word H[8]) {
     static_assert(Bytes % 8 == 0 && Bytes <= Sha::digest_bytes, "whole lanes of the hash value");

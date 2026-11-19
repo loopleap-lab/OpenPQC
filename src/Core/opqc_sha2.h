@@ -7,45 +7,15 @@
  * opqc_sha2.h -- SHA-224, SHA-256, SHA-384, SHA-512, SHA-512/224 and
  * SHA-512/256 (FIPS 180-4, Secure Hash Standard)
  *
- * Two compression functions cover the six hash functions (Section 6):
- *
- *   function      words    block   rounds   initial value   digest
- *   SHA-224       32-bit    64 B     64     Section 5.3.2   H(N), first 28 bytes
- *   SHA-256       32-bit    64 B     64     Section 5.3.3   H(N), 32 bytes
- *   SHA-384       64-bit   128 B     80     Section 5.3.4   H(N), first 48 bytes
- *   SHA-512       64-bit   128 B     80     Section 5.3.5   H(N), 64 bytes
- *   SHA-512/224   64-bit   128 B     80     Section 5.3.6.1 H(N), first 28 bytes
- *   SHA-512/256   64-bit   128 B     80     Section 5.3.6.2 H(N), first 32 bytes
- *
- * Byte order. Unlike SHA-3, SHA-2 is big-endian (Section 3.1): word t of a
- * message block is bytes 4t .. 4t + 3 (8t .. 8t + 7 for the 64-bit
- * functions), most significant byte first, and the digest H0 || H1 || ... is
- * written in the same order.
- *
- * Messages are byte strings. FIPS 180-4 also defines lengths that are not a
- * multiple of 8 bits; this code does not support them. The functions have no
- * data-dependent branches or memory indices: their timing depends on the
- * lengths only, not on the bytes hashed.
- *
- * Destruction of intermediate values. A state holds the last message block
- * and H, the digest so far, and the compression functions keep the message
- * schedule W in their frame (or in spill slots of the compiler's), from which
- * the block follows: any 16 consecutive words W_t give it back, by step 1 of
- * Section 6.2.2 run backwards. The one-shot functions destroy all of it
- * before they return (see there); with the incremental functions the state
- * belongs to the caller, which destroys it, and a caller that hashes a secret
- * also clears the stack below it (SLH/DSA/scheme/slhdsa_internal.hpp).
- *
- * Two levels. The compression functions proper take the block as its 16 words
- * (opqc_sha256_compress_words, opqc_sha512_compress_words); GPU kernels call
- * them directly, with the words in registers (Core/sycl/opqc_sycl_sha2.hpp).
- * The byte-level opqc_sha256_compress / opqc_sha512_compress read the words of
- * a block in memory and call them; the incremental and one-shot functions
- * below use those, so the CPU and the GPU run one source.
- *
  * In OpenPQC, SHA-2 pre-hashes messages for HashML-DSA (FIPS 204, Section 5.4)
  * and HashSLH-DSA (FIPS 205, Section 10.2.2; see Core/prehash.hpp), and it is a
- * building block of SLH-DSA (FIPS 205, Section 11.2).
+ * building block of SLH-DSA (FIPS 205, Section 11.2). Messages are byte
+ * strings: FIPS 180-4 also defines lengths that are not a multiple of 8 bits,
+ * which this code does not support.
+ *
+ * Secrets: the bytes hashed. No branch or memory index depends on them: the
+ *          timing depends on the lengths only. The one-shots destroy them.
+ * Design:  README.md, "Hashing: phases, errors, destruction".
  */
 
 #ifndef OPQC_SHA2_H
@@ -205,6 +175,17 @@ OPQC_INLINE void opqc_burn_fence(void)
 #define OPQC_SHA2_OK 0
 #define OPQC_SHA2_ERR_INVALID_ARGUMENT (-2) /* refused: outlen above the digest size; nothing was changed */
 
+/*
+ * Two compression functions cover the six hash functions (Section 6):
+ *
+ *   function      words    block   rounds   initial value   digest
+ *   SHA-224       32-bit    64 B     64     Section 5.3.2   H(N), first 28 bytes
+ *   SHA-256       32-bit    64 B     64     Section 5.3.3   H(N), 32 bytes
+ *   SHA-384       64-bit   128 B     80     Section 5.3.4   H(N), first 48 bytes
+ *   SHA-512       64-bit   128 B     80     Section 5.3.5   H(N), 64 bytes
+ *   SHA-512/224   64-bit   128 B     80     Section 5.3.6.1 H(N), first 28 bytes
+ *   SHA-512/256   64-bit   128 B     80     Section 5.3.6.2 H(N), first 32 bytes
+ */
 #define OPQC_SHA256_BLOCK_BYTES 64  /* SHA-224, SHA-256: 512-bit blocks */
 #define OPQC_SHA512_BLOCK_BYTES 128 /* SHA-384, SHA-512, SHA-512/t: 1024-bit blocks */
 
@@ -215,7 +196,8 @@ OPQC_INLINE void opqc_burn_fence(void)
 #define OPQC_SHA512_224_BYTES 28
 #define OPQC_SHA512_256_BYTES 32
 
-/* State of SHA-224 and SHA-256 */
+/* State of SHA-224 and SHA-256. With the incremental functions it belongs to the caller, which
+ * destroys it. */
 typedef struct {
     uint32_t H[8];                         /* the hash value H(i), Section 6.2 */
     uint8_t block[OPQC_SHA256_BLOCK_BYTES]; /* the message block being filled */
@@ -298,7 +280,9 @@ OPQC_INLINE uint64_t opqc_sha512_Sigma1(uint64_t x) { return opqc_rotr64(x, 14) 
 OPQC_INLINE uint64_t opqc_sha512_sigma0(uint64_t x) { return opqc_rotr64(x, 1) ^ opqc_rotr64(x, 8) ^ (x >> 7); }
 OPQC_INLINE uint64_t opqc_sha512_sigma1(uint64_t x) { return opqc_rotr64(x, 19) ^ opqc_rotr64(x, 61) ^ (x >> 6); }
 
-/* Big-endian loads and stores (Section 3.1) */
+/* Big-endian loads and stores (Section 3.1). Unlike SHA-3, SHA-2 is big-endian: word t of a message
+ * block is bytes 4t .. 4t + 3 (8t .. 8t + 7 for the 64-bit functions), most significant byte first, and
+ * the digest H0 || H1 || ... is written in the same order. */
 OPQC_INLINE uint32_t opqc_load32_be(const uint8_t *p)
 {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3];
@@ -370,7 +354,9 @@ OPQC_INLINE void opqc_store64_be(uint8_t *p, uint64_t x)
 /*
  * Steps 1-4 of Section 6.2.2: H <- H(i) from H(i-1) and the block M(i) given as
  * its words W[t] = M_t(i), t = 0..15 (big-endian, Section 5.2.1). W is the
- * schedule's ring (above): it holds W_48 .. W_63 on return.
+ * schedule's ring (above): it holds W_48 .. W_63 on return. This and
+ * opqc_sha512_compress_words are the compression functions proper: GPU kernels
+ * call them directly, with the words in registers (Core/sycl/opqc_sycl_sha2.hpp).
  */
 OPQC_INLINE void opqc_sha256_compress_words(uint32_t H[8], uint32_t W[16])
 {
@@ -454,7 +440,8 @@ OPQC_INLINE void opqc_sha512_compress_words(uint64_t H[8], uint64_t W[16])
 }
 
 /* The same for the block M(i) as 64 bytes (128 bytes for SHA-512) in memory: its words (Section 5.2.1),
- * then the compression. The words, and the schedule computed from them, are left in this function's
+ * then the compression. The incremental and one-shot functions below use these, so the CPU and the GPU run
+ * one source. The words, and the schedule computed from them, are left in this function's
  * frame (callers that hashed a secret remove them, see SLH/DSA/scheme/slhdsa_internal.hpp). */
 OPQC_INLINE void opqc_sha256_compress(uint32_t H[8], const uint8_t M[OPQC_SHA256_BLOCK_BYTES])
 {
@@ -667,15 +654,18 @@ OPQC_INLINE int opqc_sha512_finalize(opqc_sha512_state *s, uint8_t *out, unsigne
  * The one-shot functions hash in a state of their own and destroy, before they
  * return, everything the computation left that the caller cannot reach (FIPS
  * 204, Section 3.6.3 and FIPS 205, Section 3.1 count messages as potentially
- * sensitive; see the top of the file for what the state and the schedule
- * hold). opqc_sha256_hash and opqc_sha512_hash run the computation from H(0) =
- * iv and destroy the state; on CPUs (OPQC_STACK_BURN) they run in a frame of
- * their own, and the stack where it and the compression functions' frames were
- * is cleared after they return (OPQC_BURN_STACK_HASH, the size for one-shot
- * hashes: on i686, GCC 16 at -O3 keeps the compression out of this frame and
- * the three frames reach 1,208 bytes below the caller), with the message
- * schedule and whatever the compiler spilled. In device code only the state is
- * cleared.
+ * sensitive). A state holds the last message block and H, the digest so far,
+ * and the compression functions keep the message schedule W in their frame (or
+ * in spill slots of the compiler's), from which the block follows: any 16
+ * consecutive words W_t give it back, by step 1 of Section 6.2.2 run
+ * backwards. opqc_sha256_hash and opqc_sha512_hash run the computation from
+ * H(0) = iv and destroy the state; on CPUs (OPQC_STACK_BURN) they run in a
+ * frame of their own, and the stack where it and the compression functions'
+ * frames were is cleared after they return (OPQC_BURN_STACK_HASH, the size for
+ * one-shot hashes: on i686, GCC 16 at -O3 keeps the compression out of this
+ * frame and the three frames reach 1,208 bytes below the caller), with the
+ * message schedule and whatever the compiler spilled. In device code only the
+ * state is cleared.
  */
 OPQC_STACK_FRAME void opqc_sha256_hash(uint8_t *out, unsigned outlen, const uint32_t iv[8],
                                        const uint8_t *in, size_t inlen)

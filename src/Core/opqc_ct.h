@@ -11,44 +11,12 @@
  * index. Writing branch-free C is not enough: optimizing compilers can turn a
  * mask computation back into a branch. This happened to the Kyber reference
  * code with Clang 15-18 ("clangover", 2024): `mask & ((q + 1) / 2)` with a
- * 0/1-derived mask became a conditional jump on a message bit.
+ * 0/1-derived mask became a conditional jump on a message bit. A value
+ * barrier stops this; the helpers below build their masks behind it, by the
+ * rules of mlkem-native's verify.h (at the barrier, below).
  *
- * A value barrier stops this. It returns its argument unchanged, but the
- * compiler cannot see through it: whatever it knew about the argument, it
- * knows nothing about the result. What the barrier protects depends on where
- * it sits. A mask computed as 0 - (t >> 31) is 0 or 0xFFFFFFFF whatever t is,
- * so a barrier on t alone leaves the compiler free to read mask & (a ^ b) as
- * "a ^ b or 0" and to select or branch on the mask; Clang did exactly this to
- * the selection of ML-KEM decapsulation. The helpers below therefore follow
- * the rules of mlkem-native's verify.h:
- *
- *  - every mask they return comes out of a barrier, either directly or
- *    through a shift that leaves its value unknown, so that no caller can
- *    find out from the code that it has only two values;
- *  - the helpers that apply a mask (opqc_ct_select_u32, opqc_ct_cmov) pass
- *    it through the barrier again where they use it, whatever produced it;
- *  - the value whose sign bit becomes the mask (x | -x, a - b, 0 - x) passes
- *    a barrier too, so that the compiler cannot recognize a comparison in the
- *    derivation, which some processors (Armv6-M) evaluate with a branch.
- *
- * Code that builds a mask itself must follow the same rules, or use these
- * helpers.
- *
- * The barrier is an empty inline-assembly statement that claims to change its
- * operand (GCC and Clang; no instruction is emitted), an XOR with a volatile
- * variable that holds 0 (other compilers, e.g. MSVC, or when
- * OPQC_CONFIG_NO_ASM_VALUE_BARRIER is defined: a load and an XOR that the
- * compiler must keep), or the identity in SYCL and CUDA code (GPU code is not
- * claimed to be constant time); opqc_common.h chooses.
- *
- * Scope of the evidence: valgrind (OPQC_CT_TESTING below) checks the binaries
- * that GCC and Clang build for x86-64 Linux, at every level from -O0 to -Os
- * for the helpers themselves (tests/Core/test_core_ct.c, with both barriers)
- * and at the build's level for the schemes (mlkem*_ct, mldsa_ct, slhdsa_ct).
- * For other processors (AArch64, RV64GC, Armv6-M, Armv7-M, i686) only the
- * assembly that Clang makes of each helper and of its users in the math cores
- * is read (tests/Core/check_ct_asm.py); nothing runs there. Other compilers,
- * MSVC's above all, are not tested.
+ * Secrets: the values the helpers compare, mask and select; lengths public.
+ * Design:  README.md, "Constant time".
  */
 
 #ifndef OPQC_CT_H
@@ -63,6 +31,15 @@
  * that are public by design although computed from secrets (the public key,
  * the seed rho, the result of a key check) are released with
  * OPQC_CT_DECLASSIFY. Without OPQC_CT_TESTING both macros do nothing.
+ *
+ * Scope of the evidence: valgrind checks the binaries that GCC and Clang build
+ * for x86-64 Linux, at every level from -O0 to -Os for the helpers themselves
+ * (tests/Core/test_core_ct.c, with both barriers) and at the build's level for
+ * the schemes (mlkem*_ct, mldsa_ct, slhdsa_ct). For other processors (AArch64,
+ * RV64GC, Armv6-M, Armv7-M, i686) only the assembly that Clang makes of each
+ * helper and of its users in the math cores is read
+ * (tests/Core/check_ct_asm.py); nothing runs there. Other compilers, MSVC's
+ * above all, are not tested.
  */
 #if defined(OPQC_CT_TESTING)
 #include <valgrind/memcheck.h>
@@ -73,6 +50,35 @@
 #define OPQC_CT_DECLASSIFY(p, len) ((void)(p), (void)(len))
 #endif
 
+/*
+ * The value barrier. It returns its argument unchanged, but the compiler
+ * cannot see through it: whatever it knew about the argument, it knows nothing
+ * about the result. It is an empty inline-assembly statement that claims to
+ * change its operand (GCC and Clang; no instruction is emitted), an XOR with a
+ * volatile variable that holds 0 (other compilers, e.g. MSVC, or when
+ * OPQC_CONFIG_NO_ASM_VALUE_BARRIER is defined: a load and an XOR that the
+ * compiler must keep), or the identity in SYCL and CUDA code (GPU code is not
+ * claimed to be constant time); opqc_common.h chooses.
+ *
+ * What the barrier protects depends on where it sits. A mask computed as
+ * 0 - (t >> 31) is 0 or 0xFFFFFFFF whatever t is, so a barrier on t alone
+ * leaves the compiler free to read mask & (a ^ b) as "a ^ b or 0" and to
+ * select or branch on the mask; Clang did exactly this to the selection of
+ * ML-KEM decapsulation. The helpers below therefore follow the rules of
+ * mlkem-native's verify.h:
+ *
+ *  - every mask they return comes out of a barrier, either directly or
+ *    through a shift that leaves its value unknown, so that no caller can
+ *    find out from the code that it has only two values;
+ *  - the helpers that apply a mask (opqc_ct_select_u32, opqc_ct_cmov) pass
+ *    it through the barrier again where they use it, whatever produced it;
+ *  - the value whose sign bit becomes the mask (x | -x, a - b, 0 - x) passes
+ *    a barrier too, so that the compiler cannot recognize a comparison in the
+ *    derivation, which some processors (Armv6-M) evaluate with a branch.
+ *
+ * Code that builds a mask itself must follow the same rules, or use these
+ * helpers.
+ */
 #if defined(OPQC_VALUE_BARRIER_ASM)
 OPQC_INLINE uint32_t opqc_value_barrier_u32(uint32_t x)
 {
@@ -113,7 +119,8 @@ OPQC_INLINE uint8_t opqc_ct_mask_nonzero_u8(uint8_t x)
  * 32-bit masks: all ones (0xFFFFFFFF) or all zeros, computed without branches,
  * and the selection they drive. A 32-bit value has no spare bits to shift a
  * sign out of, so the mask is the broadcast sign bit of a value behind one
- * barrier, and passes a second barrier itself (see the top of this file).
+ * barrier, and passes a second barrier itself (see the rules at the barrier,
+ * above).
  */
 
 /* 0xFFFFFFFF if x != 0, 0 if x == 0 */

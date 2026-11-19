@@ -7,25 +7,15 @@
  * opqc_common.h -- conventions shared by the OpenPQC C11 math core
  *
  * The math core (the opqc_ headers in src/Core and the headers in
- * src/<scheme>/math) is header-only: every function is `static inline`.
- * One source therefore serves three compilers:
+ * src/<scheme>/math) is header-only: every function is `static inline`
+ * (OPQC_INLINE). One source therefore serves three compilers: C11 (the C API
+ * and any C caller), C++20 (the scheme layer, e.g. src/ML/KEM/mlkem.hpp) and
+ * SYCL device compilers (the GPU kernels in src/<scheme>/sycl/). This file
+ * holds what they share: OPQC_MUST_CHECK, OPENPQC_API, OPQC_INLINE and the C
+ * the math core is written in, OPQC_UNROLL, and the choice of the value
+ * barrier.
  *
- *   - C11 (the C API and any C caller),
- *   - C++20 (the scheme layer, e.g. src/ML/KEM/mlkem.hpp),
- *   - SYCL device compilers (the GPU kernels in src/<scheme>/sycl/).
- *
- * To stay valid in all three, the math core does not use `restrict`,
- * `[static n]` array parameters, compound literals, designated initializers,
- * implicit conversions from `void *`, variable-length arrays, or recursion.
- * Its only inline assembly is empty asm statements, compiled only where
- * OPQC_VALUE_BARRIER_ASM is defined (CPU code of GCC and Clang, see below):
- * the value barrier (opqc_ct.h) and the stack clearing after Keccak-f and the
- * hash one-shots (OPQC_STACK_BURN_ASM, opqc_keccak.h and opqc_sha2.h), whose
- * register clearing is an attribute (zero_call_used_regs), not assembly. Tables
- * are file-scope `static const` arrays, which SYCL 2020 allows in device code.
- *
- * The C API headers of the schemes (openpqc_mlkem.h, openpqc_mldsa.h,
- * openpqc_slhdsa.h) include this file for OPQC_MUST_CHECK.
+ * Design: README.md, "Constant time" (the value barrier).
  */
 
 #ifndef OPQC_COMMON_H
@@ -64,6 +54,9 @@
  * To discard a status on purpose, a cast to void is enough for [[nodiscard]]
  * and for Clang, but not for GCC's warn_unused_result (C before C23): store
  * the status in a variable and use that.
+ *
+ * The C API headers of the schemes (openpqc_mlkem.h, openpqc_mldsa.h,
+ * openpqc_slhdsa.h) include this file for OPQC_MUST_CHECK.
  */
 #if (defined(__cplusplus) &&                                                   \
      (__cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L))) || \
@@ -85,7 +78,7 @@
  * and openpqc_version). The libraries are compiled with hidden visibility
  * (-fvisibility=hidden), so that a shared library exports these functions and
  * nothing else: the C++ layers inside it stay out of its dynamic symbol table,
- * where another shared object could interpose them (decision D3 (b); for static
+ * where another shared object could interpose them (for static
  * libraries, Core/abi.hpp keeps an application's copies of the C++ layers
  * apart). With GCC and Clang, default visibility. On Windows, dllexport while a
  * DLL of OpenPQC is built (OPENPQC_SHARED_BUILD) and dllimport for its users
@@ -105,7 +98,18 @@
 #define OPENPQC_API
 #endif
 
-/* All math-core functions are internal to each translation unit. */
+/*
+ * All math-core functions are internal to each translation unit. To stay valid
+ * in C11, C++20 and SYCL device code, the math core does not use `restrict`,
+ * `[static n]` array parameters, compound literals, designated initializers,
+ * implicit conversions from `void *`, variable-length arrays, or recursion.
+ * Its only inline assembly is empty asm statements, compiled only where
+ * OPQC_VALUE_BARRIER_ASM is defined (CPU code of GCC and Clang, see below):
+ * the value barrier (opqc_ct.h) and the stack clearing after Keccak-f and the
+ * hash one-shots (OPQC_STACK_BURN_ASM, opqc_keccak.h and opqc_sha2.h), whose
+ * register clearing is an attribute (zero_call_used_regs), not assembly. Tables
+ * are file-scope `static const` arrays, which SYCL 2020 allows in device code.
+ */
 #define OPQC_INLINE static inline
 
 /*
@@ -140,8 +144,8 @@
  *       static variable. OpenPQC claims no constant time for GPU code.
  *
  * OPQC_VALUE_BARRIERS is defined when one of the first two is active. CPU
- * code cannot be built without a barrier: OPQC_NO_VALUE_BARRIERS, which used
- * to make the barrier the identity, stops the build outside SYCL and CUDA.
+ * code cannot be built without a barrier: OPQC_NO_VALUE_BARRIERS, which would
+ * make the barrier the identity, stops the build outside SYCL and CUDA.
  *
  * Tested: the valgrind tests (core_*_ct, mlkem*_ct, mldsa_ct, slhdsa_ct)
  * check builds by GCC and Clang on x86-64 Linux, with the asm barrier and, in

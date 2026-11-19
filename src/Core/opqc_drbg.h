@@ -14,44 +14,80 @@
  * uses it, and these functions are internal to the library (not exported, not
  * part of the installed API).
  *
- * The four functions are SP 800-90A's DRBG mechanism functions (Section 9)
- * around the HMAC_DRBG algorithms (Section 10.1.2):
+ * Secrets: Key and V of the state, and what is derived from them (Stack, below).
+ * Design:  README.md, "Randomness".
+ */
+
+/*
+ * Functions. SP 800-90A's DRBG mechanism functions (Section 9) around the
+ * HMAC_DRBG algorithms (Section 10.1.2):
  *
  *   opqc_hmac_drbg_instantiate(d, entropy, nonce, personalization)
- *       Section 9.1 / 10.1.2.3: seed_material = entropy_input || nonce ||
- *       personalization_string; Key = 0x00...00, V = 0x01...01;
- *       (Key, V) = Update(seed_material); reseed_counter = 1
+ *       Section 9.1 / 10.1.2.3
  *   opqc_hmac_drbg_reseed(d, entropy, additional_input)
- *       Section 9.2 / 10.1.2.4: (Key, V) = Update(entropy_input ||
- *       additional_input); reseed_counter = 1
+ *       Section 9.2 / 10.1.2.4
  *   opqc_hmac_drbg_generate(d, out, outlen, additional_input)
  *       Section 9.3.1 / 10.1.2.5
  *   opqc_hmac_drbg_uninstantiate(d)
- *       Section 9.4: the internal state is set to zero
- *
- * Who supplies what. The entropy input and the nonce are not the
- * application's to give (Section 9.1, "Required information not provided by
- * the consuming application"): the module's code that calls these functions
- * obtains them from its entropy source, and only the tests and the health test
+ *       Section 9.4
+ */
+
+/*
+ * Randomness. The entropy input and the nonce are not the application's to
+ * give (Section 9.1, "Required information not provided by the consuming
+ * application"): the module's code that calls these functions obtains them
+ * from its entropy source, and only the tests and the health test
  * (opqc_drbg_cast) pass fixed values (the testing interface of Section 11.2).
  * The personalization string and the additional input may come from anywhere
  * and may be empty.
- *
- * Parameters (Table 2, SHA-512; Section 8.6.7):
- *   security_strength          256 bits, the only one: every instantiation
- *                              has it (SHA-512 supports 256 bits, SP 800-57)
- *   entropy input              32 bytes (min_length = security_strength) to
- *                              2^32 bytes (max_length = 2^35 bits)
- *   nonce                      at least 16 bytes (security_strength / 2,
- *                              Section 8.6.7), at most 2^32 bytes
- *   personalization string,    0 to 2^32 bytes (2^35 bits)
- *   additional input
- *   one request                0 to 2^16 bytes of output
- *                              (max_number_of_bits_per_request = 2^19)
- *   reseed_interval            2^16 requests (OPQC_HMAC_DRBG_RESEED_INTERVAL,
- *                              below; SP 800-90A allows up to 2^48)
- *   prediction resistance      not offered (below)
- *
+ */
+
+/*
+ * Stack. Key and V are the secret values of the state (Section 10.1.2.1); the
+ * HMAC states that hold Key or a value derived from it, and every intermediate
+ * V, are destroyed before each function returns, and on CPUs each function
+ * also clears the stack its computation used, below its caller, and the
+ * call-clobbered registers (GCC and Clang on x86 and AArch64), as Core's
+ * one-shot hashes do. The state itself is the caller's memory: uninstantiate
+ * sets it to zero, and so does every error.
+ */
+
+/*
+ * Prediction resistance. These functions offer no prediction_resistance_flag
+ * or prediction_resistance_request (Sections 9.1, 9.2, 9.3.1 as SP 800-90A
+ * writes them for a DRBG that does not support it): the module does not offer
+ * prediction resistance. A caller that reseeds with fresh entropy right
+ * before a generate call (Section 9.3.1, step 7: reseed with the additional
+ * input, then generate without it) gets the same output as a DRBG that does;
+ * the test core_drbg_cavp runs NIST's prediction-resistance vectors that way,
+ * which checks the algorithm, not a claim of the module.
+ */
+
+/*
+ * Threads. An instance is not locked: the caller serializes the calls on one
+ * instance. Different instances are independent.
+ */
+
+#ifndef OPQC_DRBG_H
+#define OPQC_DRBG_H
+
+#include "opqc_common.h"
+
+OPQC_EXTERN_C_BEGIN
+
+/*
+ * Parameters (Table 2, SHA-512; Section 8.6.7). security_strength is 256 bits,
+ * the only one: every instantiation has it (SHA-512 supports 256 bits, SP
+ * 800-57).
+ */
+#define OPQC_HMAC_DRBG_OUTLEN 64             /* outlen of SHA-512, bytes (Table 2) */
+#define OPQC_HMAC_DRBG_SECURITY_STRENGTH 256 /* bits */
+#define OPQC_HMAC_DRBG_MIN_ENTROPY_BYTES 32  /* min_length = security_strength */
+#define OPQC_HMAC_DRBG_MIN_NONCE_BYTES 16    /* security_strength / 2 (Section 8.6.7) */
+#define OPQC_HMAC_DRBG_MAX_INPUT_BYTES (UINT64_C(1) << 32) /* 2^35 bits: entropy, nonce, personalization,
+                                                               additional input */
+#define OPQC_HMAC_DRBG_MAX_REQUEST_BYTES 65536 /* max_number_of_bits_per_request = 2^19 */
+/*
  * The reseed interval. Generate refuses a request once reseed_counter >
  * reseed_interval (Section 10.1.2.5, step 1), so one seed serves at most
  * 2^16 requests: at most 2^32 bytes of output. That is far below SP 800-90A's
@@ -61,8 +97,11 @@
  * of reach again. A reseed costs one draw of 32 bytes from the entropy source
  * and two Update calls. The caller reseeds before the interval runs out
  * (opqc_hmac_drbg_reseed_required); the refusal is the backstop.
- *
- * Errors. Each function checks its arguments and the state before it changes
+ */
+#define OPQC_HMAC_DRBG_RESEED_INTERVAL (UINT64_C(1) << 16) /* requests per seed (above) */
+
+/*
+ * Results. Each function checks its arguments and the state before it changes
  * anything (a NULL pointer with a nonzero length, a length outside the limits
  * above, a state that is not instantiated). On any error the function sets the
  * whole state to zero, so that the instance is uninstantiated and must be
@@ -75,45 +114,7 @@
  * Uninstantiate_function (state_handle). 9.2 Return an indication that the DRBG
  * instantiation can no longer be used"). The algorithms themselves cannot
  * fail.
- *
- * Prediction resistance. These functions offer no prediction_resistance_flag
- * or prediction_resistance_request (Sections 9.1, 9.2, 9.3.1 as SP 800-90A
- * writes them for a DRBG that does not support it): the module does not offer
- * prediction resistance. A caller that reseeds with fresh entropy right
- * before a generate call (Section 9.3.1, step 7: reseed with the additional
- * input, then generate without it) gets the same output as a DRBG that does;
- * the test core_drbg_cavp runs NIST's prediction-resistance vectors that way,
- * which checks the algorithm, not a claim of the module.
- *
- * Destruction of intermediate values. Key and V are the secret values of the
- * state (Section 10.1.2.1); the HMAC states that hold Key or a value derived
- * from it, and every intermediate V, are destroyed before each function
- * returns, and on CPUs each function also clears the stack its computation
- * used, below its caller, and the call-clobbered registers (GCC and Clang on
- * x86 and AArch64), as Core's one-shot hashes do. The state itself is the
- * caller's memory: uninstantiate sets it to zero, and so does every error.
- *
- * Threads. An instance is not locked: the caller serializes the calls on one
- * instance. Different instances are independent.
  */
-
-#ifndef OPQC_DRBG_H
-#define OPQC_DRBG_H
-
-#include "opqc_common.h"
-
-OPQC_EXTERN_C_BEGIN
-
-#define OPQC_HMAC_DRBG_OUTLEN 64             /* outlen of SHA-512, bytes (Table 2) */
-#define OPQC_HMAC_DRBG_SECURITY_STRENGTH 256 /* bits */
-#define OPQC_HMAC_DRBG_MIN_ENTROPY_BYTES 32  /* min_length = security_strength */
-#define OPQC_HMAC_DRBG_MIN_NONCE_BYTES 16    /* security_strength / 2 (Section 8.6.7) */
-#define OPQC_HMAC_DRBG_MAX_INPUT_BYTES (UINT64_C(1) << 32) /* 2^35 bits: entropy, nonce, personalization,
-                                                               additional input */
-#define OPQC_HMAC_DRBG_MAX_REQUEST_BYTES 65536 /* max_number_of_bits_per_request = 2^19 */
-#define OPQC_HMAC_DRBG_RESEED_INTERVAL (UINT64_C(1) << 16) /* requests per seed (above) */
-
-/* Results */
 #define OPQC_HMAC_DRBG_OK 0
 #define OPQC_HMAC_DRBG_ERR_INVALID_ARGUMENT (-2)  /* a length out of range, or a NULL pointer */
 #define OPQC_HMAC_DRBG_ERR_NOT_INSTANTIATED (-3)  /* the state is not an instantiated one */
@@ -139,8 +140,11 @@ typedef struct {
 /*
  * Instantiate (Section 9.1 with 10.1.2.3) from entropy[0 .. entropy_len),
  * nonce[0 .. nonce_len) and personalization[0 .. personalization_len), within
- * the limits above. Whatever d held is replaced. Returns OPQC_HMAC_DRBG_OK, or
- * OPQC_HMAC_DRBG_ERR_INVALID_ARGUMENT with d set to zero.
+ * the limits above: seed_material = entropy_input || nonce ||
+ * personalization_string; Key = 0x00...00, V = 0x01...01; (Key, V) =
+ * Update(seed_material); reseed_counter = 1. Whatever d held is replaced.
+ * Returns OPQC_HMAC_DRBG_OK, or OPQC_HMAC_DRBG_ERR_INVALID_ARGUMENT with d set
+ * to zero.
  */
 OPQC_MUST_CHECK int opqc_hmac_drbg_instantiate(opqc_hmac_drbg *d, const uint8_t *entropy, size_t entropy_len,
                                                const uint8_t *nonce, size_t nonce_len,
@@ -148,7 +152,8 @@ OPQC_MUST_CHECK int opqc_hmac_drbg_instantiate(opqc_hmac_drbg *d, const uint8_t 
 
 /*
  * Reseed (Section 9.2 with 10.1.2.4) an instantiated state with
- * entropy[0 .. entropy_len) and additional_input[0 .. additional_input_len).
+ * entropy[0 .. entropy_len) and additional_input[0 .. additional_input_len):
+ * (Key, V) = Update(entropy_input || additional_input); reseed_counter = 1.
  * Returns OPQC_HMAC_DRBG_OK, or an error with d set to zero.
  */
 OPQC_MUST_CHECK int opqc_hmac_drbg_reseed(opqc_hmac_drbg *d, const uint8_t *entropy, size_t entropy_len,
@@ -181,10 +186,11 @@ int opqc_hmac_drbg_reseed_required(const opqc_hmac_drbg *d);
  * item 6): a known-answer test of instantiate, reseed and generate in one
  * sweep, as the IG allows ("Instantiate with known data, Reseed with other
  * known data, Generate and then compare the result to a pre-computed value"),
- * on one of NIST's CAVP vectors for HMAC_DRBG with SHA-512 (with a
- * personalization string, and additional input for the reseed and for both
- * generate calls). The instance is its own, on the stack; it is uninstantiated
- * at the end, and the test also checks that uninstantiate left it zero. The
+ * on two of NIST's CAVP vectors for HMAC_DRBG with SHA-512, both with a
+ * personalization string: one with additional input for the reseed and for
+ * both generate calls, one without additional input (opqc_drbg.c). The instance
+ * is its own, on the stack; it is uninstantiated at the end of each case, and
+ * the test also checks that uninstantiate left it zero. The
  * output is compared, never returned, and destroyed with the state, pass or
  * fail. Returns 0 if every step gave the known answer, and
  * OPQC_HMAC_DRBG_ERR_SELF_TEST otherwise; the caller enters the module's error

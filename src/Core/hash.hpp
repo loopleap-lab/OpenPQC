@@ -10,23 +10,9 @@
 //   openpqc::fips202::sha3_256(h, message);
 //   openpqc::sha2::sha256(h, message);
 //
-//   openpqc::fips202::keccak_state st;          // incremental SHAKE
-//   shake128_init(st);
-//   shake128_absorb(st, part1);
-//   shake128_absorb(st, part2);
-//   shake128_finalize(st);
-//   shake128_squeeze(out, st);                   // any number of times
-//
-// The incremental functions follow the phases of the sponge (opqc_sha3.h):
-// init, any number of absorbs, finalize once, then any number of squeezes.
-// Each returns true when it has done its work, and false for a call out of
-// that order (an absorb after finalize, a squeeze before it, a second
-// finalize) or on a state that init never started: the state is then
-// unchanged, and a refused squeeze sets its output to zero, as the C function
-// does. squeezeblocks also returns false when out cannot hold the blocks, and
-// then writes nothing. A keccak_state destroys its state when it goes out of
-// scope, as Xof does (Core/xof.hpp), and the one-shot functions destroy
-// theirs and clear the stack their computation used (opqc_sha3.h).
+// Secrets: a keccak_state destroys its state (below); the one-shot functions
+//          destroy theirs and clear the stack their computation used (opqc_sha3.h).
+// Design:  README.md, "Hashing: phases, errors, destruction".
 #pragma once
 
 #include <array>
@@ -51,7 +37,24 @@ inline constexpr std::size_t SHA3_512_RATE = OPQC_SHA3_512_RATE;
 
 // State of an incremental SHAKE computation: no sponge until shake128_init or
 // shake256_init (all zero, every other call is refused); destroyed when it goes
-// out of scope (FIPS 203, Section 3.3; FIPS 204, Section 3.6.3)
+// out of scope, as Xof does (Core/xof.hpp; FIPS 203, Section 3.3; FIPS 204,
+// Section 3.6.3).
+//
+//   openpqc::fips202::keccak_state st;          // incremental SHAKE
+//   shake128_init(st);
+//   shake128_absorb(st, part1);
+//   shake128_absorb(st, part2);
+//   shake128_finalize(st);
+//   shake128_squeeze(out, st);                   // any number of times
+//
+// The incremental functions follow the phases of the sponge (opqc_sha3.h):
+// init, any number of absorbs, finalize once, then any number of squeezes.
+// Each returns true when it has done its work, and false for a call out of
+// that order (an absorb after finalize, a squeeze before it, a second
+// finalize) or on a state that init never started: the state is then
+// unchanged, and a refused squeeze sets its output to zero, as the C function
+// does. squeezeblocks also returns false when out cannot hold the blocks, and
+// then writes nothing.
 struct keccak_state {
     opqc_sponge sponge{};
     ~keccak_state() { opqc_zeroize(&sponge, sizeof sponge); }

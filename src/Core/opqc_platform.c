@@ -245,7 +245,7 @@ static void opqc_drbg_register(void)
     opqc_drbg_handlers = pthread_atfork(opqc_drbg_prepare, opqc_drbg_parent, opqc_drbg_child) == 0;
 }
 
-/* Personalization string and additional input: the process id and two clocks (SP 800-90A, Section 8.7.1:
+/* Personalization string and additional input: a label, the process id and two clocks (SP 800-90A, Section 8.7.1:
  * information that makes the instance unique; not secret, not entropy) */
 static size_t opqc_drbg_context(uint8_t out[64])
 {

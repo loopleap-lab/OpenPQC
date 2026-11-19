@@ -9,22 +9,26 @@
  *
  * The module, the shared library libopenpqc, defines these functions itself, with hidden visibility. Every call of
  * them in the module, those that the compilers generate for copies of structures and for zeroization included, is
- * then bound to these definitions when the library is linked, and the module imports none of them. An imported
- * function is bound by its name when the module is loaded, so the program's own definition of it, one in a library
- * named in LD_PRELOAD, or one that an auditing library (LD_AUDIT, DT_AUDIT) binds instead, would run in its place:
- * a memcpy that put a changed byte of the module back as the integrity test copies its image
- * (opqc_fips_integrity.c) would hide the change, and a memset that did nothing would leave the values that
- * opqc_zeroize is to destroy. The variants that _FORTIFY_SOURCE makes the compilers call (__memcpy_chk,
- * __memmove_chk, __memset_chk) are defined here for the same reason; where the C library's would report a buffer
- * overflow and end the program, these end it with a trap. The test fips_integrity lists the module's imports
- * (nm -D -u) and fails if any of these is among them.
+ * then bound to these definitions when the library is linked, and the module imports none of them, so that no
+ * definition outside the module can run in their place (OPQC_FIPS_MEM_API, below).
  *
- * x86-64 only, the platform of FIPS 140-3 mode (CMakeLists.txt). Up to 32 bytes are moved with unaligned loads and
- * stores of 8, 4, 2 and 1 bytes, every byte loaded before any is stored, which is right for overlapping ranges too;
- * more with the string instructions (rep movsb, rep stosb; for a move to a higher address that overlaps its source,
- * backwards, with the direction flag set and cleared again), which processors since Ivy Bridge run as fast block
- * moves. There is no loop: a compiler may recognise a copying or filling loop and replace it with a call of memcpy
- * or memset, which here would call itself.
+ * Design: README.md, "FIPS 140-3 mode".
+ */
+
+#include <stddef.h>
+#include <stdint.h>
+
+/* x86-64 only, the platform of FIPS 140-3 mode (CMakeLists.txt) */
+#if !defined(__x86_64__) || !defined(__LP64__)
+#error "the module's memory functions are written for x86-64, the only platform of FIPS 140-3 mode"
+#endif
+
+/*
+ * Hidden. An imported function is bound by its name when the module is loaded, so the program's own definition of
+ * it, one in a library named in LD_PRELOAD, or one that an auditing library (LD_AUDIT, DT_AUDIT) binds instead,
+ * would run in its place: a memcpy that put a changed byte of the module back as the integrity test copies its
+ * image (opqc_fips_integrity.c) would hide the change, and a memset that did nothing would leave the values that
+ * opqc_zeroize is to destroy.
  *
  * Not instrumented by AddressSanitizer or UndefinedBehaviorSanitizer: the integrity test copies the module's whole
  * image with memcpy, the red zones that AddressSanitizer puts around the module's global variables included, and a
@@ -34,20 +38,15 @@
  * the check to the interceptors, so in a FIPS 140-3 build with AddressSanitizer by GCC the ranges of the module's
  * own calls of these functions are not checked (a sanitizer build without the mode checks them).
  */
-
-#include <stddef.h>
-#include <stdint.h>
-
-#if !defined(__x86_64__) || !defined(__LP64__)
-#error "the module's memory functions are written for x86-64, the only platform of FIPS 140-3 mode"
-#endif
-
 #define OPQC_FIPS_MEM_API __attribute__((visibility("hidden"), no_sanitize("address", "undefined")))
 #define OPQC_FIPS_MEM_LOCAL __attribute__((no_sanitize("address", "undefined")))
 
 /* The prototypes of the C library (C11 7.24.2.1, 7.24.2.2, 7.24.6.1) and of its _FORTIFY_SOURCE variants (the
  * compilers' __builtin___memcpy_chk and its kin). <string.h> is not included: with _FORTIFY_SOURCE it defines
- * memcpy itself, as an inline function. */
+ * memcpy itself, as an inline function. The variants that _FORTIFY_SOURCE makes the compilers call (__memcpy_chk,
+ * __memmove_chk, __memset_chk) are defined here for the same reason as the functions; where the C library's would
+ * report a buffer overflow and end the program, these end it with a trap. The test fips_integrity lists the
+ * module's imports (nm -D -u) and fails if any of these is among them. */
 OPQC_FIPS_MEM_API void *memcpy(void *restrict dst, const void *restrict src, size_t n);
 OPQC_FIPS_MEM_API void *memmove(void *dst, const void *src, size_t n);
 OPQC_FIPS_MEM_API void *memset(void *dst, int c, size_t n);
@@ -60,6 +59,11 @@ typedef uint64_t opqc_fips_u64 __attribute__((may_alias, aligned(1)));
 typedef uint32_t opqc_fips_u32 __attribute__((may_alias, aligned(1)));
 typedef uint16_t opqc_fips_u16 __attribute__((may_alias, aligned(1)));
 
+/* Up to 32 bytes are moved with unaligned loads and stores of 8, 4, 2 and 1 bytes, every byte loaded before any is
+ * stored, which is right for overlapping ranges too; more with the string instructions (rep movsb, rep stosb; for a
+ * move to a higher address that overlaps its source, backwards, with the direction flag set and cleared again),
+ * which processors since Ivy Bridge run as fast block moves. There is no loop: a compiler may recognise a copying
+ * or filling loop and replace it with a call of memcpy or memset, which here would call itself. */
 #define OPQC_FIPS_SHORT_BYTES 32u
 
 /* n <= 32 bytes from s to d, every byte loaded before any is stored (the ranges may overlap) */

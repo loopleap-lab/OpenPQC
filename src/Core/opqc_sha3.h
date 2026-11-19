@@ -9,53 +9,24 @@
  * All six functions are the sponge construction (Algorithm 8) over
  * Keccak-f[1600] with capacity c = 2 * (security level) and the padding
  * pad10*1 (Algorithm 9). They differ in the rate r = 1600 - c and in the
- * domain-separation suffix appended to the message (Section 6):
- *
- *   function   rate (bytes)   suffix   suffix + first pad bit, as a byte
- *   SHA3-224       144          01       0x06
- *   SHA3-256       136          01       0x06
- *   SHA3-384       104          01       0x06
- *   SHA3-512        72          01       0x06
- *   SHAKE128       168          1111     0x1F
- *   SHAKE256       136          1111     0x1F
- *
- * Bits are numbered as in FIPS 202 (Appendix B.1): bit i of a message is bit
- * i % 8 of byte i / 8. The suffix bits followed by the first bit of pad10*1
- * therefore form the byte 0x06 or 0x1F, and the last pad bit is the top bit
- * (0x80) of the last byte of the block.
- *
- * The incremental interface opqc_sponge_{init,absorb,finalize,squeeze}
+ * domain-separation suffix appended to the message (Section 6; the table
+ * below). The incremental interface opqc_sponge_{init,absorb,finalize,squeeze}
  * accepts input and produces output in pieces of any size; the result equals
- * the one-shot functions on the concatenation. It is also what ML-KEM's XOF
- * (FIPS 203, Section 4.1) needs: Init, Absorb, then repeated Squeeze.
+ * the one-shot functions on the concatenation.
  *
- * Phases. Algorithm 8 pads and absorbs the whole input before it takes the
- * first output block, and the incremental interfaces of FIPS 203 (Section 4.1,
- * Algorithm 2: "a sequence of absorbing operations followed by a sequence of
- * squeezing operations") and FIPS 204 (Section 3.7) keep that order: Init, any
- * number of Absorb, then any number of Squeeze. A sponge therefore records its
- * phase. opqc_sponge_init starts it absorbing; opqc_sponge_finalize pads the
- * input and turns it to squeezing, once; from then on only opqc_sponge_squeeze
- * is allowed. Every function checks, before it touches anything, that the
- * sponge is in the phase the call needs and that its fields are consistent (a
- * rate that init accepts, a position inside the block), and refuses a call
- * that does not fit: it returns OPQC_SPONGE_ERR_INVALID_ARGUMENT and leaves
- * the sponge as it was, as the C APIs of the schemes do with invalid
- * arguments (a refused squeeze sets its output to zero, see there). Absorbing
- * after a squeeze or after finalize, squeezing before finalize, finalizing
- * twice, a rate or a suffix that the construction does not allow, a sponge
- * that init never started (all zero) or whose fields were overwritten: none
- * of these can give an output that is not FIPS 202, or an access outside the
- * 25 lanes.
- *
- * Destruction of intermediate values. The one-shot functions run in a frame of
- * their own and destroy their state before they return, and on CPUs the stack
- * where their frames were is cleared after they return (opqc_keccak.h). A
- * sponge of the incremental interface belongs to the caller, which destroys it
- * when it no longer needs it (opqc_zeroize; Core/xof.hpp does this for the C++
- * code). Its functions run in the caller's frame, and what they leave there
- * (in unoptimized or instrumented builds, a copy of a lane of the state) is
- * the caller's to clear. Keccak-f clears its own frames on CPUs.
+ * Secrets: the message, which the state holds (Stack, below).
+ * Design:  README.md, "Hashing: phases, errors, destruction".
+ */
+
+/*
+ * Stack. The one-shot functions run in a frame of their own and destroy their
+ * state before they return, and on CPUs the stack where their frames were is
+ * cleared after they return (opqc_sponge_hash; opqc_keccak.h). A sponge of the
+ * incremental interface belongs to the caller, which destroys it when it no
+ * longer needs it (opqc_zeroize; Core/xof.hpp does this for the C++ code). Its
+ * functions run in the caller's frame, and what they leave there (in
+ * unoptimized or instrumented builds, a copy of a lane of the state) is the
+ * caller's to clear. Keccak-f clears its own frames on CPUs.
  */
 
 #ifndef OPQC_SHA3_H
@@ -64,6 +35,17 @@
 #include "opqc_common.h"
 #include "opqc_keccak.h"
 
+/*
+ * The rate and the suffix of the six functions (Section 6):
+ *
+ *   function   rate (bytes)   suffix   suffix + first pad bit, as a byte
+ *   SHA3-224       144          01       0x06
+ *   SHA3-256       136          01       0x06
+ *   SHA3-384       104          01       0x06
+ *   SHA3-512        72          01       0x06
+ *   SHAKE128       168          1111     0x1F
+ *   SHAKE256       136          1111     0x1F
+ */
 #define OPQC_SHAKE128_RATE 168
 #define OPQC_SHAKE256_RATE 136
 #define OPQC_SHA3_224_RATE 144
@@ -71,14 +53,40 @@
 #define OPQC_SHA3_384_RATE 104
 #define OPQC_SHA3_512_RATE 72
 
+/*
+ * Bits are numbered as in FIPS 202 (Appendix B.1): bit i of a message is bit
+ * i % 8 of byte i / 8. The suffix bits followed by the first bit of pad10*1
+ * therefore form the byte 0x06 or 0x1F, and the last pad bit is the top bit
+ * (0x80) of the last byte of the block.
+ */
 #define OPQC_SHA3_SUFFIX 0x06  /* 01 || first bit of pad10*1   */
 #define OPQC_SHAKE_SUFFIX 0x1F /* 1111 || first bit of pad10*1 */
 
 /* Results of the incremental functions */
 #define OPQC_SPONGE_OK 0
-#define OPQC_SPONGE_ERR_INVALID_ARGUMENT (-2) /* refused, the sponge unchanged (see Phases above) */
+#define OPQC_SPONGE_ERR_INVALID_ARGUMENT (-2) /* refused, the sponge unchanged (see Phases below) */
 
-/* Phases of a sponge (0: not started by opqc_sponge_init) */
+/*
+ * Phases. Algorithm 8 pads and absorbs the whole input before it takes the
+ * first output block, and the incremental interfaces of FIPS 203 (Section 4.1,
+ * Algorithm 2: "a sequence of absorbing operations followed by a sequence of
+ * squeezing operations"; ML-KEM's XOF needs Init, Absorb, then repeated
+ * Squeeze) and FIPS 204 (Section 3.7) keep that order: Init, any number of
+ * Absorb, then any number of Squeeze. A sponge therefore records its phase (0:
+ * not started by opqc_sponge_init). opqc_sponge_init starts it absorbing;
+ * opqc_sponge_finalize pads the input and turns it to squeezing, once; from
+ * then on only opqc_sponge_squeeze is allowed. Every function checks, before
+ * it touches anything, that the sponge is in the phase the call needs and that
+ * its fields are consistent (a rate that init accepts, a position inside the
+ * block), and refuses a call that does not fit: it returns
+ * OPQC_SPONGE_ERR_INVALID_ARGUMENT and leaves the sponge as it was, as the C
+ * APIs of the schemes do with invalid arguments (a refused squeeze sets its
+ * output to zero, see there). Absorbing after a squeeze or after finalize,
+ * squeezing before finalize, finalizing twice, a rate or a suffix that the
+ * construction does not allow, a sponge that init never started (all zero) or
+ * whose fields were overwritten: none of these can give an output that is not
+ * FIPS 202, or an access outside the 25 lanes.
+ */
 #define OPQC_SPONGE_ABSORBING 1 /* after init: absorb, finalize */
 #define OPQC_SPONGE_SQUEEZING 2 /* after finalize: squeeze */
 
