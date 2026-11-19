@@ -6,6 +6,8 @@
 // A parameter set is a type with five constants (Table 2). The algorithms in
 // scheme/ are templates over it, so for example kpke::keygen<params::ML_KEM_768>
 // is K-PKE.KeyGen for ML-KEM-768; sizes follow from the parameters (Table 3).
+//
+// Design: ../README.md, "FIPS 203 in the code".
 #pragma once
 
 #include <concepts>

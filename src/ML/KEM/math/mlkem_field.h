@@ -11,6 +11,20 @@
  * always stored in canonical form; there are no Montgomery factors or signed
  * representatives to keep track of.
  *
+ * Secrets: the elements may be secret, hence the reduction without division
+ *          (mlkem_div_q).
+ * Design:  ../README.md, "Choices that differ from mlkem-native".
+ */
+
+#ifndef MLKEM_FIELD_H
+#define MLKEM_FIELD_H
+
+#include "../../../Core/opqc_common.h"
+
+#define MLKEM_N 256  /* polynomial degree n */
+#define MLKEM_Q 3329 /* modulus q = 2^8 * 13 + 1 */
+
+/*
  * Reduction without division. x mod q is computed as x - q * floor(x / q),
  * and floor(x / q) as a multiplication and a shift:
  *
@@ -31,15 +45,6 @@
  * The bound 2^27 covers everything ML-KEM needs: a + b < 2q, a * b < q^2,
  * and the sum of 4 products from the NTT-domain multiplication, 8 q^2 < 2^27.
  */
-
-#ifndef MLKEM_FIELD_H
-#define MLKEM_FIELD_H
-
-#include "../../../Core/opqc_common.h"
-
-#define MLKEM_N 256  /* polynomial degree n */
-#define MLKEM_Q 3329 /* modulus q = 2^8 * 13 + 1 */
-
 #define MLKEM_DIV_Q_MULTIPLIER UINT64_C(165141429) /* ceil(2^39 / q) */
 #define MLKEM_DIV_Q_SHIFT 39
 #define MLKEM_DIV_Q_BOUND (UINT32_C(1) << 27) /* exact for 0 <= x < this */

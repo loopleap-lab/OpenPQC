@@ -8,11 +8,11 @@
 // gives the line number of the pseudocode. Variables with a hat (A^, s^, ...)
 // hold NTT representations and are spelled A_hat, s_hat, ... here.
 //
-// Destruction of intermediate values (Section 3.3): the polynomials, named or
-// not, zeroize themselves (polynomials.hpp); the byte strings (sigma, the PRF
-// outputs) are zeroized by ZeroizeOnExit. What the compiler keeps in stack slots
-// of its own is overwritten when KeyGen, Encaps or Decaps returns (the stack
-// burn, ml_kem.hpp).
+// Secrets: destroyed as Section 3.3 asks: the polynomials, named or not, zeroize
+//          themselves (polynomials.hpp); the byte strings (sigma, the PRF outputs)
+//          by ZeroizeOnExit; what the compiler keeps in stack slots of its own is
+//          overwritten when KeyGen, Encaps or Decaps returns (the stack burn, ml_kem.hpp).
+// Design:  ../README.md, "FIPS 203 in the code".
 #pragma once
 
 #include <algorithm>

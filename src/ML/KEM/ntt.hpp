@@ -1,4 +1,10 @@
 // ntt.hpp  --  number-theoretic transform for ML-KEM (Kyber) in R_q = Z_q[X]/(X^256 + 1)
+//
+// Part of a C++ learning port of the Kyber reference arithmetic (Montgomery form,
+// int16 coefficients): params.hpp, reduce.*, ntt.*, built only for their own tests
+// (CMake target openpqc_learning; tests/test_reduce.cpp, tests/test_mlkem_ntt.cpp)
+// and part of no library of OpenPQC. ML-KEM does not use it: its arithmetic is math/.
+// Design: README.md, "Files".
 #pragma once
 
 #include <array>

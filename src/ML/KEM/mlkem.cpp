@@ -6,25 +6,14 @@
 // The compiled file of ML-KEM's library (mlkem_testing.cpp has the testing
 // interfaces, in OpenPQC::testing): it instantiates the templates of
 // scheme/ml_kem.hpp for the three parameter sets and exports them under the
-// C names. Each function turns its pointer arguments into fixed-size spans.
-// KeyGen, Encaps and Decaps run in frames of their own and overwrite the stack
-// they used before they return (scheme/ml_kem.hpp; FIPS 203, Section 3.3).
-// Compiled with OPENPQC_MLKEM_KEYGEN_PCT, KeyGen runs the pair-wise consistency
-// check of Section 7.1 (openpqc_mlkem.h).
+// C names. Each function turns its pointer arguments into fixed-size spans; in
+// FIPS 140-3 mode it runs as a service of the module (fips_service below).
 //
-// Outputs on failure (openpqc_mlkem.h, Results): the checks of ek and dk
-// (Sections 7.2 and 7.3) and the RNG run before anything is written to ct, ss,
-// pk or sk, so their failures leave them unchanged, and ss is never set to a
-// fixed value; a failed pair-wise consistency check zeroizes pk and sk
-// (scheme/ml_kem.hpp). In FIPS 140-3 mode, a call during which the module
-// enters its error state zeroizes its outputs instead (fips_service below).
-//
-// FIPS 140-3 mode (OPENPQC_FIPS140_3; Core/opqc_fips.h): every function is a
-// service of the module, run by fips_service below, which checks the module's
-// state before and after the call, sets the approved-service indicator last,
-// and puts the module in its error state when a key generation fails its
-// pair-wise consistency test. The ordinary build compiles exactly the calls it
-// compiled before.
+// Secrets: KeyGen, Encaps and Decaps run in frames of their own and overwrite
+//          the stack they used before they return (scheme/ml_kem.hpp; FIPS 203,
+//          Section 3.3).
+// Design:  README.md, "C and C++ APIs".
+
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
 
@@ -53,6 +42,15 @@ std::span<const std::uint8_t, N> in(const std::uint8_t* p) {
     return std::span<const std::uint8_t, N>(p, N);
 }
 
+// The C functions of parameter set P, on fixed-size spans. Compiled with OPENPQC_MLKEM_KEYGEN_PCT, KeyGen
+// runs the pair-wise consistency check of Section 7.1 (openpqc_mlkem.h).
+//
+// Outputs on failure (openpqc_mlkem.h, Results): the checks of ek and dk
+// (Sections 7.2 and 7.3) and the RNG run before anything is written to ct, ss,
+// pk or sk, so their failures leave them unchanged, and ss is never set to a
+// fixed value; a failed pair-wise consistency check zeroizes pk and sk
+// (scheme/ml_kem.hpp). In FIPS 140-3 mode, a call during which the module
+// enters its error state zeroizes its outputs instead (fips_service below).
 template <ParameterSet P>
 struct CApi {
     using S = Sizes<P>;
@@ -164,6 +162,7 @@ openpqc_status fips_service(bool approved, Call call, Zeroize zeroize) {
     return fips_service<Kind::kind>(                                                                             \
             approved, [&]() -> openpqc_status { return __VA_ARGS__; }, [&]() { zeroize_outputs outputs; })
 #else
+// The ordinary build: each function is the call alone, with nothing around it
 #define OPENPQC_MLKEM_SERVICE(kind, approved, outputs, ...) return __VA_ARGS__
 #endif
 

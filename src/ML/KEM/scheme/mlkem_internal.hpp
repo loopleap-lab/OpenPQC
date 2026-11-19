@@ -8,6 +8,8 @@
 // overwrites the stack these algorithms used when it returns (the stack burn).
 // Section 3.3: these interfaces should be offered to applications only for
 // testing, and a stored seed (d, z) may be expanded again with KeyGen_internal.
+//
+// Design: ../README.md, "FIPS 203 in the code".
 #pragma once
 
 #include <algorithm>

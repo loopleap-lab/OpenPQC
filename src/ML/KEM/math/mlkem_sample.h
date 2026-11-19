@@ -14,6 +14,8 @@
  * depends only on the public seed (rho and two indices), so branching on the
  * candidates is allowed. SamplePolyCBD runs on secret bytes and has no
  * data-dependent branches.
+ *
+ * Design: ../README.md, "Choices that differ from mlkem-native".
  */
 
 #ifndef MLKEM_SAMPLE_H

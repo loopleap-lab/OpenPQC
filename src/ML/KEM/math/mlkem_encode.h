@@ -11,6 +11,19 @@
  *   ByteEncode_d    256 integers of d bits -> 32 d bytes   (Algorithm 5)
  *   ByteDecode_d    32 d bytes -> 256 integers of d bits   (Algorithm 6)
  *
+ * Secrets: the coefficients may be secret, and Decompress_1 takes a message
+ *          bit, secret during decapsulation (mlkem_decompress).
+ * Design:  ../README.md, "Choices that differ from mlkem-native".
+ */
+
+#ifndef MLKEM_ENCODE_H
+#define MLKEM_ENCODE_H
+
+#include "../../../Core/opqc_ct.h"
+#include "../../math/ml_bitpack.h"
+#include "mlkem_field.h"
+
+/*
  * The rounding is exact integer arithmetic, as the standard requires
  * (round(a / b) = floor((2a + b) / 2b) for a, b > 0):
  *
@@ -20,23 +33,7 @@
  * The first identity holds because q is odd; the division by q is the exact
  * multiply-shift of mlkem_field.h (2^d x + 1664 < 2^27 for d <= 11).
  * Both identities have been checked for all inputs and all d = 1..11.
- *
- * Bit order. ByteEncode_d writes the d bits of F[0], then those of F[1], and
- * so on, least significant bit first, into a bit string that BitsToBytes
- * (Algorithm 3) packs little-endian into bytes: bit k of the string is bit
- * k % 8 of byte k / 8. Eight coefficients take 8 d bits = d bytes, so the
- * encoding splits into 32 independent chunks of d bytes;
- * mlkem_byte_encode8/decode8 handle one chunk, for parallel callers. FIPS 204
- * packs its polynomials the same way, so the chunk itself is encoded by the
- * code ML-KEM and ML-DSA share (ML/math/ml_bitpack.h).
  */
-
-#ifndef MLKEM_ENCODE_H
-#define MLKEM_ENCODE_H
-
-#include "../../../Core/opqc_ct.h"
-#include "../../math/ml_bitpack.h"
-#include "mlkem_field.h"
 
 /* Compress_d(x) for x in [0, q) and 1 <= d <= 11 */
 OPQC_INLINE uint16_t mlkem_compress(uint16_t x, unsigned d)
@@ -72,6 +69,17 @@ OPQC_INLINE void mlkem_poly_decompress(uint16_t f[MLKEM_N], unsigned d)
         f[i] = mlkem_decompress(f[i], d);
     }
 }
+
+/*
+ * Bit order. ByteEncode_d writes the d bits of F[0], then those of F[1], and
+ * so on, least significant bit first, into a bit string that BitsToBytes
+ * (Algorithm 3) packs little-endian into bytes: bit k of the string is bit
+ * k % 8 of byte k / 8. Eight coefficients take 8 d bits = d bytes, so the
+ * encoding splits into 32 independent chunks of d bytes;
+ * mlkem_byte_encode8/decode8 handle one chunk, for parallel callers. FIPS 204
+ * packs its polynomials the same way, so the chunk itself is encoded by the
+ * code ML-KEM and ML-DSA share (ML/math/ml_bitpack.h).
+ */
 
 /*
  * One chunk of ByteEncode_d: the d-bit integers F[0..8) to the bytes

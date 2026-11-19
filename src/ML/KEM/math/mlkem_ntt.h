@@ -13,10 +13,9 @@
  * and multiplication in T_q is coordinate-wise (Algorithms 11 and 12), which
  * makes polynomial multiplication cost O(n log n) instead of O(n^2).
  *
- * Both transforms work in place on 256 coefficients in [0, q). Besides the
- * literal loops of the standard, each transform is offered one butterfly at
- * a time (mlkem_ntt_butterfly, mlkem_invntt_butterfly), which lets a GPU
- * kernel give each of 128 work-items one butterfly per layer.
+ * Secrets: the coefficients may be secret; the tables and the loop indices
+ *          are public.
+ * Design:  ../README.md, "Choices that differ from mlkem-native".
  */
 
 #ifndef MLKEM_NTT_H
@@ -63,6 +62,13 @@ static const uint16_t mlkem_gammas[128] = {
 };
 
 #define MLKEM_INV_128 3303 /* 128^-1 mod q, the final factor of NTT^-1 */
+
+/*
+ * Both transforms work in place on 256 coefficients in [0, q). Besides the
+ * literal loops of the standard, each transform is offered one butterfly at
+ * a time (mlkem_ntt_butterfly, mlkem_invntt_butterfly), which lets a GPU
+ * kernel give each of 128 work-items one butterfly per layer.
+ */
 
 /* Algorithm 9: f <- NTT(f) */
 OPQC_INLINE void mlkem_ntt(uint16_t f[MLKEM_N])

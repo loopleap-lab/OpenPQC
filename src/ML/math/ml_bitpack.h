@@ -9,24 +9,13 @@
  * Both standards turn 256 integers of d bits each into a byte string in the
  * same way: the bit string of every integer, least significant bit first, is
  * appended in coefficient order, and the bit string is packed into bytes
- * little-endian (bit k of the string is bit k % 8 of byte k / 8):
+ * little-endian (bit k of the string is bit k % 8 of byte k / 8). Eight
+ * integers take 8 d bits = d bytes, so the encoding of a polynomial is 32
+ * independent chunks of d bytes; this file encodes and decodes one chunk.
  *
- *   FIPS 203   ByteEncode_d (Algorithm 5), through BitsToBytes (Algorithm 3)
- *   FIPS 204   SimpleBitPack (Algorithm 16) with d = bitlen b, and BitPack
- *              (Algorithm 17), which packs b - w_i; through IntegerToBits
- *              (Algorithm 9) and BitsToBytes (Algorithm 12)
- *
- * Decoding reverses this: ByteDecode_d (FIPS 203, Algorithm 6), SimpleBitUnpack
- * and BitUnpack (FIPS 204, Algorithms 18 and 19).
- *
- * Eight integers take 8 d bits = d bytes, so the encoding of a polynomial is
- * 32 independent chunks of d bytes. The functions below encode and decode one
- * chunk; each standard's code loops over the 32 chunks, and a GPU kernel gives
- * every work-item its own chunk. Integer i of a chunk occupies bits
- * i d .. i d + d - 1, that is bytes (i d) / 8 .. (i d + d - 1) / 8: at most
- * four bytes for the d <= 24 allowed here (ML-KEM uses d = 1..12, ML-DSA
- * d = 3..20). For a constant d, after unrolling, every byte index and shift is
- * a constant, and ml_pack8 is straight-line code that stores each byte once.
+ * Secrets: the integers may be secret; every byte index and shift depends only
+ *          on d and the position in the chunk.
+ * Design:  ../README.md (src/ML/README.md), the table at the top.
  */
 
 #ifndef ML_BITPACK_H
@@ -34,13 +23,25 @@
 
 #include "../../Core/opqc_common.h"
 
+/*
+ * Integer i of a chunk occupies bits i d .. i d + d - 1, that is bytes
+ * (i d) / 8 .. (i d + d - 1) / 8: at most four bytes for the d <= 24 allowed
+ * here (ML-KEM uses d = 1..12, ML-DSA d = 3..20).
+ */
 #define ML_BITPACK_MAX_BITS 24 /* the largest d supported */
 
 /*
+ * One chunk of FIPS 203 ByteEncode_d (Algorithm 5), through BitsToBytes
+ * (Algorithm 3), and of FIPS 204 SimpleBitPack (Algorithm 16) with d = bitlen b,
+ * and BitPack (Algorithm 17), which packs b - w_i; through IntegerToBits
+ * (Algorithm 9) and BitsToBytes (Algorithm 12). Each standard's code loops over
+ * the 32 chunks, and a GPU kernel gives every work-item its own chunk.
+ *
  * B[0 .. d) <- the integers F[0 .. 8) of d bits each, 1 <= d <= 24 (F[i] < 2^d).
  * Byte o holds bits 8o .. 8o + 7 of the string. They come from the integers i
  * with bits in that range (at most four), so each byte is computed once and
- * written once.
+ * written once. For a constant d, after unrolling, every byte index and shift is
+ * a constant, and ml_pack8 is straight-line code that stores each byte once.
  */
 OPQC_INLINE void ml_pack8(uint8_t *B, const uint32_t F[8], unsigned d)
 {
@@ -59,7 +60,11 @@ OPQC_INLINE void ml_pack8(uint8_t *B, const uint32_t F[8], unsigned d)
     }
 }
 
-/* F[0 .. 8) <- the integers of d bits each in B[0 .. d), 1 <= d <= 24 */
+/*
+ * One chunk of the decoding, which reverses the encoding: ByteDecode_d (FIPS 203,
+ * Algorithm 6), SimpleBitUnpack and BitUnpack (FIPS 204, Algorithms 18 and 19).
+ * F[0 .. 8) <- the integers of d bits each in B[0 .. d), 1 <= d <= 24
+ */
 OPQC_INLINE void ml_unpack8(uint32_t F[8], const uint8_t *B, unsigned d)
 {
     OPQC_UNROLL(8)

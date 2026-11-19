@@ -11,6 +11,8 @@
 // and of c, the shared secret K of Encaps (and of the Decaps of c), and the implicit-rejection key J(z || c) of the
 // tampered c (Algorithm 18, line 7). tests/gpu/test_mlkem_sycl.cpp computes them again with the CPU library and
 // fails if they differ; "test_mlkem_sycl self-test-values" prints them in this form, for a change of the inputs.
+//
+// Design: ../README.md, "GPU backend (`sycl/`)".
 #pragma once
 
 #include <array>

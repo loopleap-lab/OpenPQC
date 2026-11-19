@@ -11,14 +11,8 @@
 // The XOF of Section 4.1 (SHAKE128 through Init/Absorb/Squeeze) is used only
 // inside SampleNTT, see math/mlkem_sample.h.
 //
-// Inputs are given as a list of byte strings that are hashed as their
-// concatenation, e.g. G(K, r, {m, H(ek)}) for (K, r) <- G(m || H(ek))
-// (Core/xof.hpp). Each function zeroizes its sponge state before returning
-// (FIPS 203, Section 3.3). Wherever ML-KEM uses G, J and PRF, their outputs are
-// secret (sigma; K and r; K_bar; the bytes of the noise polynomials), so they
-// write them into the caller's spans, which the caller zeroizes, and return
-// nothing of which a copy could be left behind. H only ever hashes the public
-// ek, and returns its result.
+// Secrets: the outputs of G, J and PRF, and the sponge states (below).
+// Design:  ../README.md, "FIPS 203 in the code".
 #pragma once
 
 #include <algorithm>
@@ -36,9 +30,15 @@ namespace openpqc::mlkem {
 OPENPQC_ABI_BEGIN
 
 using Bytes32 = std::array<std::uint8_t, 32>;
+// Inputs are given as a list of byte strings, e.g. G(K, r, {m, H(ek)}) for (K, r) <- G(m || H(ek))
 using openpqc::ByteStrings;   // Core/xof.hpp: hashed as the concatenation
 
-// H(s) = SHA3-256(s), for public s
+// Each function zeroizes its sponge state before returning (FIPS 203, Section 3.3). Wherever ML-KEM uses
+// G, J and PRF, their outputs are secret (sigma; K and r; K_bar; the bytes of the noise polynomials), so
+// they write them into the caller's spans, which the caller zeroizes, and return nothing of which a copy
+// could be left behind.
+
+// H(s) = SHA3-256(s), for public s: H only ever hashes the public ek, and returns its result
 inline Bytes32 H(ByteStrings s) {
     Bytes32 out;
     openpqc::sponge(OPQC_SHA3_256_RATE, OPQC_SHA3_SUFFIX, out, s);

@@ -6,54 +6,26 @@
 // Runs many independent ML-KEM operations at once on a SYCL device, compiled with
 // Intel DPC++ or AdaptiveCpp (tested on NVIDIA and Intel GPUs and on CPUs; AMD GPUs
 // should work but are untested). The results are byte-identical to the CPU library.
-//
 // The mathematics is the C11 math core -- Core/opqc_keccak.h and ML/KEM/math --
-// the same functions the CPU library runs. This file decides who computes what:
+// the same functions the CPU library runs. This file decides who computes what.
 //
-//  * Hashing stages: one work-item per independent sponge, across the batch.
-//    The k^2 SampleNTT streams of the matrix, the 2k+1 PRF streams of the noise,
-//    G, H and J each get their own work-item. Keccak dominates the cost of
-//    ML-KEM, and this keeps all work-items busy with it.
-//  * Arithmetic stages: a team of 32 work-items per operation, 4 teams per
-//    work-group. Polynomials that must be shared within a team (NTT inputs and
-//    outputs) live in local memory. Work-item g of a team owns the 8
-//    coefficients 8g .. 8g+7 (one 8-coefficient chunk of mlkem_encode.h) for
-//    all coefficient-wise steps, and performs butterflies g, g+32, g+64, g+96 of
-//    every NTT layer.
-//
-// Between the stages, intermediate values wait in a workspace in device memory,
-// held by the context with its queue and its lock (Core/sycl/opqc_sycl_context.hpp;
-// the C API at the end of this file). The secret ones (seeds, PRF outputs, m',
-// K-bar, coins) are zeroized after every launch, and the whole workspace when a call
-// or the device fails (FIPS 203, Section 3.3); the matrix A^ is public. The
-// arithmetic stages also clear their local memory before they end.
-//
-// The noise is stored as PRF output (64 eta bytes per polynomial) rather than as
-// sampled coefficients (512 bytes): SamplePolyCBD then runs in the arithmetic
-// stage, spread over the 32 work-items of the team.
-//
-// FIPS 140-3 mode (OPENPQC_FIPS140_3), as the other two backends and the CPU library do it:
-//  * create runs a known-answer self-test of the context's level on the device (self_test: one
-//    KeyGen, one Encaps, and the Decaps of its ciphertext and of a tampered copy, against the CPU
-//    library's answers) and fails with OPQC_SYCL_MLKEM_SELF_TEST_FAIL if the device computes a wrong
-//    result: FIPS 140-3 asks a module to test an algorithm before it uses it (IG 10.3.A), and the
-//    compilers of device code have been seen to miscompile code like this, some of them at run time on
-//    the machine that runs it. A build outside FIPS mode has no such check (the developer definition
-//    OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST compiles it in for the tests): there, only the tests compare
-//    the device's results with the CPU library's.
-//  * KeyGen tests every key pair it makes, as the CPU library does in this mode: the pair-wise
-//    consistency check of FIPS 203, Section 7.1, Encaps and Decaps of a random m on the device
-//    (keygen_pct). Every pair must be counted as passed: a pair that fails, or a part of the test that
-//    does not run, fails the whole call: every key it made is zeroized, and it returns
-//    OPENPQC_ERR_PCT. Outside FIPS mode only test objects compiled with OPENPQC_MLKEM_KEYGEN_PCT have it.
+// Secrets: seeds, PRF outputs, m', K-bar and coins wait in the workspace and are
+//          zeroized after every launch (Workspace); the arithmetic stages clear
+//          their local memory before they end.
+// Design:  ../README.md, "GPU backend (`sycl/`)".
 
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
 
-// Whether create runs the known-answer self-test (self_test): in FIPS 140-3 mode, and where the developer
+// Whether create runs the known-answer self-test (self_test) of the context's level on the device, and fails
+// with OPQC_SYCL_MLKEM_SELF_TEST_FAIL if the device computes a wrong result: in FIPS 140-3 mode
+// (OPENPQC_FIPS140_3), as the other two backends and the CPU library do it, since FIPS 140-3 asks a module to
+// test an algorithm before it uses it (IG 10.3.A), and the compilers of device code have been seen to
+// miscompile code like this, some of them at run time on the machine that runs it; and where the developer
 // definition OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST is given (the white-box test test_mlkem_sycl_faults_pct; no
 // target of the libraries defines it). Without it, the self-test and its answers are not compiled at all, so
-// that no library of an ordinary build holds them (test gpu_self_test).
+// that no library of an ordinary build holds them (test gpu_self_test): there, only the tests compare the
+// device's results with the CPU library's.
 #if defined(OPENPQC_FIPS140_3) || defined(OPENPQC_MLKEM_SYCL_CREATE_SELF_TEST)
 #define OPQC_MLKEM_SYCL_SELF_TEST 1
 #else
@@ -114,6 +86,9 @@ using openpqc::gpu::workspace;
 constexpr unsigned HASH_GROUP = 128;   // work-group size of the hashing stages
 constexpr unsigned TEAM = 32;          // work-items per operation in the arithmetic stages
 constexpr unsigned TEAMS = 4;          // operations per work-group in the arithmetic stages
+// The noise is stored as PRF output (64 eta bytes per polynomial) rather than as
+// sampled coefficients (512 bytes): SamplePolyCBD then runs in the arithmetic
+// stage, spread over the 32 work-items of the team (cbd_chunk).
 // bytes per PRF output in the workspace: 64 * max(eta1, eta2) (192 for ML-KEM-512, 128 otherwise)
 template <class P>
 inline constexpr unsigned prf_stride = 64 * (P::eta1 > P::eta2 ? P::eta1 : P::eta2);
@@ -122,10 +97,11 @@ static_assert(prf_stride<params::ML_KEM_512> == prf_stride_of_level(512) &&
               prf_stride<params::ML_KEM_768> == prf_stride_of_level(768) &&
               prf_stride<params::ML_KEM_1024> == prf_stride_of_level(1024));
 
-// Whether KeyGen tests the pair-wise consistency of every key pair it makes (keygen_pct): in FIPS 140-3 mode,
-// since a module must test every key pair it generates (FIPS 140-3 IG 10.3.A), and in a test object that defines
-// OPENPQC_MLKEM_KEYGEN_PCT itself (the white-box test test_mlkem_sycl_faults_pct; outside FIPS mode the build
-// gives that definition to no library)
+// Whether KeyGen tests the pair-wise consistency of every key pair it makes (keygen_pct; the check of FIPS 203,
+// Section 7.1: Encaps and Decaps of a random m on the device): in FIPS 140-3 mode, as the CPU library does in
+// this mode, since a module must test every key pair it generates (FIPS 140-3 IG 10.3.A), and in a test
+// object that defines OPENPQC_MLKEM_KEYGEN_PCT itself (the white-box test test_mlkem_sycl_faults_pct; outside
+// FIPS mode the build gives that definition to no library)
 #if defined(OPENPQC_MLKEM_KEYGEN_PCT) || defined(OPENPQC_FIPS140_3)
 constexpr bool KEYGEN_PCT = true;
 #else
@@ -142,7 +118,11 @@ static_assert(OPQC_SYCL_MLKEM_MAX_BATCH % TEAMS == 0 &&
               OPQC_SYCL_MLKEM_MAX_BATCH / TEAMS * (TEAMS * TEAM) <= static_cast<std::size_t>(INT_MAX) &&
               (OPQC_SYCL_MLKEM_MAX_BATCH / TEAMS + 1) * (TEAMS * TEAM) > static_cast<std::size_t>(INT_MAX));
 
-// Device workspace: struct of arrays over the operations of one launch.
+// Device workspace: struct of arrays over the operations of one launch. Between the stages, intermediate
+// values wait here, in device memory, held by the context with its queue and its lock
+// (Core/sycl/opqc_sycl_context.hpp; the C API at the end of this file). The secret ones (seeds, PRF outputs,
+// m', K-bar, coins) are zeroized after every launch, and the whole workspace when a call or the device fails
+// (FIPS 203, Section 3.3); the matrix A^ is public.
 struct Workspace {
     std::uint8_t* seeds;      // 64 B per op: (rho, sigma), (K, r) or (K', r')      secret
     std::uint16_t* matrix;    // k^2 polynomials per op: A^ or A^T                  public
@@ -195,6 +175,13 @@ void for_each_team(sycl::queue& q, std::size_t n, std::size_t local_words, F f) 
 }
 
 // ------------------------------------------------------------------ team arithmetic
+
+// The arithmetic stages run a team of 32 work-items per operation, 4 teams per
+// work-group. Polynomials that must be shared within a team (NTT inputs and
+// outputs) live in local memory. Work-item g of a team owns the 8
+// coefficients 8g .. 8g+7 (one 8-coefficient chunk of mlkem_encode.h) for
+// all coefficient-wise steps, and performs butterflies g, g+32, g+64, g+96 of
+// every NTT layer.
 
 // Coefficients 8g .. 8g+7 of SamplePolyCBD_eta(B) (FIPS 203, Algorithm 8), where B
 // is a PRF output: they use the 16 eta bits starting at byte 2 eta g.
@@ -278,6 +265,11 @@ inline void clear_local(const Team& t, unsigned count) {
 }
 
 // ------------------------------------------------------------------ hashing stages
+
+// One work-item per independent sponge, across the batch. The k^2 SampleNTT
+// streams of the matrix, the 2k+1 PRF streams of the noise, G, H and J each get
+// their own work-item. Keccak dominates the cost of ML-KEM, and this keeps all
+// work-items busy with it.
 
 // KeyGen: (rho, sigma) <- G(d || k)                    (Algorithm 13, line 1)
 template <class P>
@@ -713,6 +705,7 @@ void decrypt(sycl::queue& q, const Workspace& ws, const std::uint8_t* c_base, co
 
 // ------------------------------------------------------------------ the three operations
 
+// Algorithm 16: ML-KEM.KeyGen_internal(d, z) -> (ek, dk) of n operations, coins = d || z (64 bytes each)
 template <class P>
 void keygen(sycl::queue& q, const Workspace& ws, std::uint8_t* ek, std::uint8_t* dk, const std::uint8_t* coins,
             std::size_t n) {
@@ -724,6 +717,8 @@ void keygen(sycl::queue& q, const Workspace& ws, std::uint8_t* ek, std::uint8_t*
     hash_ek<P>(q, ek, S::ek, dk + S::dk_pke + S::ek, S::dk, n);         // H(ek) into dk
 }
 
+// Algorithm 17: ML-KEM.Encaps_internal(ek, m) -> (K, c) of n operations, K to ss, with the modulus check of
+// Section 7.2 (encrypt)
 template <class P>
 void encaps(sycl::queue& q, const Workspace& ws, std::uint8_t* c, std::uint8_t* ss, const std::uint8_t* ek,
             const std::uint8_t* m, std::int32_t* status, std::size_t n) {
@@ -736,6 +731,8 @@ void encaps(sycl::queue& q, const Workspace& ws, std::uint8_t* c, std::uint8_t* 
     encrypt<P, false>(q, ws, ek, m, c, ss, status, n);
 }
 
+// Algorithm 18: ML-KEM.Decaps_internal(dk, c) -> K of n operations, K to ss, with the hash check of
+// Section 7.3 (decaps_hash)
 template <class P>
 void decaps(sycl::queue& q, const Workspace& ws, std::uint8_t* ss, const std::uint8_t* c, const std::uint8_t* dk,
             std::int32_t* status, std::size_t n) {

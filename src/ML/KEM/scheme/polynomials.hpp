@@ -10,21 +10,9 @@
 //   standard (Algorithm 14, line 19)      here
 //   u <- NTT^-1(A^T o y^) + e1             PolyVec<k> u = invntt(transpose_multiply(A_hat, y_hat)) + e1;
 //
-// Section 2.4.8: an algorithm applied to a vector is applied to each entry, and
-// the byte outputs of ByteEncode are concatenated. All coefficients are in [0, q).
-//
-// Destruction of intermediate values (Section 3.3). Expressions such as
-// invntt(dot(s_hat, ntt(u_prime))) pass their results through unnamed
-// temporaries and by-value parameters, which no ZeroizeOnExit can name (and a
-// function that returns its parameter copies it: copy elision never applies to
-// a parameter). Left on the stack, such copies give away the decapsulation key
-// (s, NTT(e), the rows of A^ o s^ in KeyGen) or the shared secret (y, NTT(y),
-// A^T o y^, mu in Encaps and in the re-encryption of Decaps); GCC 16 and
-// Clang 23 at -O3 leave some of them behind in every operation when only the
-// named variables are zeroized. So every polynomial zeroizes itself when its
-// lifetime ends, named or not, as ML-DSA's does; vectors and matrices of
-// polynomials inherit it. The public ones (A^, t^, u', v') are zeroized too,
-// which costs little and keeps one type.
+// Secrets: every polynomial zeroizes itself when its lifetime ends, named or
+//          not (Poly; Section 3.3).
+// Design:  ../README.md, "Choices that differ from mlkem-native".
 #pragma once
 
 #include <array>
@@ -43,14 +31,29 @@ namespace openpqc::mlkem {
 OPENPQC_ABI_BEGIN
 
 // An element of R_q (coefficients f_0, ..., f_255 of f = f_0 + f_1 X + ... + f_255 X^255)
-// or of T_q (an NTT representation), Section 2.4.4. The derived type gives the
-// operators below their own namespace, and the destructor destroys the
-// coefficients (see above). A type with a destructor is not trivially copyable,
+// or of T_q (an NTT representation), Section 2.4.4. All coefficients are in [0, q). The
+// derived type gives the operators below their own namespace, and the destructor destroys
+// the coefficients (below). A type with a destructor is not trivially copyable,
 // so a Poly is never given to ZeroizeOnExit, and need not be.
+//
+// Destruction of intermediate values (Section 3.3). Expressions such as
+// invntt(dot(s_hat, ntt(u_prime))) pass their results through unnamed
+// temporaries and by-value parameters, which no ZeroizeOnExit can name (and a
+// function that returns its parameter copies it: copy elision never applies to
+// a parameter). Left on the stack, such copies give away the decapsulation key
+// (s, NTT(e), the rows of A^ o s^ in KeyGen) or the shared secret (y, NTT(y),
+// A^T o y^, mu in Encaps and in the re-encryption of Decaps); GCC 16 and
+// Clang 23 at -O3 leave some of them behind in every operation when only the
+// named variables are zeroized. So every polynomial zeroizes itself when its
+// lifetime ends, named or not, as ML-DSA's does; vectors and matrices of
+// polynomials inherit it. The public ones (A^, t^, u', v') are zeroized too,
+// which costs little and keeps one type.
 struct Poly : std::array<std::uint16_t, MLKEM_N> {
     ~Poly() { opqc_zeroize(data(), MLKEM_N * sizeof(std::uint16_t)); }
 };
 
+// Section 2.4.8: an algorithm applied to a vector is applied to each entry, and
+// the byte outputs of ByteEncode are concatenated.
 template <std::size_t K> using PolyVec = std::array<Poly, K>;             // R_q^k or T_q^k
 template <std::size_t K> using PolyMatrix = std::array<PolyVec<K>, K>;    // T_q^(k x k), A[row][column]
 

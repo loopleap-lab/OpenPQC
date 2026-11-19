@@ -1,46 +1,16 @@
 // Copyright (c) The OpenPQC project authors
 // SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
 //
-// ml_kem.hpp  --  the ML-KEM key-encapsulation mechanism (FIPS 203, Section 7)
+// ml_kem.hpp  --  ML-KEM.KeyGen, Encaps and Decaps (FIPS 203, Section 7)
 //
-// The algorithms an application uses: KeyGen, Encaps and Decaps with their
-// input checks. They wrap the internal algorithms of Section 6
-// (mlkem_internal.hpp), adding
+// The algorithms an application calls. They wrap the internal algorithms of
+// Section 6 (mlkem_internal.hpp) and add the random values d, z and m, the key
+// checks of Sections 7.2 and 7.3 and, with OPENPQC_MLKEM_KEYGEN_PCT, the
+// pair-wise consistency check of Section 7.1.
 //
-//   - the random values d, z (KeyGen) and m (Encaps) from Core's opqc_randombytes
-//     (the system RNG by default; in FIPS 140-3 mode the module's HMAC_DRBG),
-//   - the encapsulation key check of Section 7.2 in Encaps,
-//   - the decapsulation key check of Section 7.3 in Decaps,
-//   - optionally (OPENPQC_MLKEM_KEYGEN_PCT), the pair-wise consistency check of
-//     Section 7.1 after KeyGen, as FIPS 140-3 asks of validated modules: the
-//     library has it in FIPS 140-3 mode only (OPENPQC_FIPS140_3). It draws a
-//     random m, so keygen_derand then needs the RNG too (see there).
-//
-// The type checks of Sections 7.2 and 7.3 (the lengths of ek, dk and c) hold by
-// construction: the arguments are fixed-size spans.
-//
-// The *_derand variants take the random values as arguments, for tests and
-// for expanding a stored seed (d, z) (Section 3.3).
-//
-// Destruction of intermediate values. Section 3.3: "for ML-KEM.KeyGen,
-// ML-KEM.Encaps, and ML-KEM.Decaps, only the designated output can be retained
-// in memory after the algorithm terminates." The polynomials destroy themselves,
-// and ZeroizeOnExit destroys the secret byte strings (polynomials.hpp, kpke.hpp,
-// mlkem_internal.hpp). That leaves what the code cannot name: an optimizing
-// compiler keeps intermediate values in registers and spills some of them to
-// stack slots of its own, and the helpers of the math core and of Core keep
-// pieces of their inputs in their frames. The frames are dead after the call,
-// but their bytes stay on the stack until something overwrites them. GCC 16 at
-// -O2, for one, left bits of m after Encaps, and of m' after Decaps (of a
-// rejected ciphertext too), in the slots where it had spilled the vector
-// registers of the ByteDecode_1 of K-PKE.Encrypt. So KeyGen, Encaps and Decaps,
-// and their _derand variants, run their algorithm in a frame of their own, which
-// is never inlined (ml_kem_keygen, ml_kem_encaps, ml_kem_decaps, ...), below a
-// frame of padding (call_below_padding), and when it has returned, burn_stack
-// overwrites the stack below with zeros, further down than the algorithm
-// reached (unless the library is built without the burn, CMake option
-// OPENPQC_MLKEM_STACK_BURN=OFF: see burn_stack for what that gives up).
-// Registers are not cleared (ML/KEM/README.md lists what remains).
+// Secrets: every intermediate value is destroyed on return (Section 3.3): the
+//          named values by ZeroizeOnExit and Poly, the stack by burn_stack().
+// Design:  ../README.md, "Choices that differ from mlkem-native".
 #pragma once
 
 #include <array>
@@ -67,7 +37,7 @@ namespace openpqc::mlkem {
 OPENPQC_ABI_BEGIN
 
 // Results. The values are those of mlkem-native's MLK_ERR_* codes and of the
-// OPENPQC_MLKEM_ERR_* macros of the C API.
+// OPENPQC_ERR_* codes of the C API (openpqc/common.h).
 enum class Status : int {
     ok = 0,
     rng_failure = -3,         // no randomness available: Algorithms 19 and 20 return "bottom"
@@ -75,6 +45,9 @@ enum class Status : int {
     invalid_secret_key = -5,  // the decapsulation key failed the hash check (Section 7.3)
     pct_failure = -6,         // the pair-wise consistency check failed (Section 7.1)
 };
+
+// The type checks of Sections 7.2 and 7.3 (the lengths of ek, dk and c) hold by construction: the
+// arguments are fixed-size spans.
 
 // Section 7.2, modulus check: ByteEncode_12(ByteDecode_12(ek[0 : 384k])) == ek[0 : 384k],
 // i.e. all 12-bit values encoded in ek are less than q.
@@ -157,8 +130,9 @@ OPENPQC_MLKEM_NOINLINE Status call_below_padding(Args... args) {
 
 // The configuration. Two settings change the bodies of the templates below:
 //   - the pair-wise consistency check after KeyGen, which keygen_derand and keygen run only where this
-//     header is compiled with OPENPQC_MLKEM_KEYGEN_PCT (mlkem.cpp in FIPS 140-3 mode, in which the
-//     top-level CMakeLists.txt gives the library's objects that definition; and the tests' own copies),
+//     header is compiled with OPENPQC_MLKEM_KEYGEN_PCT (mlkem.cpp in FIPS 140-3 mode, OPENPQC_FIPS140_3,
+//     in which the top-level CMakeLists.txt gives the library's objects that definition, and in no other
+//     build of the library; and the tests' own copies),
 //     and which fails on purpose with OPENPQC_MLKEM_KEYGEN_PCT_BREAKAGE_TEST (tests only);
 //   - the stack burn after every operation, which burn_stack leaves out where this header is compiled with
 //     OPENPQC_MLKEM_NO_STACK_BURN (mlkem.cpp; the CMake option OPENPQC_MLKEM_STACK_BURN=OFF).
@@ -205,6 +179,21 @@ inline namespace OPENPQC_MLKEM_CONFIGURATION {
 // padding). Every operation therefore needs a little more than stack_burn_bytes of stack below its caller
 // (openpqc_mlkem.h).
 //
+// Why (destruction of intermediate values). Section 3.3: "for ML-KEM.KeyGen, ML-KEM.Encaps, and
+// ML-KEM.Decaps, only the designated output can be retained in memory after the algorithm terminates." The
+// polynomials destroy themselves, and ZeroizeOnExit destroys the secret byte strings (polynomials.hpp,
+// kpke.hpp, mlkem_internal.hpp). That leaves what the code cannot name: an optimizing compiler keeps
+// intermediate values in registers and spills some of them to stack slots of its own, and the helpers of the
+// math core and of Core keep pieces of their inputs in their frames. The frames are dead after the call, but
+// their bytes stay on the stack until something overwrites them. GCC 16 at -O2, for one, left bits of m after
+// Encaps, and of m' after Decaps (of a rejected ciphertext too), in the slots where it had spilled the vector
+// registers of the ByteDecode_1 of K-PKE.Encrypt. So KeyGen, Encaps and Decaps, and their _derand variants,
+// run their algorithm in a frame of their own, which is never inlined (ml_kem_keygen, ml_kem_encaps,
+// ml_kem_decaps, ...), below a frame of padding (call_below_padding), and when it has returned, burn_stack
+// overwrites the stack below with zeros, further down than the algorithm reached (unless the library is
+// built without the burn, CMake option OPENPQC_MLKEM_STACK_BURN=OFF: see below for what that gives up).
+// Registers are not cleared (ML/KEM/README.md lists what remains).
+//
 // Built with OPENPQC_MLKEM_NO_STACK_BURN, burn_stack does nothing. The operations still destroy every
 // value that the code names (ZeroizeOnExit, the destructor of Poly), but the stack below them is no longer
 // overwritten: the copies that the compiler made in stack slots of its own, and what the helpers of the
@@ -246,7 +235,8 @@ Status check_pair_wise_consistency(std::span<const std::uint8_t, Sizes<P>::ek> e
     return differ == 0 ? Status::ok : Status::pct_failure;
 }
 
-// Algorithm 19, lines 6-7, with the seed (d, z) given. Call it as keygen_derand. Built with
+// Algorithm 19, lines 6-7, with the seed (d, z) given: for tests, and for expanding a seed stored in place
+// of dk (Section 3.3). Call it as keygen_derand. Built with
 // OPENPQC_MLKEM_KEYGEN_PCT, the pair-wise consistency check follows: it draws m
 // from the RNG, so that this function needs randomness then as well, and if the
 // RNG fails (rng_failure) or the check fails (pct_failure), both keys are
@@ -269,7 +259,8 @@ OPENPQC_MLKEM_NOINLINE Status ml_kem_keygen_derand(std::span<std::uint8_t, Sizes
     return Status::ok;                                                            // 7
 }
 
-// Algorithm 19: ML-KEM.KeyGen() -> (ek, dk). Call it as keygen.
+// Algorithm 19: ML-KEM.KeyGen() -> (ek, dk). Call it as keygen. d and z come from Core's opqc_randombytes
+// (the system RNG by default; in FIPS 140-3 mode the module's HMAC_DRBG), as m does in Encaps.
 template <ParameterSet P>
 OPENPQC_MLKEM_NOINLINE Status ml_kem_keygen(std::span<std::uint8_t, Sizes<P>::ek> ek,
                                             std::span<std::uint8_t, Sizes<P>::dk> dk) {
@@ -299,7 +290,7 @@ Status keygen(std::span<std::uint8_t, Sizes<P>::ek> ek, std::span<std::uint8_t, 
     return s;
 }
 
-// Algorithm 20, lines 5-6, with m given; checks ek first (Section 7.2). Call it as encaps_derand.
+// Algorithm 20, lines 5-6, with m given (for tests); checks ek first (Section 7.2). Call it as encaps_derand.
 template <ParameterSet P>
 OPENPQC_MLKEM_NOINLINE Status ml_kem_encaps_derand(std::span<std::uint8_t, 32> K,
                                                    std::span<std::uint8_t, Sizes<P>::ct> c,
@@ -362,7 +353,7 @@ Status decaps(std::span<std::uint8_t, 32> K, std::span<const std::uint8_t, Sizes
 
 // --- The key-pair check of Section 7.1 -----------------------------------------------------------
 
-// Section 7.1: the check of a key pair that the application imports or holds (review finding N16). With the seed
+// Section 7.1: the check of a key pair that the application imports or holds. With the seed
 // d || z (seed not NULL, 64 bytes), item 1, seed consistency: KeyGen_internal(d, z) must give exactly ek and dk;
 // then items 2 and 3, the checks of Sections 7.2 and 7.3; then item 4, the pair-wise consistency check, which
 // draws m from the RNG. Call it as check_key_pair.

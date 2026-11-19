@@ -5,36 +5,11 @@
 //
 // Header-only wrapper over the C API in ML/KEM/openpqc_mlkem.h, so that
 // including it does not pull in the algorithms (those are in ML/KEM/scheme/,
-// compiled once in ML/KEM/mlkem.cpp). Sizes are part of the types, and the
-// secrets (sk, the shared secret, the seed) are openpqc::secret<N>, which
-// zeroize themselves (openpqc/common.hpp):
+// compiled once in ML/KEM/mlkem.cpp). It adds types: sizes are part of them.
 //
-//   using KEM = openpqc::ML_KEM_768;            // openpqc/openpqc.hpp; = openpqc::mlkem::MLKEM<768>
-//   KEM::public_key pk;  KEM::secret_key sk;
-//   KEM::ciphertext ct;  KEM::shared_secret ss, ss2;
-//   openpqc::check(KEM::keygen(pk, sk));        // randomness from opqc_randombytes (below)
-//   openpqc::check(KEM::encaps(ct, ss, pk));    // checks pk first (FIPS 203, Section 7.2)
-//   openpqc::check(KEM::decaps(ss2, ct, sk));   // ss2 == ss
-//
-// Every function returns an openpqc::status and is [[nodiscard]]: a call that
-// fails produces no output (openpqc_mlkem.h, "Results"), and ss is then not a
-// key to use. Every buffer is a span of its exact size, so std::array,
-// openpqc::secret and C arrays all fit. keygen_from_seed expands a seed d || z
-// stored in place of dk (FIPS 203, Section 3.3); encapsulation with m given is
-// for testing only, in openpqc/testing.hpp.
-//
-// keygen and encaps draw their random values through Core's opqc_randombytes
-// (Core/opqc_platform.h): from the source that the application registered with
-// opqc_set_randombytes, else, in a library built with the CMake option
-// OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes,
-// else from the operating system (the default). In FIPS 140-3 mode they come
-// from the module's own HMAC_DRBG, and registering another source is refused.
-//
-// In FIPS 140-3 mode (openpqc_mlkem.h, "FIPS 140-3 mode") this C++ API is not
-// part of the module: it is compiled into the application, and each of its
-// functions is one call of one service of the C API, so the approved-service
-// indicator (openpqc_fips_service_approved, openpqc/fips.h) read right after
-// it is that service's.
+// Secrets: sk, the shared secret and the seed are openpqc::secret<N>, which
+//          zeroize themselves (openpqc/common.hpp).
+// Design:  README.md, "C and C++ APIs".
 #pragma once
 
 #include <array>
@@ -74,6 +49,31 @@ OPENPQC_MLKEM_CXX_API(1024)
 
 } // namespace detail
 
+// ML-KEM-512, -768 or -1024 (Level): its sizes, its types and its functions.
+// Every function returns an openpqc::status and is [[nodiscard]]: a call that
+// fails produces no output (openpqc_mlkem.h, "Results"), and ss is then not a
+// key to use. Every buffer is a span of its exact size, so std::array,
+// openpqc::secret and C arrays all fit:
+//
+//   using KEM = openpqc::ML_KEM_768;            // openpqc/openpqc.hpp; = openpqc::mlkem::MLKEM<768>
+//   KEM::public_key pk;  KEM::secret_key sk;
+//   KEM::ciphertext ct;  KEM::shared_secret ss, ss2;
+//   openpqc::check(KEM::keygen(pk, sk));        // randomness from opqc_randombytes (below)
+//   openpqc::check(KEM::encaps(ct, ss, pk));    // checks pk first (FIPS 203, Section 7.2)
+//   openpqc::check(KEM::decaps(ss2, ct, sk));   // ss2 == ss
+//
+// keygen and encaps draw their random values through Core's opqc_randombytes
+// (Core/opqc_platform.h): from the source that the application registered with
+// opqc_set_randombytes, else, in a library built with the CMake option
+// OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes,
+// else from the operating system (the default). In FIPS 140-3 mode they come
+// from the module's own HMAC_DRBG, and registering another source is refused.
+//
+// In FIPS 140-3 mode (openpqc_mlkem.h, "FIPS 140-3 mode") this C++ API is not
+// part of the module: it is compiled into the application, and each of its
+// functions is one call of one service of the C API, so the approved-service
+// indicator (openpqc_fips_service_approved, openpqc/fips.h) read right after
+// it is that service's.
 template <int Level>
 struct MLKEM {
     using api = detail::api<Level>;
@@ -100,14 +100,16 @@ struct MLKEM {
         return to_status(api::keygen(pk.data(), sk.data()));
     }
 
-    // ML-KEM.KeyGen_internal(d, z), Algorithm 16: the key pair of a stored seed d || z
+    // ML-KEM.KeyGen_internal(d, z), Algorithm 16: the key pair of a seed d || z stored in place of dk
+    // (FIPS 203, Section 3.3)
     [[nodiscard]] static status keygen_from_seed(std::span<std::uint8_t, public_key_bytes> pk,
                                                  std::span<std::uint8_t, secret_key_bytes> sk,
                                                  std::span<const std::uint8_t, seed_bytes> d_z) {
         return to_status(api::keygen_from_seed(pk.data(), sk.data(), d_z.data()));
     }
 
-    // ML-KEM.Encaps, Algorithm 20 (m from opqc_randombytes, above), after the check of ek (Section 7.2)
+    // ML-KEM.Encaps, Algorithm 20 (m from opqc_randombytes, above), after the check of ek (Section 7.2).
+    // Encapsulation with m given is for testing only, in openpqc/testing.hpp.
     [[nodiscard]] static status encaps(std::span<std::uint8_t, ciphertext_bytes> ct,
                                        std::span<std::uint8_t, shared_secret_bytes> ss,
                                        std::span<const std::uint8_t, public_key_bytes> pk) {

@@ -1,4 +1,10 @@
 // reduce.hpp  --  Montgomery and Barrett reduction for ML-KEM (Kyber), q = 3329
+//
+// Part of a C++ learning port of the Kyber reference arithmetic (Montgomery form,
+// int16 coefficients): params.hpp, reduce.*, ntt.*, built only for their own tests
+// (CMake target openpqc_learning; tests/test_reduce.cpp, tests/test_mlkem_ntt.cpp)
+// and part of no library of OpenPQC. ML-KEM does not use it: its arithmetic is math/.
+// Design: README.md, "Files".
 #pragma once
 
 #include <cstdint>

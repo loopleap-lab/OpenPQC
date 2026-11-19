@@ -1,4 +1,10 @@
 // ntt.cpp  --  number-theoretic transform for ML-KEM (Kyber) in R_q = Z_q[X]/(X^256 + 1)
+//
+// Part of a C++ learning port of the Kyber reference arithmetic (Montgomery form,
+// int16 coefficients): params.hpp, reduce.*, ntt.*, built only for their own tests
+// (CMake target openpqc_learning; tests/test_reduce.cpp, tests/test_mlkem_ntt.cpp)
+// and part of no library of OpenPQC. ML-KEM does not use it: its arithmetic is math/.
+// Design: README.md, "Files".
 #include "ML/KEM/ntt.hpp"
 #include "ML/KEM/reduce.hpp"
 
@@ -59,30 +65,16 @@ const std::array<std::int16_t, 128> zetas = {
 
 namespace {
 
-/*************************************************
-* Name:        fqmul
-*
-* Description: Multiplication followed by Montgomery reduction
-*
-* Arguments:   - std::int16_t a: first factor
-*              - std::int16_t b: second factor
-*
-* Returns 16-bit integer congruent to a*b*R^{-1} mod q
-**************************************************/
+// Multiplication followed by Montgomery reduction: the 16-bit integer congruent to
+// a*b*R^{-1} mod q, for the factors a and b
 std::int16_t fqmul(std::int16_t a, std::int16_t b) {
     return montgomery_reduce(static_cast<std::int32_t>(a) * b);
 }
 
 } // namespace
 
-/*************************************************
-* Name:        ntt
-*
-* Description: Inplace number-theoretic transform (NTT) in Rq.
-*              input is in standard order, output is in bitreversed order
-*
-* Arguments:   - std::span<std::int16_t, 256> r: input/output vector of elements of Zq
-**************************************************/
+// In-place number-theoretic transform (NTT) in Rq of r, the input/output vector of
+// elements of Zq: input in standard order, output in bit-reversed order
 void ntt(std::span<std::int16_t, KYBER_N> r) {
     std::size_t k = 1;
     for (std::size_t len = 128; len >= 2; len >>= 1) {
@@ -97,15 +89,9 @@ void ntt(std::span<std::int16_t, KYBER_N> r) {
     }
 }
 
-/*************************************************
-* Name:        intt
-*
-* Description: Inplace inverse number-theoretic transform in Rq and
-*              multiplication by Montgomery factor 2^16.
-*              Input is in bitreversed order, output is in standard order
-*
-* Arguments:   - std::span<std::int16_t, 256> r: input/output vector of elements of Zq
-**************************************************/
+// In-place inverse number-theoretic transform in Rq of r, the input/output vector of
+// elements of Zq, and multiplication by the Montgomery factor 2^16: input in
+// bit-reversed order, output in standard order
 void intt(std::span<std::int16_t, KYBER_N> r) {
     constexpr std::int16_t f = 1441; // mont^2/128
 
@@ -125,17 +111,9 @@ void intt(std::span<std::int16_t, KYBER_N> r) {
     for (auto& c : r) c = fqmul(c, f);
 }
 
-/*************************************************
-* Name:        basemul
-*
-* Description: Multiplication of polynomials in Zq[X]/(X^2-zeta)
-*              used for multiplication of elements in Rq in NTT domain
-*
-* Arguments:   - std::span<std::int16_t, 2> r: output polynomial
-*              - std::span<const std::int16_t, 2> a: first factor
-*              - std::span<const std::int16_t, 2> b: second factor
-*              - std::int16_t zeta: integer defining the reduction polynomial
-**************************************************/
+// Multiplication of polynomials in Zq[X]/(X^2-zeta), used for multiplication of
+// elements in Rq in the NTT domain: r is the output polynomial, a and b the first
+// and second factor, zeta the integer defining the reduction polynomial
 void basemul(std::span<std::int16_t, 2> r,
              std::span<const std::int16_t, 2> a,
              std::span<const std::int16_t, 2> b,
