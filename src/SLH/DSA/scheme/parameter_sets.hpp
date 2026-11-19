@@ -3,15 +3,11 @@
 // A parameter set is a type with the constants of Table 2 and its hash family.
 // The algorithms in scheme/ are templates over it, so for example
 // internal::sign<params::SLH_DSA_SHAKE_128f> is slh_sign_internal for
-// SLH-DSA-SHAKE-128f. Each row of Table 2 gives two parameter sets, one per
-// hash family (Section 11.1 for SHAKE, Section 11.2 for SHA2), with the same
-// values; the rows are written once below and the twelve sets inherit them.
+// SLH-DSA-SHAKE-128f. Every size follows from the parameters with the formulas
+// of the standard (Sizes<P>). The code is generic in all parameters (n, h, d,
+// h', a, k, lg_w, m), within the limits that the ParameterSet concept states.
 //
-// Every size follows from the parameters with the formulas of the standard
-// (Sizes<P>), and the static_asserts at the end compare the results with the
-// sizes printed in Table 2. The code is generic in all parameters (n, h, d, h',
-// a, k, lg_w, m), within the limits that the ParameterSet concept states:
-// SP 800-230 adds sets with lg_w = 2 or 3, d = 1 and a = 24 or 25.
+// Design: ../README.md, "Parameter sets".
 #pragma once
 
 #include <concepts>
@@ -32,7 +28,9 @@ namespace params {
 // Table 2. n: security parameter (bytes of hash outputs and keys); h: height of the hypertree; d: its number
 // of layers; h' = h / d: height of an XMSS tree; a: height of a FORS tree (t = 2^a leaves); k: number of FORS
 // trees; lg_w: bits per WOTS+ hash chain (w = 2^lg_w); m: bytes of the message digest; category: the security
-// category (Section 11: 1 for n = 16, 3 for n = 24, 5 for n = 32).
+// category (Section 11: 1 for n = 16, 3 for n = 24, 5 for n = 32). Each row gives two parameter sets, one per
+// hash family (Section 11.1 for SHAKE, Section 11.2 for SHA2), with the same values; the rows are written once
+// here and the twelve sets inherit them.
 namespace table2 {
 struct row_128s {
     static constexpr unsigned n = 16, h = 63, d = 7, h_prime = 9, a = 12, k = 14, lg_w = 4, m = 30, category = 1;
@@ -81,6 +79,7 @@ struct SLH_DSA_SHAKE_256f : table2::row_256f { static constexpr HashFamily famil
 //     lg_w = 1, 2, 4 or 8 for every n, and also 3 or 6 for n = 24; zero-padding M would be an extension of
 //     the standard);
 //   - h - h' <= 64 and h' <= 32: idx_tree is a uint64_t, idx_leaf a key pair address of 4 bytes.
+// SP 800-230 adds sets with lg_w = 2 or 3, d = 1 and a = 24 or 25.
 template <class P>
 concept ParameterSet = requires {
     { P::family } -> std::convertible_to<HashFamily>;
@@ -139,7 +138,8 @@ struct Layout {
     static_assert(S::md + S::tree_bytes + S::leaf_bytes == P::m);
 };
 
-// Table 2: pk bytes and sig bytes; sk = 4n (Figure 15); len2 = 3 for all twelve sets (Section 3.1)
+// The sizes computed by Sizes<P> against those printed in Table 2: pk bytes and sig bytes; sk = 4n
+// (Figure 15); len2 = 3 for all twelve sets (Section 3.1)
 template <ParameterSet P, std::size_t PK, std::size_t SIG>
 constexpr bool table2_sizes = Sizes<P>::pk == PK && Sizes<P>::sk == 2 * PK && Sizes<P>::sig == SIG &&
                               Sizes<P>::len2 == 3 && Sizes<P>::len == 2 * P::n + 3;

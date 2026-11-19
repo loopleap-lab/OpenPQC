@@ -1,18 +1,13 @@
 // hypertree.hpp  --  the SLH-DSA hypertree (FIPS 205, Section 7)
 //
-//   SIG_HT <- ht_sign(M, SK.seed, PK.seed, idx_tree, idx_leaf)                Algorithm 12
-//   ht_verify(M, SIG_HT, PK.seed, idx_tree, idx_leaf, PK.root) -> Boolean     Algorithm 13
+// Algorithms 12 and 13. The hypertree has d layers of XMSS trees of height h'. The XMSS keys of
+// layer 0 sign FORS public keys, those of layer j > 0 the roots of layer j - 1, and the single
+// tree of layer d - 1 has the root PK.root. A hypertree signature (Figure 13) is the d XMSS
+// signatures from layer 0 up.
 //
-// The hypertree has d layers of XMSS trees of height h'. The XMSS keys of
-// layer 0 sign FORS public keys, those of layer j > 0 the roots of layer j - 1,
-// and the single tree of layer d - 1 has the root PK.root. A hypertree
-// signature (Figure 13) is the d XMSS signatures from layer 0 up.
-//
-// Constant time. idx_tree and idx_leaf come from the message digest and are
-// public. The root of each layer is computed from secret values, but it is
-// public once the signature is: it equals what xmss_pkFromSig gives a
-// verifier. It is declassified there (Algorithm 12, lines 5 and 14), before the
-// next layer's xmss_sign takes the base-w digits of it as chain lengths.
+// Secrets: the root of each layer, until the signature makes it public (ht_sign). idx_tree and
+//          idx_leaf come from the message digest and are public.
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <cstddef>
@@ -37,7 +32,9 @@ std::span<T, Sizes<P>::xmss_sig> get_xmss_signature(std::span<T, Sizes<P>::ht_si
 }
 
 // Algorithm 12: SIG_HT <- ht_sign(M, SK.seed, PK.seed, idx_tree, idx_leaf), written to SIG_HT
-// ((h + d len) n bytes)
+// ((h + d len) n bytes). The root of each layer is computed from secret values, but it is public once the
+// signature is: it equals what xmss_pkFromSig gives a verifier. It is declassified there (lines 5 and 14),
+// before the next layer's xmss_sign takes the base-w digits of it as chain lengths.
 template <ParameterSet P>
 void ht_sign(std::span<std::uint8_t, Sizes<P>::ht_sig> SIG_HT, std::span<const std::uint8_t, P::n> M,
              std::span<const std::uint8_t, P::n> SK_seed, const PublicSeed<P>& PK_seed, std::uint64_t idx_tree,

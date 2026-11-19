@@ -1,20 +1,13 @@
 // xmss.hpp  --  XMSS, the Merkle signature scheme of SLH-DSA (FIPS 205, Section 6)
 //
-//   node <- xmss_node(SK.seed, i, z, PK.seed, ADRS)              Algorithm 9
-//   SIG_XMSS <- xmss_sign(M, SK.seed, idx, PK.seed, ADRS)        Algorithm 10
-//   node[0] <- xmss_pkFromSig(idx, SIG_XMSS, M, PK.seed, ADRS)   Algorithm 11
+// Algorithms 9-11. An XMSS tree has the 2^h' WOTS+ public keys of one key as its leaves; its
+// root is the XMSS public key. A signature (Figure 11) is the WOTS+ signature followed by the
+// authentication path AUTH[0], ..., AUTH[h' - 1], the siblings of the nodes on the path from
+// leaf idx to the root.
 //
-// An XMSS tree has the 2^h' WOTS+ public keys of one key as its leaves; its
-// root is the XMSS public key. A signature (Figure 11) is the WOTS+ signature
-// followed by the authentication path AUTH[0], ..., AUTH[h' - 1], the siblings
-// of the nodes on the path from leaf idx to the root.
-//
-// xmss_node is recursive, as Algorithm 9 writes it; the depth is at most
-// h' + 1 calls (10 for the sets of Table 2). The GPU backend computes the same
-// trees without recursion, and its byte-identity test ties the two together.
-//
-// Constant time. idx and the tree indices are public (they follow from the
-// message digest); the nodes are secret until the signature reveals them.
+// Secrets: the nodes, until the signature reveals them. idx and the tree indices are public
+//          (they follow from the message digest).
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <cstddef>
@@ -31,7 +24,9 @@ namespace openpqc::slhdsa {
 OPENPQC_ABI_BEGIN
 
 // Algorithm 9: node <- xmss_node(SK.seed, i, z, PK.seed, ADRS), the node at height z and index i
-// (z <= h', i < 2^(h' - z)) of the XMSS tree whose layer and tree address ADRS has
+// (z <= h', i < 2^(h' - z)) of the XMSS tree whose layer and tree address ADRS has. Recursive, as
+// Algorithm 9 writes it; the depth is at most h' + 1 calls (10 for the sets of Table 2). The GPU backend
+// computes the same trees without recursion, and its byte-identity test ties the two together.
 template <ParameterSet P>
 Value<P::n> xmss_node(std::span<const std::uint8_t, P::n> SK_seed, std::uint32_t i, unsigned z,
                       const PublicSeed<P>& PK_seed, Adrs& ADRS) {

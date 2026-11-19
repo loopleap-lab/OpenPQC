@@ -6,34 +6,13 @@
 // The algorithms an application uses: slh_keygen (Algorithm 21), slh_sign and
 // slh_verify with a context string (Algorithms 22 and 24), and their pre-hash
 // versions hash_slh_sign and hash_slh_verify (Algorithms 23 and 25). They wrap
-// the internal functions of Section 9 (slhdsa_internal.hpp), adding
+// the internal functions of Section 9 (slhdsa_internal.hpp) and add the random
+// values SK.seed, SK.prf, PK.seed and addrnd, the formatted message M', the
+// check of the context string (at most 255 bytes), the key checks of Section 3.1
+// and, with OPENPQC_SLHDSA_KEYGEN_PCT, a pair-wise consistency test after KeyGen.
 //
-//   - the random values SK.seed, SK.prf, PK.seed (KeyGen) and addrnd (hedged
-//     signing) from Core's opqc_randombytes (the system RNG by default; in FIPS
-//     140-3 mode the module's HMAC_DRBG),
-//   - the formatted message M' = toByte(0, 1) || toByte(|ctx|, 1) || ctx || M, or
-//     for HashSLH-DSA M' = toByte(1, 1) || toByte(|ctx|, 1) || ctx || OID || PH(M),
-//     which separates the two domains; M' is passed as a list of byte strings and
-//     never copied,
-//   - the check of the context string (at most 255 bytes),
-//   - optionally (OPENPQC_SLHDSA_KEYGEN_PCT), a pair-wise consistency test after
-//     KeyGen, as FIPS 140-3 asks of validated modules: the library has it in
-//     FIPS 140-3 mode only (OPENPQC_FIPS140_3).
-//
-// Variants of signing, as FIPS 205 words them (Algorithms 22 and 23, lines 4-9):
-//   sign, hash_sign                                hedged: addrnd from opqc_randombytes (the default)
-//   sign_deterministic, hash_sign_deterministic    the deterministic variant: lines 4-7 skipped, addrnd
-//                                                  omitted, so that opt_rand = PK.seed (Algorithm 19, line 2)
-//   sign_derand, hash_sign_derand                  addrnd given (for testing; addrnd = PK.seed gives the
-//                                                  deterministic signature)
-// keygen_derand is slh_keygen_internal (Algorithm 18) for given seeds: a testing interface of the C API
-// (openpqc/testing.h; FIPS 205, Section 9). check_secret_key and check_key_pair are the checks of Section 3.1.
-//
-// The pre-hash functions PH, their OIDs and digest lengths are Core's
-// (Core/prehash.hpp), shared with HashML-DSA. As there, the requirement of
-// Section 10.2 that PH be as strong as the parameter set (and of
-// Section 10.2.2 that SHA-256 and SHAKE128 be used only with category 1 sets)
-// is not enforced: NIST's test vectors combine every PH with every set.
+// Secrets: the seeds, addrnd and PH(M) are destroyed on return (ZeroizeOnExit), the rest by slhdsa_internal.hpp.
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <array>
@@ -95,8 +74,9 @@ bool check_key_pair(std::span<const std::uint8_t, Sizes<P>::pk> PK, std::span<co
 }
 
 // The configuration of key generation. keygen_derand and keygen run the pair-wise consistency test only
-// where this header is compiled with OPENPQC_SLHDSA_KEYGEN_PCT (slhdsa.cpp in FIPS 140-3 mode, in which the
-// top-level CMakeLists.txt gives the library's objects that definition; and the tests' own copies), and
+// where this header is compiled with OPENPQC_SLHDSA_KEYGEN_PCT (slhdsa.cpp in FIPS 140-3 mode,
+// OPENPQC_FIPS140_3, in which the top-level CMakeLists.txt gives the library's objects that definition, and in
+// no other build of the library; and the tests' own copies), and
 // check_pair_wise_consistency fails on purpose with OPENPQC_SLHDSA_KEYGEN_PCT_BREAKAGE_TEST (tests only).
 // Each translation unit that uses these templates for a parameter set has its own copy of them, and the
 // linker keeps one copy per name. Under one name for every configuration, the copy of an application
@@ -139,7 +119,8 @@ OPENPQC_SLHDSA_NOINLINE bool check_pair_wise_consistency(std::span<const std::ui
     return ok;
 }
 
-// Algorithm 21, line 7, with the seeds given: slh_keygen_internal(SK.seed, SK.prf, PK.seed). Built with
+// Algorithm 21, line 7, with the seeds given: slh_keygen_internal(SK.seed, SK.prf, PK.seed) (Algorithm 18), a
+// testing interface of the C API (openpqc/testing.h; FIPS 205, Section 9). Built with
 // OPENPQC_SLHDSA_KEYGEN_PCT, the pair-wise consistency test follows; if it fails, both keys are zeroized.
 template <ParameterSet P>
 Status keygen_derand(std::span<std::uint8_t, Sizes<P>::pk> PK, std::span<std::uint8_t, Sizes<P>::sk> SK,
@@ -160,7 +141,9 @@ Status keygen_derand(std::span<std::uint8_t, Sizes<P>::pk> PK, std::span<std::ui
 }
 
 // Algorithm 21: slh_keygen() -> (SK, PK). The three seeds are drawn in one call, in the order of
-// lines 1-3 (SK.seed, SK.prf, PK.seed), as the reference implementation draws them.
+// lines 1-3 (SK.seed, SK.prf, PK.seed), as the reference implementation draws them, from Core's
+// opqc_randombytes (the system RNG by default; in FIPS 140-3 mode the module's HMAC_DRBG), as is addrnd
+// of hedged signing.
 template <ParameterSet P>
 Status keygen(std::span<std::uint8_t, Sizes<P>::pk> PK, std::span<std::uint8_t, Sizes<P>::sk> SK) {
     std::array<std::uint8_t, Sizes<P>::seed> seed;
@@ -176,7 +159,12 @@ Status keygen(std::span<std::uint8_t, Sizes<P>::pk> PK, std::span<std::uint8_t, 
 
 // --- SLH-DSA (pure) ------------------------------------------------------------------------------
 
-// Algorithm 22 with addrnd given (lines 1-3, 8-10)
+// The formatted message is M' = toByte(0, 1) || toByte(|ctx|, 1) || ctx || M here, and
+// M' = toByte(1, 1) || toByte(|ctx|, 1) || ctx || OID || PH(M) for HashSLH-DSA, which separates the two
+// domains; M' is passed as a list of byte strings and never copied.
+
+// Algorithm 22 with addrnd given (lines 1-3, 8-10), for testing; addrnd = PK.seed gives the deterministic
+// signature
 template <ParameterSet P>
 Status sign_derand(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<const std::uint8_t, Sizes<P>::sk> SK,
                    std::span<const std::uint8_t> M, std::span<const std::uint8_t> ctx,
@@ -188,7 +176,8 @@ Status sign_derand(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<const s
     return Status::ok;                                                             // 10
 }
 
-// Algorithm 22, the deterministic variant (lines 4-7 skipped, addrnd omitted on line 9)
+// Algorithm 22, the deterministic variant (lines 4-7 skipped, addrnd omitted on line 9, so that opt_rand =
+// PK.seed, Algorithm 19, line 2)
 template <ParameterSet P>
 Status sign_deterministic(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<const std::uint8_t, Sizes<P>::sk> SK,
                           std::span<const std::uint8_t> M, std::span<const std::uint8_t> ctx) {
@@ -198,7 +187,8 @@ Status sign_deterministic(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<
     return Status::ok;                                                             // 10
 }
 
-// Algorithm 22: slh_sign(M, ctx, SK) -> SIG, hedged (addrnd from opqc_randombytes)
+// Algorithm 22: slh_sign(M, ctx, SK) -> SIG, hedged (addrnd from opqc_randombytes, drawn after the
+// context string has been checked: a call refused for its arguments uses no randomness)
 template <ParameterSet P>
 Status sign(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<const std::uint8_t, Sizes<P>::sk> SK,
             std::span<const std::uint8_t> M, std::span<const std::uint8_t> ctx) {
@@ -221,6 +211,11 @@ Status verify(std::span<const std::uint8_t, Sizes<P>::pk> PK, std::span<const st
 }
 
 // --- HashSLH-DSA ---------------------------------------------------------------------------------
+
+// The pre-hash functions PH, their OIDs and digest lengths are Core's (Core/prehash.hpp), shared with
+// HashML-DSA. As there, the requirement of Section 10.2 that PH be as strong as the parameter set (and of
+// Section 10.2.2 that SHA-256 and SHAKE128 be used only with category 1 sets) is not enforced: NIST's test
+// vectors combine every PH with every set.
 
 namespace detail {
 
@@ -247,7 +242,8 @@ Status hash_sign_prehashed(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span
 
 } // namespace detail
 
-// Algorithm 23 with addrnd given (lines 1-3, 8-26)
+// Algorithm 23 with addrnd given (lines 1-3, 8-26), for testing; addrnd = PK.seed gives the deterministic
+// signature
 template <ParameterSet P>
 Status hash_sign_derand(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<const std::uint8_t, Sizes<P>::sk> SK,
                         std::span<const std::uint8_t> M, PreHash ph, std::span<const std::uint8_t> ctx,
@@ -256,7 +252,8 @@ Status hash_sign_derand(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<co
     return detail::hash_sign_prehashed<P>(SIG, SK, M, ph, ctx, addrnd.data());     // 8-26
 }
 
-// Algorithm 23, the deterministic variant (lines 4-7 skipped, addrnd omitted on line 25)
+// Algorithm 23, the deterministic variant (lines 4-7 skipped, addrnd omitted on line 25, so that opt_rand =
+// PK.seed, Algorithm 19, line 2)
 template <ParameterSet P>
 Status hash_sign_deterministic(std::span<std::uint8_t, Sizes<P>::sig> SIG,
                                std::span<const std::uint8_t, Sizes<P>::sk> SK, std::span<const std::uint8_t> M,
@@ -265,7 +262,8 @@ Status hash_sign_deterministic(std::span<std::uint8_t, Sizes<P>::sig> SIG,
     return detail::hash_sign_prehashed<P>(SIG, SK, M, ph, ctx, nullptr);           // 8-26
 }
 
-// Algorithm 23: hash_slh_sign(M, ctx, PH, SK) -> SIG, hedged
+// Algorithm 23: hash_slh_sign(M, ctx, PH, SK) -> SIG, hedged (addrnd drawn after the context string
+// and ph have been checked)
 template <ParameterSet P>
 Status hash_sign(std::span<std::uint8_t, Sizes<P>::sig> SIG, std::span<const std::uint8_t, Sizes<P>::sk> SK,
                  std::span<const std::uint8_t> M, PreHash ph, std::span<const std::uint8_t> ctx) {

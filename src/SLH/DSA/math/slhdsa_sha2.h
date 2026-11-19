@@ -7,32 +7,15 @@
  * slhdsa_sha2.h -- HMAC-SHA-256, HMAC-SHA-512 (FIPS 198-1) and MGF1-SHA-256, MGF1-SHA-512 (RFC 8017,
  * Appendix B.2.1), as the SHA2 parameter sets of SLH-DSA use them (FIPS 205, Section 11.2)
  *
- * Section 11.2 builds two of its six functions from these:
- *
  *   PRF_msg(SK.prf, opt_rand, M) = Trunc_n(HMAC-SHA-X(SK.prf, opt_rand || M))
  *   H_msg(R, PK.seed, PK.root, M) = MGF1-SHA-X(R || PK.seed || SHA-X(R || PK.seed || PK.root || M), m)
  *
- * with X = 256 for n = 16 (Section 11.2.1) and X = 512 for n = 24, 32
- * (Section 11.2.2). SLH-DSA is their only user in OpenPQC, so they live here
- * rather than in Core; they rest on Core's incremental SHA-2 (Core/opqc_sha2.h).
+ * with X = 256 for n = 16 (Section 11.2.1) and X = 512 for n = 24, 32 (Section 11.2.2). SLH-DSA is
+ * their only user in OpenPQC, so they live here rather than in Core; they rest on Core's incremental
+ * SHA-2 (Core/opqc_sha2.h).
  *
- * HMAC is incremental: init takes the key, absorb any number of pieces of the
- * text, finalize gives the first outlen bytes of the MAC (the truncation of
- * FIPS 198-1, Section 5). PRF_msg can therefore hash opt_rand || M with the
- * message M' given in pieces (the prefix of FIPS 205, Algorithm 22, line 8, and
- * the message), without copying it. The functions implement all of FIPS 198-1,
- * Section 4, including keys longer than the block (step 2), although SLH-DSA's
- * keys are n <= 32 bytes, shorter than the 64- or 128-byte block (step 3).
- *
- * MGF1 takes its seed as one byte string. In H_msg it is R || PK.seed || a
- * digest: at most 2n + 64 = 128 bytes, assembled by the caller.
- *
- * Destruction of intermediate values. As everywhere in the math core, nothing
- * here zeroizes. An HMAC state holds the key and the last block of the text,
- * so the caller destroys it after finalize (scheme/crypto_functions.hpp does).
- * The local SHA-2 states of MGF1 hash only public values in SLH-DSA (R,
- * PK.seed and a digest of the message), and the one of step 2 of HMAC is never
- * used by SLH-DSA.
+ * Secrets: an HMAC state holds the key SK.prf. As everywhere in the math core, nothing here zeroizes.
+ * Design:  ../README.md, "FIPS 205 in the code".
  */
 
 #ifndef SLHDSA_SHA2_H
@@ -46,6 +29,19 @@
 
 /* --- HMAC-SHA-256 (FIPS 198-1, Section 4, with H = SHA-256, B = 64, L = 32) --- */
 
+/*
+ * HMAC is incremental: init takes the key, absorb any number of pieces of the
+ * text, finalize gives the first outlen bytes of the MAC (the truncation of
+ * FIPS 198-1, Section 5). PRF_msg can therefore hash opt_rand || M with the
+ * message M' given in pieces (the prefix of FIPS 205, Algorithm 22, line 8, and
+ * the message), without copying it. The functions implement all of FIPS 198-1,
+ * Section 4, including keys longer than the block (step 2), although SLH-DSA's
+ * keys are n <= 32 bytes, shorter than the 64- or 128-byte block (step 3); the
+ * local SHA-2 state of step 2 is never used by SLH-DSA.
+ *
+ * The state holds the key and the last block of the text, so the caller
+ * destroys it after finalize (scheme/crypto_functions.hpp does).
+ */
 typedef struct {
     opqc_sha256_state H;                /* the hash computation of step 6, then of step 9 */
     uint8_t K0[OPQC_SHA256_BLOCK_BYTES]; /* the key K0 of steps 1-3 */
@@ -161,7 +157,10 @@ OPQC_INLINE void slhdsa_hmac_sha512_finalize(slhdsa_hmac_sha512_state *s, uint8_
  * mask <- MGF1-SHA-256(mgfSeed, maskLen): the first maskLen bytes of
  * T = SHA-256(mgfSeed || C(0)) || SHA-256(mgfSeed || C(1)) || ..., where C(i) =
  * I2OSP(i, 4) is the counter as 4 bytes, big-endian. Step 1 (maskLen > 2^32 hLen
- * is an error) cannot occur in SLH-DSA, where maskLen = m <= 49.
+ * is an error) cannot occur in SLH-DSA, where maskLen = m <= 49. The seed is one
+ * byte string: in H_msg R || PK.seed || a digest, at most 2n + 64 = 128 bytes,
+ * assembled by the caller. The local SHA-2 states hash only public values in
+ * SLH-DSA (R, PK.seed and a digest of the message), and are not zeroized.
  */
 OPQC_INLINE void slhdsa_mgf1_sha256(uint8_t *mask, size_t maskLen, const uint8_t *mgfSeed, size_t seedLen)
 {

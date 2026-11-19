@@ -3,46 +3,16 @@
 //
 // slhdsa_internal.hpp  --  the internal functions of SLH-DSA (FIPS 205, Section 9)
 //
-//   (SK, PK) <- slh_keygen_internal(SK.seed, SK.prf, PK.seed)   Algorithm 18   internal::keygen
-//   SIG <- slh_sign_internal(M, SK, addrnd)                     Algorithm 19   internal::sign
-//   slh_verify_internal(M, SIG, PK) -> Boolean                  Algorithm 20   internal::verify
+// Algorithms 18-20 (internal::keygen, sign and verify), deterministic: the seeds (KeyGen) and the
+// additional randomness addrnd (Sign) are inputs, and the message is the formatted message M' of
+// Section 10, given as a list of byte strings. Each runs in a frame of its own, followed by the stack burn.
 //
-// Deterministic: the seeds (KeyGen) and the additional randomness addrnd (Sign)
-// are inputs, and the message is the formatted message M' of Section 10, given
-// as a list of byte strings. As Section 9 says, these interfaces should be
-// offered to applications only for testing: key generation and hedged signing
-// must generate their randomness inside the cryptographic module
-// (slh_dsa.hpp does). internal::sign without addrnd is the deterministic
-// variant: line 2 of Algorithm 19 then reads opt_rand <- PK.seed.
-//
-// Constant time. All branches, loop counts and memory indices depend on public
-// values only: the message digest and the indices and base-w digits taken from
-// it and from public intermediate values; secrets only enter hash functions.
-// Under the constant-time test (valgrind) everything derived from SK.seed,
-// SK.prf or addrnd counts as secret, so the code releases exactly what FIPS 205
-// makes public, where it becomes public, with OPQC_CT_DECLASSIFY: PK.seed and
-// PK.root (KeyGen; and in Sign, where they are read from SK), R (Algorithm 19,
-// line 3: it is SIG[0 : n]), PK_FORS (line 16, before ht_sign takes its digits),
-// the root of each hypertree layer (hypertree.hpp) and the signature.
-//
-// Destruction of intermediate values (Section 3.1). Named byte strings are
-// destroyed with ZeroizeOnExit, n-byte values and hash states destroy
-// themselves (crypto_functions.hpp). That leaves what the code cannot name: the
-// SHA-2 compression functions of Core keep the message block, byte-swapped into
-// words, in the message schedule W in their stack frame, and Keccak-f keeps
-// copies of its state (B, C, D); the frames are dead after the call, but their
-// bytes stay on the stack until something overwrites them. After a PRF call, W
-// holds the words of SK.seed (found on the stack after signing with the SHA2
-// sets of categories 3 and 5 when the burn below was left out). So each of the
-// three functions runs its algorithm in a frame of its own
-// (slh_keygen_internal, slh_sign_internal, slh_verify_internal, never inlined)
-// and then overwrites the stack below with stack_burn_bytes zeros (burn_stack),
-// more than the deepest of the three uses. Verification is treated the same
-// way, as Section 3.1 counts its data as sensitive in some applications.
-// Measured with GCC 16 at -O3 on an i7-11370H (medians of five interleaved
-// runs), signing with all of this destruction took between 4.6 % less and 1.9 %
-// more time than a build in which opqc_zeroize does nothing: no cost that the
-// measurement can separate from changes in code layout.
+// Secrets: everything derived from SK.seed, SK.prf or addrnd. All branches, loop counts and memory indices
+//          depend on public values only (the message digest and the indices and base-w digits taken from it
+//          and from public intermediate values); secrets only enter hash functions, and the code releases
+//          exactly what FIPS 205 makes public, where it becomes public, with OPQC_CT_DECLASSIFY. How every
+//          intermediate value is destroyed (Section 3.1): burn_stack.
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <array>
@@ -125,13 +95,21 @@ OPENPQC_SLHDSA_NOINLINE OPENPQC_SLHDSA_NO_ASAN void touch_stack() {
     opqc_zeroize(frame.data(), frame.size());
 }
 
-// Overwrites the stack_burn_bytes below the caller's frame with zeros (see the top of the file)
+// Overwrites the stack_burn_bytes below the caller's frame with zeros (burn_stack)
 OPENPQC_SLHDSA_NOINLINE OPENPQC_SLHDSA_NO_ASAN inline void clear_stack() {
     std::array<std::uint8_t, stack_burn_bytes> stack;
     opqc_zeroize(stack.data(), stack.size());
 }
 
-// The stack burn: touches (and zeroizes) the stack that clear_stack and opqc_zeroize will use, then clears it
+// The stack burn (Section 3.1). Named byte strings are destroyed with ZeroizeOnExit, n-byte values and hash
+// states destroy themselves (crypto_functions.hpp). That leaves what the code cannot name: the SHA-2
+// compression functions of Core keep the message block, byte-swapped into words, in the message schedule W in
+// their stack frame, and Keccak-f keeps copies of its state (B, C, D); the frames are dead after the call, but
+// their bytes stay on the stack until something overwrites them. After a PRF call, W holds the words of
+// SK.seed (found on the stack after signing with the SHA2 sets of categories 3 and 5 when the burn was left
+// out).
+//
+// burn_stack touches (and zeroizes) the stack that clear_stack and opqc_zeroize will use, then clears it
 // with one array. clear_stack covers the bytes that the frames of touch_stack leave between their arrays
 // (return addresses, stack-protector canaries, padding), and touch_stack the few at the top of clear_stack's
 // frame that clear_stack does not write. Every operation therefore needs a little more than stack_burn_bytes
@@ -141,6 +119,9 @@ inline void burn_stack() {
     clear_stack();
 }
 
+// The internal functions. As Section 9 says, these interfaces should be offered to applications only for
+// testing: key generation and hedged signing must generate their randomness inside the cryptographic module
+// (slh_dsa.hpp does).
 namespace internal {
 
 // Algorithm 18: slh_keygen_internal(SK.seed, SK.prf, PK.seed) -> (SK, PK). Call it as keygen.
@@ -211,7 +192,7 @@ OPENPQC_SLHDSA_NOINLINE void slh_sign_internal(std::span<std::uint8_t, Sizes<P>:
     const auto SIG_FORS = SIG.template subspan<Lay::sig_fors, S::fors_sig>();
     fors_sign<P>(SIG_FORS, md, SK_seed, PK_seed, ADRS);
     const Value<P::n> PK_FORS = fors_pk_from_sig<P>(SIG_FORS, md, PK_seed, ADRS);   // 16: get FORS key
-    OPQC_CT_DECLASSIFY(PK_FORS.data(), P::n);                            // public: what a verifier computes
+    OPQC_CT_DECLASSIFY(PK_FORS.data(), P::n);   // public: what a verifier computes; before ht_sign takes its digits
     // 17-18: SIG_HT <- ht_sign(PK_FORS, SK.seed, PK.seed, idx_tree, idx_leaf); SIG <- SIG || SIG_HT, in place
     const auto SIG_HT = SIG.template subspan<Lay::sig_ht, S::ht_sig>();
     ht_sign<P>(SIG_HT, PK_FORS, SK_seed, PK_seed, idx_tree, idx_leaf);
@@ -254,6 +235,11 @@ OPENPQC_SLHDSA_NOINLINE bool slh_verify_internal(std::span<const std::uint8_t, S
 }
 
 // --- the three functions, each followed by the stack burn ------------------------------------
+
+// Each runs its algorithm in a frame of its own (slh_keygen_internal, slh_sign_internal, slh_verify_internal,
+// never inlined) and then overwrites the stack below with stack_burn_bytes zeros (burn_stack), more than the
+// deepest of the three uses. Verification is treated the same way, as Section 3.1 counts its data as
+// sensitive in some applications.
 
 // Algorithm 18: slh_keygen_internal(SK.seed, SK.prf, PK.seed) -> (SK, PK)
 template <ParameterSet P>

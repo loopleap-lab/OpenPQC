@@ -1,27 +1,14 @@
 // fors.hpp  --  FORS, the few-time signature scheme of SLH-DSA (FIPS 205, Section 8)
 //
-//   sk <- fors_skGen(SK.seed, PK.seed, ADRS, idx)             Algorithm 14
-//   node <- fors_node(SK.seed, i, z, PK.seed, ADRS)           Algorithm 15
-//   SIG_FORS <- fors_sign(md, SK.seed, PK.seed, ADRS)         Algorithm 16
-//   pk <- fors_pkFromSig(SIG_FORS, md, PK.seed, ADRS)         Algorithm 17
+// Algorithms 14-17. A FORS key has k Merkle trees of height a over 2^a secret values each. The
+// signature on the k a-bit digest md holds, for each tree i, the secret value selected by the
+// i-th a-bit integer of md and its authentication path (Figure 14: k times n + a n bytes, tree
+// by tree). Node indices count across the k trees (Section 4.2): the leaf of tree i at position
+// indices[i] has the index i 2^a + indices[i], and a node at height j the index i 2^(a - j) + s.
 //
-// A FORS key has k Merkle trees of height a over 2^a secret values each. The
-// signature on the k a-bit digest md holds, for each tree i, the secret value
-// selected by the i-th a-bit integer of md and its authentication path
-// (Figure 14: k times n + a n bytes, tree by tree). Node indices count across
-// the k trees (Section 4.2): the leaf of tree i at position indices[i] has the
-// index i 2^a + indices[i], and a node at height j the index i 2^(a - j) + s.
-//
-// fors_node is recursive, as Algorithm 15 writes it (depth a + 1 <= 15).
-//
-// Every ADRS here has the layer address 0, the tree address idx_tree, the type
-// FORS_TREE and the key pair address idx_leaf (set by Algorithm 19, lines 11-13,
-// and Algorithm 20, lines 14-16); fors_node and fors_pkFromSig set only the tree
-// height and index.
-//
-// Constant time. md, and so the indices, are public (part of the message
-// digest); the secret values that the signature does not reveal, and every node
-// computed from them, stay secret.
+// Secrets: the secret values that the signature does not reveal, and every node computed from
+//          them. md, and so the indices, are public (part of the message digest).
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <array>
@@ -38,6 +25,10 @@
 namespace openpqc::slhdsa {
 OPENPQC_ABI_BEGIN
 
+// Every ADRS here has the layer address 0, the tree address idx_tree, the type FORS_TREE and the key pair
+// address idx_leaf (set by Algorithm 19, lines 11-13, and Algorithm 20, lines 14-16); fors_node and
+// fors_pkFromSig set only the tree height and index.
+
 // Algorithm 14: sk <- fors_skGen(SK.seed, PK.seed, ADRS, idx), the secret value with the index idx
 template <ParameterSet P>
 Value<P::n> fors_sk_gen(std::span<const std::uint8_t, P::n> SK_seed, const PublicSeed<P>& PK_seed, const Adrs& ADRS,
@@ -52,7 +43,7 @@ Value<P::n> fors_sk_gen(std::span<const std::uint8_t, P::n> SK_seed, const Publi
 }
 
 // Algorithm 15: node <- fors_node(SK.seed, i, z, PK.seed, ADRS), the node at height z and index i
-// (z <= a, i < k 2^(a - z))
+// (z <= a, i < k 2^(a - z)). Recursive, as Algorithm 15 writes it (depth a + 1 <= 15).
 template <ParameterSet P>
 Value<P::n> fors_node(std::span<const std::uint8_t, P::n> SK_seed, std::uint32_t i, unsigned z,
                       const PublicSeed<P>& PK_seed, Adrs& ADRS) {

@@ -1,50 +1,15 @@
 // crypto_functions.hpp  --  the hash functions of SLH-DSA (FIPS 205, Section 4.1), with SHAKE (Section 11.1)
 //                          and with SHA2 (Sections 11.2.1 and 11.2.2)
 //
-//   PRF_msg(SK.prf, opt_rand, M)    n bytes   the randomizer R
-//   H_msg(R, PK.seed, PK.root, M)   m bytes   the message digest
-//   PRF(PK.seed, SK.seed, ADRS)     n bytes   the secret values of WOTS+ and FORS keys
-//   T_l(PK.seed, ADRS, M_l)         n bytes   compression of l n-byte strings
-//   H(PK.seed, ADRS, M_2)           n bytes   two n-byte strings (tree nodes)
-//   F(PK.seed, ADRS, M_1)           n bytes   one n-byte string (chains, FORS leaves)
+// The six functions of both families, over Core's SHA-2 and SHAKE256 and math/slhdsa_sha2.h.
 //
-// SHAKE sets: all six are SHAKE256 of the concatenation of their inputs, with
-// the full 32-byte ADRS (Section 11.1). SHA2 sets (Section 11.2): PRF and F are
-// Trunc_n(SHA-256(PK.seed || toByte(0, 64 - n) || ADRS^c || ...)); H and T_l the
-// same with SHA-X, PRF_msg is HMAC-SHA-X and H_msg uses SHA-X and MGF1-SHA-X,
-// where X = 256 for n = 16 (Section 11.2.1) and X = 512 for n = 24 and 32
-// (Section 11.2.2, which pads with toByte(0, 128 - n) for SHA-512). F and PRF
-// stay with SHA-256 in all categories.
-//
-// Inputs that the standard concatenates are given as a list of byte strings
-// (ByteStrings), which is hashed without building the concatenation:
-// H<P>(node, PK_seed, ADRS, {lnode, rnode}) is node <- H(PK.seed, ADRS, lnode || rnode).
-// The messages M of PRF_msg and H_msg are such lists too, so the formatted
-// message M' of Section 10 is never copied.
-//
-// The cached state of PK.seed. In the SHA2 sets, every call of PRF, F, H and
-// T_l begins with the block PK.seed || toByte(0, 64 - n) (for SHA-512:
-// PK.seed || toByte(0, 128 - n)): exactly one block of the hash function, the
-// same in every call of one key, and public, since PK.seed is part of the
-// public key. PublicSeed<P> is PK.seed together with the SHA-256 (and, for
-// n = 24 and 32, the SHA-512) state after compressing that block, computed once
-// per KeyGen, Sign or Verify (Algorithms 18-20); each call continues from a copy
-// of it. The bytes hashed are those of Section 11.2, so the result is the same;
-// FIPS 205 allows any mathematically equivalent process (Announcement, item 8).
-// This saves one of the two compressions of nearly every call. Nothing derived
-// from a secret is cached: HMAC hashes its key block (from SK.prf) in every
-// PRF_msg call. The SHAKE sets have no such block (PK.seed is shorter than the
-// rate and shares the first block with ADRS).
-//
-// Destruction of intermediate values (Section 3.1). The outputs of PRF, F, H and
-// T_l are secret in signing (secret values, chain values, tree nodes); they are
-// written into a caller's span, of which no copy is left, or held in Value<n>,
-// an n-byte string that zeroizes itself when its lifetime ends, named or not.
-// Every hash state (SHA-2, Keccak, HMAC) is zeroized after its last use: it
-// holds the last input block in plain text, and a final Keccak state can be
-// inverted to its input. What the compression functions leave in their own
-// dead stack frames is removed by the stack burn at the end of each top-level
-// operation (slhdsa_internal.hpp).
+// Secrets: the outputs of PRF, F, H and T_l are secret in signing (secret values, chain values, tree
+//          nodes; Section 3.1): they go into a caller's span, of which no copy is left, or into a Value<n>.
+//          Every hash state (SHA-2, Keccak, HMAC) is zeroized after its last use: it holds the last input
+//          block in plain text, and a final Keccak state can be inverted to its input. What the compression
+//          functions leave in their own dead stack frames is removed by the stack burn at the end of each
+//          top-level operation (slhdsa_internal.hpp).
+// Design:  ../README.md, "Choices that differ from the reference implementation".
 #pragma once
 
 #include <algorithm>
@@ -72,7 +37,7 @@ using openpqc::ZeroizeOnExit;
 
 // --- byte strings -----------------------------------------------------------------------------
 
-// An N-byte string that zeroizes itself (see above). A type with a destructor is not
+// An N-byte string that zeroizes itself when its lifetime ends, named or not. A type with a destructor is not
 // trivially copyable, so it is never given to ZeroizeOnExit, and needs not be.
 template <std::size_t N>
 struct Value : std::array<std::uint8_t, N> {
@@ -162,9 +127,17 @@ using ShaX = std::conditional_t<P::n == 16, Sha256, Sha512>;
 
 // --- PK.seed --------------------------------------------------------------------------------
 
-// PK.seed, and for the SHA2 sets the states after its padded block (see the top of the file):
+// PK.seed, and for the SHA2 sets the states after its padded block:
 //   sha256   SHA-256 after PK.seed || toByte(0, 64 - n)     (PRF, F; H and T_l for n = 16)
 //   sha512   SHA-512 after PK.seed || toByte(0, 128 - n)    (H and T_l for n = 24, 32)
+// In the SHA2 sets, every call of PRF, F, H and T_l begins with that block: exactly one block of the hash
+// function, the same in every call of one key, and public, since PK.seed is part of the public key. The
+// states are computed once per KeyGen, Sign or Verify (Algorithms 18-20), and each call continues from a
+// copy of them. The bytes hashed are those of Section 11.2, so the result is the same; FIPS 205 allows any
+// mathematically equivalent process (Announcement, item 8). This saves one of the two compressions of nearly
+// every call. Nothing derived from a secret is cached: HMAC hashes its key block (from SK.prf) in every
+// PRF_msg call. The SHAKE sets have no such block (PK.seed is shorter than the rate and shares the first
+// block with ADRS).
 // PK.seed is public; the copy is destroyed all the same, as a local copy of an input (Section 3.1).
 template <ParameterSet P>
 struct PublicSeed {
@@ -201,7 +174,8 @@ struct PublicSeed {
 
 namespace detail {
 
-// SHAKE256(X || M, 8 |out|), with the lists X and M hashed as their concatenation
+// SHAKE256(X || M, 8 |out|), with the lists X and M hashed as their concatenation: all six functions of the
+// SHAKE sets (Section 11.1), with the full 32-byte ADRS
 inline void shake256(std::span<std::uint8_t> out, ByteStrings X, ByteStrings M = {}) {
     opqc_sponge s;
     ZeroizeOnExit wipe{s};
@@ -226,6 +200,11 @@ void sha2_seeded(std::span<std::uint8_t, P::n> out, const PublicSeed<P>& PK_seed
 } // namespace detail
 
 // --- the six functions --------------------------------------------------------------------
+
+// Inputs that the standard concatenates are given as a list of byte strings (ByteStrings), which is hashed
+// without building the concatenation: H<P>(node, PK_seed, ADRS, {lnode, rnode}) is
+// node <- H(PK.seed, ADRS, lnode || rnode). The messages M of PRF_msg and H_msg are such lists too, so the
+// formatted message M' of Section 10 is never copied.
 
 // R <- PRF_msg(SK.prf, opt_rand, M): the randomizer (n bytes) for the message M given as a list
 template <ParameterSet P>
@@ -282,7 +261,7 @@ void PRF(std::span<std::uint8_t, P::n> out, const PublicSeed<P>& PK_seed, std::s
     }
 }
 
-// out <- T_l(PK.seed, ADRS, M_l) for the array M_l of L n-byte strings
+// out <- T_l(PK.seed, ADRS, M_l): the compression of the array M_l of L n-byte strings into n bytes
 template <ParameterSet P, std::size_t L>
 void T_l(std::span<std::uint8_t, P::n> out, const PublicSeed<P>& PK_seed, const Adrs& ADRS,
          const Values<L, P::n>& M_l) {
@@ -294,7 +273,7 @@ void T_l(std::span<std::uint8_t, P::n> out, const PublicSeed<P>& PK_seed, const 
     }
 }
 
-// out <- H(PK.seed, ADRS, M_2) for the 2n-byte string M_2 given as a list (two nodes)
+// out <- H(PK.seed, ADRS, M_2), n bytes (a tree node), for the 2n-byte string M_2 given as a list (two nodes)
 template <ParameterSet P>
 void H(std::span<std::uint8_t, P::n> out, const PublicSeed<P>& PK_seed, const Adrs& ADRS, ByteStrings M_2) {
     if constexpr (P::family == HashFamily::shake) {
@@ -305,7 +284,8 @@ void H(std::span<std::uint8_t, P::n> out, const PublicSeed<P>& PK_seed, const Ad
     }
 }
 
-// out <- F(PK.seed, ADRS, M_1); out may be M_1 itself (tmp <- F(PK.seed, ADRS, tmp) in Algorithm 5)
+// out <- F(PK.seed, ADRS, M_1), n bytes of one n-byte string (chains, FORS leaves); out may be M_1 itself
+// (tmp <- F(PK.seed, ADRS, tmp) in Algorithm 5)
 template <ParameterSet P>
 void F(std::span<std::uint8_t, P::n> out, const PublicSeed<P>& PK_seed, const Adrs& ADRS,
        std::span<const std::uint8_t, P::n> M_1) {

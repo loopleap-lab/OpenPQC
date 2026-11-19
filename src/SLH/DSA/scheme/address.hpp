@@ -3,13 +3,13 @@
 // The C++ view of math/slhdsa_address.h: a 32-byte address whose member
 // functions are those of Table 1, so that the algorithms read as their
 // pseudocode (ADRS.setTypeAndClear(WOTS_PRF) is ADRS.set_type_and_clear(WOTS_PRF)).
-// A value-initialized Adrs is toByte(0, 32), the start of Algorithms 12, 13,
-// 18, 19 and 20.
 //
 // The algorithms take ADRS by reference and set its fields in place, as the
 // pseudocode does (Section 4.2 allows either reference or value); where the
 // pseudocode copies an address (skADRS <- ADRS, wotspkADRS <- ADRS,
 // forspkADRS <- ADRS), the code copies it too.
+//
+// Design: ../README.md, "FIPS 205 in the code".
 #pragma once
 
 #include <array>
@@ -30,6 +30,7 @@ inline constexpr std::uint32_t FORS_ROOTS = SLHDSA_FORS_ROOTS;
 inline constexpr std::uint32_t WOTS_PRF = SLHDSA_WOTS_PRF;
 inline constexpr std::uint32_t FORS_PRF = SLHDSA_FORS_PRF;
 
+// A value-initialized Adrs is toByte(0, 32), the start of Algorithms 12, 13, 18, 19 and 20.
 struct Adrs {
     std::array<std::uint8_t, SLHDSA_ADRS_BYTES> bytes{};
 

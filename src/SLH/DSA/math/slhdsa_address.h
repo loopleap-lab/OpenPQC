@@ -7,6 +7,23 @@
  * slhdsa_address.h -- the address ADRS, its member functions and its compressed form ADRS^c
  * (FIPS 205, Sections 4.2, 4.3 and 11.2)
  *
+ * The member functions of Table 1 on the 32-byte address, written with toByte
+ * and toInt (math/slhdsa_encode.h); the compression of Section 11.2 for the SHA2
+ * parameter sets; and, for the GPU kernels, the same functions on the address
+ * as integers.
+ *
+ * Secrets: none: the fields of an address are positions in the hypertree and in
+ *          the FORS trees, which follow from the message digest.
+ * Design:  ../README.md, "FIPS 205 in the code".
+ */
+
+#ifndef SLHDSA_ADDRESS_H
+#define SLHDSA_ADDRESS_H
+
+#include "../../../Core/opqc_common.h"
+#include "slhdsa_encode.h"
+
+/*
  * An address is the 32-byte string that PRF, T_l, H and F take besides their
  * other inputs, so that every call of these functions hashes a different input
  * (Section 4.2). It consists of eight 4-byte words, each an unsigned integer in
@@ -17,56 +34,7 @@
  *   ADRS[16 : 20]   type: WOTS_HASH, WOTS_PK, TREE, FORS_TREE, FORS_ROOTS, WOTS_PRF or FORS_PRF
  *   ADRS[20 : 32]   three words whose meaning depends on the type (Figures 3-9):
  *                   key pair address, chain address or tree height, hash address or tree index
- *
- * The member functions below are those of Table 1 (Section 4.3), each with the
- * "Expanded notation" of the table above it, written with toByte and toInt
- * (math/slhdsa_encode.h). They write whole words, as Table 1 does, where the
- * reference implementation writes single bytes (FIPS 205 never stores a value
- * that does not fit into the low byte there). setTypeAndClear is the only
- * function that clears anything: it sets the type and zeroes the 12 bytes
- * after it, which also removes the key pair address. setChainAddress and
- * setTreeHeight write the same word, and so do setHashAddress and
- * setTreeIndex; FIPS 205 uses both names, and so does the code.
- *
- * The SHA2 parameter sets hash the 22-byte compressed address
- * ADRS^c = ADRS[3] || ADRS[8 : 16] || ADRS[19] || ADRS[20 : 32] (Section 11.2,
- * Figure 18): the layer address and the type reduced to one byte each and the
- * tree address to eight. OpenPQC keeps the 32-byte address everywhere and
- * compresses it at the call of the hash function (slhdsa_adrs_compress), which
- * Section 11.2 allows; Table 3 lists the member functions of an implementation
- * that stores ADRS^c instead. The bytes that compression drops are zero for
- * every parameter set (layer address < 256, tree address < 2^64, type < 7).
- *
- * Addresses are public: their fields are positions in the hypertree and in the
- * FORS trees, which follow from the message digest.
- *
- * GPU kernels (SLH/DSA/sycl) keep an address as integers instead, the values of
- * its fields (slhdsa_adrs_words below), because an address written byte by byte
- * at positions known only at run time would go to slow private memory. The same
- * member functions of Table 1 act on the fields, and the hash functions read
- * the address as words computed from the fields where they absorb them:
- *
- *   slhdsa_adrsw_word      toInt(ADRS[4i : 4i + 4], 4), the eight words of Figure 2
- *   slhdsa_adrsw_lane      ADRS[8k : 8k + 8] as a little-endian 64-bit integer: the
- *                          lanes that SHAKE256 absorbs (Section 11.1; FIPS 202 reads
- *                          its input in little-endian lanes)
- *   slhdsa_adrsw_c_word32  toInt(ADRS^c[4k : 4k + 4], 4) and toInt(ADRS^c[8k : 8k + 8], 8),
- *   slhdsa_adrsw_c_word64  the big-endian words of ADRS^c that SHA-256 and SHA-512 absorb
- *                          (Section 11.2); ADRS^c has 22 bytes, so its last word is
- *                          completed with zero bytes (the bytes that follow ADRS^c in the
- *                          hash input take their place in the caller)
- *
- * tests/SLH-DSA/test_slhdsa_math.c checks them against the byte address: the
- * same random sequences of member functions on both, with random and extreme
- * values, give the same bytes, lanes, words and compressed words.
  */
-
-#ifndef SLHDSA_ADDRESS_H
-#define SLHDSA_ADDRESS_H
-
-#include "../../../Core/opqc_common.h"
-#include "slhdsa_encode.h"
-
 #define SLHDSA_ADRS_BYTES 32  /* ADRS (Section 4.2, Figure 2) */
 #define SLHDSA_ADRSC_BYTES 22 /* ADRS^c (Section 11.2, Figure 18) */
 
@@ -81,6 +49,13 @@
 
 /* --- Member functions (Table 1) ---------------------------------------------- */
 
+/*
+ * The functions of Table 1 (Section 4.3), each with the "Expanded notation" of
+ * the table in the comment above it. They write whole words, as Table 1 does,
+ * where the reference implementation writes single bytes (FIPS 205 never stores
+ * a value that does not fit into the low byte there).
+ */
+
 /* ADRS.setLayerAddress(l): ADRS <- toByte(l, 4) || ADRS[4 : 32] */
 OPQC_INLINE void slhdsa_adrs_set_layer_address(uint8_t ADRS[SLHDSA_ADRS_BYTES], uint32_t l)
 {
@@ -93,7 +68,8 @@ OPQC_INLINE void slhdsa_adrs_set_tree_address(uint8_t ADRS[SLHDSA_ADRS_BYTES], u
     slhdsa_to_byte(ADRS + 4, t, 12);
 }
 
-/* ADRS.setTypeAndClear(Y): ADRS <- ADRS[0 : 16] || toByte(Y, 4) || toByte(0, 12) */
+/* ADRS.setTypeAndClear(Y): ADRS <- ADRS[0 : 16] || toByte(Y, 4) || toByte(0, 12). The only
+ * function that clears anything: the 12 zero bytes after the type also remove the key pair address. */
 OPQC_INLINE void slhdsa_adrs_set_type_and_clear(uint8_t ADRS[SLHDSA_ADRS_BYTES], uint32_t Y)
 {
     slhdsa_to_byte(ADRS + 16, Y, 4);
@@ -112,7 +88,8 @@ OPQC_INLINE void slhdsa_adrs_set_chain_address(uint8_t ADRS[SLHDSA_ADRS_BYTES], 
     slhdsa_to_byte(ADRS + 24, i, 4);
 }
 
-/* ADRS.setTreeHeight(i): the same word as the chain address */
+/* ADRS.setTreeHeight(i): the same word as the chain address (FIPS 205 uses both names, and so does
+ * the code; likewise setHashAddress and setTreeIndex) */
 OPQC_INLINE void slhdsa_adrs_set_tree_height(uint8_t ADRS[SLHDSA_ADRS_BYTES], uint32_t i)
 {
     slhdsa_to_byte(ADRS + 24, i, 4);
@@ -144,7 +121,16 @@ OPQC_INLINE uint32_t slhdsa_adrs_get_tree_index(const uint8_t ADRS[SLHDSA_ADRS_B
 
 /* --- The compressed address (Section 11.2) ----------------------------------- */
 
-/* ADRS^c = ADRS[3] || ADRS[8 : 16] || ADRS[19] || ADRS[20 : 32] */
+/*
+ * ADRS^c = ADRS[3] || ADRS[8 : 16] || ADRS[19] || ADRS[20 : 32] (Section 11.2,
+ * Figure 18), the 22 bytes that the SHA2 parameter sets hash: the layer address
+ * and the type reduced to one byte each and the tree address to eight. OpenPQC
+ * keeps the 32-byte address everywhere and compresses it at the call of the hash
+ * function, which Section 11.2 allows; Table 3 lists the member functions of an
+ * implementation that stores ADRS^c instead. The bytes that compression drops
+ * are zero for every parameter set (layer address < 256, tree address < 2^64,
+ * type < 7).
+ */
 OPQC_INLINE void slhdsa_adrs_compress(uint8_t c[SLHDSA_ADRSC_BYTES], const uint8_t ADRS[SLHDSA_ADRS_BYTES])
 {
     c[0] = ADRS[3];
@@ -157,7 +143,21 @@ OPQC_INLINE void slhdsa_adrs_compress(uint8_t c[SLHDSA_ADRSC_BYTES], const uint8
     }
 }
 
-/* --- The address as integers (GPU kernels; see the top of the file) ---------- */
+/* --- The address as integers (GPU kernels) ----------------------------------- */
+
+/*
+ * GPU kernels (SLH/DSA/sycl) keep an address as integers instead, the values of
+ * its fields (slhdsa_adrs_words), because an address written byte by byte at
+ * positions known only at run time would go to slow private memory. The same
+ * member functions of Table 1 act on the fields, and the hash functions read the
+ * address as words computed from the fields where they absorb them
+ * (slhdsa_adrsw_word, slhdsa_adrsw_lane, slhdsa_adrsw_c_word32 and
+ * slhdsa_adrsw_c_word64).
+ *
+ * tests/SLH-DSA/test_slhdsa_math.c checks them against the byte address: the
+ * same random sequences of member functions on both, with random and extreme
+ * values, give the same bytes, lanes, words and compressed words.
+ */
 
 /*
  * The fields of an address (Figure 2). The tree address is toByte(t, 12) of a
@@ -225,7 +225,7 @@ OPQC_INLINE uint32_t slhdsa_byte_swap32(uint32_t x)
 }
 
 /* ADRS[8k : 8k + 8] (0 <= k < 4) as a little-endian 64-bit integer: the lane k of the address that
- * SHAKE256 absorbs (Section 11.1) */
+ * SHAKE256 absorbs (Section 11.1; FIPS 202 reads its input in little-endian lanes) */
 OPQC_INLINE uint64_t slhdsa_adrsw_lane(const slhdsa_adrs_words *a, unsigned k)
 {
     return (uint64_t)slhdsa_byte_swap32(slhdsa_adrsw_word(a, 2 * k)) |
@@ -234,8 +234,11 @@ OPQC_INLINE uint64_t slhdsa_adrsw_lane(const slhdsa_adrs_words *a, unsigned k)
 
 /*
  * toInt(ADRS^c[4k : 4k + 4], 4) for 0 <= k < 6, with ADRS^c = ADRS[3] || ADRS[8 : 16] || ADRS[19] ||
- * ADRS[20 : 32] (Section 11.2) followed by two zero bytes (word 5 holds ADRS^c[20 : 22]). ADRS[3] and
- * ADRS[19] are the low bytes of the layer address and the type; ADRS[8 : 16] is the tree address t.
+ * ADRS[20 : 32] (Section 11.2) followed by two zero bytes (word 5 holds ADRS^c[20 : 22]): the
+ * big-endian words of ADRS^c that SHA-256 absorbs. ADRS^c has 22 bytes, so its last word is completed
+ * with zero bytes (the bytes that follow ADRS^c in the hash input take their place in the caller).
+ * ADRS[3] and ADRS[19] are the low bytes of the layer address and the type; ADRS[8 : 16] is the tree
+ * address t.
  */
 OPQC_INLINE uint32_t slhdsa_adrsw_c_word32(const slhdsa_adrs_words *a, unsigned k)
 {

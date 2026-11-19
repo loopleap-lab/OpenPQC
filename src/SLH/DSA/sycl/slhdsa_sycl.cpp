@@ -3,138 +3,23 @@
 //
 // slhdsa_sycl.cpp  --  batched SLH-DSA (FIPS 205) on GPUs with SYCL 2020
 //
-// Runs many independent SLH-DSA operations at once on a SYCL device (NVIDIA and Intel GPUs,
-// CPUs), compiled with Intel DPC++ or AdaptiveCpp, for all twelve parameter sets of Table 2. The
-// results are byte-identical to the CPU library (SLH/DSA/openpqc_slhdsa.h).
+// Runs many independent SLH-DSA operations at once on a SYCL device (NVIDIA and Intel GPUs, CPUs), compiled
+// with Intel DPC++ or AdaptiveCpp, for all twelve parameter sets of Table 2, with results byte-identical to the
+// CPU library (SLH/DSA/openpqc_slhdsa.h). The mathematics is the C11 math core that the CPU library runs
+// (Core/opqc_keccak.h, Core/opqc_sha2.h through Core/sycl/opqc_sycl_sponge.hpp and opqc_sycl_sha2.hpp, and
+// SLH/DSA/math); this file decides who computes what.
 //
-// The mathematics is the C11 math core -- Core/opqc_keccak.h, Core/opqc_sha2.h (through
-// Core/sycl/opqc_sycl_sponge.hpp and opqc_sycl_sha2.hpp) and SLH/DSA/math -- the code the CPU library
-// runs. This file decides who computes what. The hash functions of Section 11 are written once per
-// family (Hashes<P> below); a kernel keeps an address ADRS as integers (math/slhdsa_address.h,
-// slhdsa_adrs_words) and n-byte values as n/8 little-endian 64-bit lanes, their form in memory; the
-// SHA2 sets start every PRF, F, H and T_l from the state after PK.seed || toByte(0, 64 - n) (and
-// 128 - n for SHA-512), computed once per key and launch: that block depends only on PK.seed, which
-// is public, and every call hashes the bytes that Section 11.2 gives it, continuing from a copy of the
-// state. Nothing derived from a secret is kept that way: PRF_msg hashes HMAC's key blocks, from
-// SK.prf, in every call.
-//
-// Stages. Every operation is a short sequence of kernels on one in-order queue, with no host wait:
-//
-//   KeyGen (Algorithm 18; key generation is the top XMSS tree, xmss_node(SK.seed, 0, h', ...)):
-//     seed_states      SHA2: the PK.seed states, one work-item per key                     (D1)
-//     wots_chains      one work-item per WOTS+ chain of every leaf of the tree: PRF, then w - 1 F
-//                      (Algorithm 6, lines 4-9, of Algorithm 9, line 4)
-//     wots_leaves      one work-item per leaf: T_len of its chain ends (Algorithm 6, lines 10-13)
-//     xmss_trees       one team per tree: the H of Algorithm 9, lines 6-11, level by level -> PK.root
-//     keygen_finish    one work-item per key: SK and PK (Algorithm 18, line 4)
-//
-//   Sign (Algorithm 19; with Algorithms 22 and 23 around it):
-//     seed_states      as above, once per key
-//     message_digest   one work-item per signature: R <- PRF_msg (lines 2-4) into SIG,
-//                      digest <- H_msg (line 5), and from it idx_tree, idx_leaf (lines 6-10) and
-//                      the FORS indices (Algorithm 16, line 2), into the workspace
-//     fors_leaves      one work-item per FORS leaf of all k trees: fors_skGen and F (Algorithm 15,
-//                      lines 1-5); the signed leaf's secret value goes into SIG_FORS (Alg. 16, l. 4)
-//     fors_trees       one team per FORS tree: the H of Algorithm 15, lines 6-11, the authentication
-//                      path (Algorithm 16, lines 5-9) and the root (Algorithm 17, line 19)
-//     fors_pk          one work-item per signature: PK_FORS <- T_k of the k roots (Alg. 17, l. 21-24)
-//     the hypertree (Algorithm 12), "layer-parallel": the trees of all d layers are built at once,
-//     since every layer's tree address and leaf index follow from the digest (lines 6-10), and the
-//     root that layer j signs is the root of the tree below, which xmss_node computes as well as
-//     xmss_pkFromSig does: the same values as the layer-by-layer order of Algorithm 12, so the
-//     signatures are byte-identical:
-//     wots_chains      all leaves of all d layers' trees, one work-item per chain
-//     wots_leaves      one work-item per leaf: T_len
-//     xmss_trees       one team per tree (d per signature): the authentication paths (Algorithm 10,
-//                      lines 1-4) and the roots (Algorithm 12, lines 5 and 14)
-//     wots_digits      one work-item per layer and signature: the base-w digits of the message the layer signs
-//                      (PK_FORS for layer 0, the root of layer j - 1 for layer j; Alg. 7, lines 1-7)
-//     wots_sign        one work-item per chain of the d signing leaves: the WOTS+ signatures
-//                      (Algorithm 7, lines 8-15; Algorithm 10, lines 5-7), the chains computed again
-//                      up to the digit
-//
-//   Verify (Algorithm 20; with Algorithms 24 and 25 around it):
-//     seed_states, message_digest (H_msg only: R is SIG[0 : n], line 5, 8-13)
-//     verify_fors      one work-item per FORS tree: F and the a H of Algorithm 17, lines 3-19
-//     verify_ht        one work-item per signature: T_k (Algorithm 17, lines 21-24), then the d
-//                      layers of ht_verify (Algorithm 13) one after the other -- the message of
-//                      layer j is the root computed at layer j - 1 -- each wots_pkFromSig
-//                      (Algorithm 8) and the path of xmss_pkFromSig (Algorithm 11), and the
-//                      comparison with PK.root (Algorithm 13, lines 13-17)
-//
-// Launch shapes. Stages without a "team" run one work-item per unit (for_each_item, work-groups of
-// HASH_GROUP). The tree stages (fors_trees, xmss_trees; tree_stage below) run one team per tree, of
-// min(2^height, TREE_TEAM) work-items. The leaves lie in the workspace (the s-set FORS trees, of 64 to
-// 512 KiB, do not fit into local memory, and the XMSS leaves come from another kernel anyway). Work-item
-// g first reduces its own block of 2^height / team consecutive leaves in place in the workspace (the
-// lower levels; no barrier), then the team reduces the team's block roots in local memory, level by
-// level with barriers (the upper levels). The authentication-path node of each level is copied into the
-// signature by the work-item that holds it. Local memory per work-group: (2 team - 1) n bytes per team,
-// at most about 8 KiB; create checks it against info::device::local_mem_size.
-//
-// Workspace (struct Workspace, section_bytes): per operation, in sections. Secret: the coins of the
-// randomized calls, the FORS leaves and the WOTS+ chain ends (SCRATCH), and the XMSS leaves (NODES).
-// Public, but zeroized all the same, as Verify's intermediate values are (FIPS 205, Section 3.1): the
-// PK.seed states, the digest and its parts, the roots (PK_FORS, the d layer roots and the k FORS roots,
-// all of which a verifier recomputes from the signature), the WOTS+ digits and Verify's chain ends.
-// Every section a call used is zeroized after every chunk; the whole workspace once the context has
-// failed (the first call or sync that finds the failure: Core/sycl/opqc_sycl_context.hpp, Context::check)
-// and on destroy; the tree stages clear their local memory before they end.
-//
-// What is public, and what the kernels branch on. Secret: SK.seed, SK.prf, addrnd, the PRF outputs,
-// the chain values below the signed digits, the FORS leaves and nodes that the signature does not
-// reveal. Public: the digest and everything taken from it (idx_tree, idx_leaf, the FORS indices), R, the
-// roots and the WOTS+ digits (they follow from the signature). Control flow and memory indices depend on
-// public values only (which work-item writes an authentication-path node, how far a chain runs in
-// wots_sign and Verify); secrets only enter hash functions.
-//
-// Variants for the planned optimisation experiments E1 to E6 (docs/GPU_ACCELERATION.md, Section 10.6; in
-// parentheses, the hypotheses from the GPU literature that each tests), as compile-time macros
-// OPENPQC_SLHDSA_SYCL_<NAME>, each byte-identical. This baseline (E0) is built so that each is a change
-// of one stage or of the sequence in sign() / verify():
-//   E1 (H2, H2b, H3)  the stages take a range of layers (first, layers): the layer-sequential order of
-//                     Algorithm 12 is the loop over j of wots_digits, wots_chains, wots_leaves and
-//                     xmss_trees for one layer each, with wots_chains capturing the signed chain value
-//                     (its digit is known then) instead of wots_sign; one work-item per leaf (T_len
-//                     streamed) replaces wots_chains + wots_leaves
-//   E2 (H4, H11)      TREE_TEAM (OPENPQC_SLHDSA_SYCL_TREE_TEAM) sets the team and block sizes of the tree
-//                     stages; a FORS subtree per work-item in fors_leaves would shrink SCRATCH
-//   E3 (H6, H7)       the hash functions are all in Hashes<P>: specialised F / H / PRF go there
-//   E4 (H5)           one_key passes Keys with stride 0; the top layer (layer d - 1) is the same tree
-//                     for every signature under one key, so a variant runs it for one operation and
-//                     copies its authentication path
-//   E5 (H8, H9)       verify() is message_digest, verify_fors and verify_ht; a team per signature replaces
-//                     verify_ht
-//   E6 (H10)          sign() can end with Verify's message_digest (H_msg only), verify_fors and verify_ht on
-//                     the new signatures
-//
-// Toolchain rules, each against wrong or slow device code that the toolchains made of other forms:
-// kernels, helpers and inner lambdas OPQC_KERNEL_INLINE (DPC++ compiled a large kernel body as a function
-// of its own, with its arrays on the stack); register arrays indexed with compile-time indices only (a
-// run-time index puts the array on the stack; the hash inputs of T_l, H_msg and PRF_msg are read from
-// memory, since those loops over blocks are not unrolled); no register array kept across a barrier
-// (AdaptiveCpp's OpenMP backend computed wrong values from one; the tree stages re-read what they need
-// after each); every output word written once (AdaptiveCpp's CUDA path and Intel's GPU compiler lost bits
-// of bytes in device memory that neighbouring values were ORed into); no shift by 64 (undefined; idx_tree
-// has 64 bits for SLH-DSA-*-256f).
-
-//
-// FIPS 140-3 mode (OPENPQC_FIPS140_3), as the other two backends and the CPU library do it: create runs a
-// known-answer self-test of the context's parameter set on the device (self_test: one KeyGen, one
-// deterministic signature, and the verification of it and of a tampered copy, against the CPU library's
-// answers), and fails with OPENPQC_ERR_SELF_TEST if the device computes a wrong result (FIPS 140-3 asks a
-// module to test an algorithm before it uses it, IG 10.3.A, and the compilers of device code have been seen
-// to miscompile code like this); and KeyGen tests every key pair it makes (keygen_pct: a signature of the
-// empty message that must verify), as the CPU library's OPENPQC_SLHDSA_KEYGEN_PCT does. Every pair must be
-// counted as passed: if one pair fails, or a part of the test does not run, the whole call fails, every key
-// of it is zeroized, and it returns OPENPQC_ERR_PCT. A build outside FIPS mode has neither: only test objects
-// compiled with OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST and OPENPQC_SLHDSA_KEYGEN_PCT have them.
+// Secrets: SK.seed, SK.prf, addrnd, the PRF outputs, the chain values below the signed digits and the FORS leaves
+//          and nodes that the signature does not reveal. They only enter hash functions: control flow and memory
+//          indices depend on public values (the digest and what is taken from it, R, the roots, the WOTS+ digits).
+// Design:  ../README.md, "GPU backend (`sycl/`)".
 
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
 
-// Whether create runs the known-answer self-test (self_test): in FIPS 140-3 mode (a module tests every
-// algorithm it offers before it uses it, IG 10.3.A), and where the developer definition
+// Whether create runs the known-answer self-test (self_test): in FIPS 140-3 mode, as the other two backends and
+// the CPU library do it (a module tests every algorithm it offers before it uses it, IG 10.3.A, and the compilers
+// of device code have been seen to miscompile code like this), and where the developer definition
 // OPENPQC_SLHDSA_SYCL_CREATE_SELF_TEST is given (the white-box test test_slhdsa_sycl_faults; no target of the
 // libraries defines it). Without it, the self-test and its answers are not compiled at all, so that no library of
 // an ordinary build holds them (test gpu_self_test).
@@ -187,6 +72,15 @@ using core::SHAKE256_RATE_WORDS;
 using core::store64;
 using core::workspace;
 
+// Toolchain rules for the device code below, each against wrong or slow device code that the toolchains made of
+// other forms: kernels, helpers and inner lambdas OPQC_KERNEL_INLINE (DPC++ compiled a large kernel body as a
+// function of its own, with its arrays on the stack); register arrays indexed with compile-time indices only (a
+// run-time index puts the array on the stack; the hash inputs of T_l, H_msg and PRF_msg are read from memory,
+// since those loops over blocks are not unrolled); no register array kept across a barrier (AdaptiveCpp's OpenMP
+// backend computed wrong values from one; the tree stages re-read what they need after each); every output word
+// written once (AdaptiveCpp's CUDA path and Intel's GPU compiler lost bits of bytes in device memory that
+// neighbouring values were ORed into); no shift by 64 (undefined; idx_tree has 64 bits for SLH-DSA-*-256f).
+
 // ------------------------------------------------------------------ shapes
 
 // The types of address (Section 4.2, footnote 5)
@@ -195,7 +89,9 @@ constexpr std::uint32_t WOTS_HASH = SLHDSA_WOTS_HASH, WOTS_PK = SLHDSA_WOTS_PK, 
                         FORS_PRF = SLHDSA_FORS_PRF;
 
 constexpr unsigned HASH_GROUP = 128;   // work-group size of the stages with one work-item per unit
-// Work-items per tree (at most) in the tree stages, a power of two; also their work-group size
+// Work-items per tree (at most) in the tree stages, a power of two; also their work-group size. For experiment
+// E2 (H4, H11): OPENPQC_SLHDSA_SYCL_TREE_TEAM sets the team and block sizes of the tree stages; a FORS subtree
+// per work-item in fors_leaves would shrink SCRATCH.
 #if defined(OPENPQC_SLHDSA_SYCL_TREE_TEAM)   // for experiments
 constexpr unsigned TREE_TEAM = OPENPQC_SLHDSA_SYCL_TREE_TEAM;
 #else
@@ -230,7 +126,12 @@ constexpr bool KEYGEN_PCT = false;
 
 // ------------------------------------------------------------------ workspace
 
-// Device workspace: struct of arrays over the operations of one launch (sizes in section_bytes)
+// Device workspace: struct of arrays over the operations of one launch (sizes in section_bytes), in sections,
+// each secret or public as marked. The public ones are zeroized all the same, as Verify's intermediate values are
+// (FIPS 205, Section 3.1); the roots (PK_FORS, the d layer roots and the k FORS roots) are all values that a
+// verifier recomputes from the signature. Every section a call used is zeroized after every chunk (chunked); the
+// whole workspace once the context has failed (the first call or sync that finds the failure:
+// Core/sycl/opqc_sycl_context.hpp, Context::check) and on destroy.
 struct Workspace {
     std::uint8_t* coins;     // 3n B: SK.seed || SK.prf || PK.seed, or addrnd (opqc_randombytes) secret
     std::uint8_t* seeds;     // 96 B per key: the SHA-256 and SHA-512 states after PK.seed (SHA2)  public
@@ -340,7 +241,9 @@ OPQC_KERNEL_INLINE inline void store_local(std::uint64_t* p, const Node<N>& x) {
 // Where the stages find the keys of their operations: the key of operation op is at base + op * stride
 // (stride 0: one key for all operations, the _one_key functions), with its parts at the given offsets
 // (Figures 15 and 16). Secret keys for Sign, public keys for Verify, the seeds SK.seed || SK.prf || PK.seed
-// for KeyGen.
+// for KeyGen. For experiment E4 (H5): one_key passes Keys with stride 0; the top layer (layer d - 1) is the same
+// tree for every signature under one key, so a variant would run it for one operation and copy its
+// authentication path.
 struct Keys {
     const std::uint8_t* base;
     std::size_t stride;
@@ -377,7 +280,8 @@ OPQC_KERNEL_INLINE inline Seed seed_of(const Workspace& w, const Keys& keys, std
 // F, H, PRF and T_l of one family, on values in registers (F, H) or in memory (T_l: the loop over its
 // blocks is not unrolled, so its input is read from memory, as the PK.seed of SHAKE). PRF(PK.seed,
 // SK.seed, ADRS) is F(PK.seed, ADRS, SK.seed): the same function of PK.seed, ADRS and an n-byte string in
-// both families (Sections 11.1, 11.2.1, 11.2.2).
+// both families (Sections 11.1, 11.2.1, 11.2.2). The hash functions of Section 11 are written once per
+// family. For experiment E3 (H6, H7): the hash functions are all here, so specialised F / H / PRF would go here.
 template <class P, HashFamily = P::family>
 struct Hashes;
 
@@ -568,7 +472,9 @@ OPQC_KERNEL_INLINE inline Position layer_position(Position p, unsigned j) {
 // The states after PK.seed || toByte(0, 64 - n) (SHA-256) and, for n = 24 and 32, after
 // PK.seed || toByte(0, 128 - n) (SHA-512) of `count` keys: the first block of every PRF, F, H and T_l
 // (Sections 11.2.1, 11.2.2), the same for all calls under one key, and public, as PK.seed is: computed once
-// per key and launch and kept in a public section of the workspace
+// per key and launch and kept in a public section of the workspace. Every call hashes the bytes that Section
+// 11.2 gives it, continuing from a copy of the state. Nothing derived from a secret is kept that way: PRF_msg
+// hashes HMAC's key blocks, from SK.prf, in every call.
 template <class P>
 void seed_states(sycl::queue& q, const Workspace& ws, Keys keys, std::size_t count) {
     if constexpr (P::family == HashFamily::sha2) {
@@ -770,10 +676,12 @@ void fors_leaves(sycl::queue& q, const Workspace& ws, std::uint8_t* sig, Keys ke
 
 // ---- trees
 
-// The shape of a tree stage for trees of height Height (see the top of the file): teams of `team`
-// work-items, `teams` per work-group; work-item g reduces leaves g block .. (g + 1) block - 1 to the node
-// of height block_levels, and the team the remaining team_levels levels in local memory, where level z
-// of the team's part (z = 0: the block roots) holds team >> z nodes from node offset(z) on
+// The shape of a tree stage for trees of height Height (tree_stage): teams of `team` = min(2^Height,
+// TREE_TEAM) work-items, `teams` per work-group; work-item g reduces leaves g block .. (g + 1) block - 1 to
+// the node of height block_levels, and the team the remaining team_levels levels in local memory, where
+// level z of the team's part (z = 0: the block roots) holds team >> z nodes from node offset(z) on. Local
+// memory per work-group: (2 team - 1) n bytes per team, at most about 8 KiB; create checks it against
+// info::device::local_mem_size.
 template <unsigned N, unsigned Height>
 struct TreeShape {
     static_assert(Height >= 1, "a tree of height 0 is a leaf");
@@ -805,6 +713,14 @@ struct TreeJob {
 // (first >> z) + s in ADRS (for FORS, i 2^(a - z) + s); and the authentication path of leaf idx, the
 // sibling (idx >> z) xor 1 of its ancestor at every height z < Height (Algorithm 10, lines 1-4; Algorithm
 // 16, lines 5-8), which every work-item computes in the same way as a node.
+//
+// One team per tree (TreeShape). The leaves lie in the workspace (the s-set FORS trees, of 64 to 512 KiB, do
+// not fit into local memory, and the XMSS leaves come from another kernel anyway). Work-item g first reduces
+// its own block of 2^Height / team consecutive leaves in place in the workspace (the lower levels; no
+// barrier), then the team reduces the team's block roots in local memory, level by level with barriers (the
+// upper levels). The authentication-path node of each level is copied into the signature by the work-item
+// that holds it, which idx decides (public: it comes from the digest). The team clears its local memory
+// before the kernel ends.
 template <class P, unsigned Height, class Job>
 void tree_stage(sycl::queue& q, std::size_t trees, Job job) {
     using T = TreeShape<P::n, Height>;
@@ -914,7 +830,11 @@ void fors_pk(sycl::queue& q, const Workspace& ws, Keys keys, std::size_t n) {
 // ------------------------------------------------------------------ the hypertree
 
 // The XMSS trees of layers first .. first + layers - 1 of every operation: their tree addresses come from
-// the digest (Algorithm 12, lines 6-10), or are 0 (KeyGen: digest == nullptr, layer d - 1 only).
+// the digest (Algorithm 12, lines 6-10), or are 0 (KeyGen: digest == nullptr, layer d - 1 only). For
+// experiment E1 (H2, H2b, H3): the stages take a range of layers (first, layers): the layer-sequential order
+// of Algorithm 12 would be the loop over j of wots_digits, wots_chains, wots_leaves and xmss_trees for one
+// layer each, with wots_chains capturing the signed chain value (its digit is known then) instead of
+// wots_sign; one work-item per leaf (T_len streamed) would replace wots_chains + wots_leaves.
 struct Layers {
     const std::uint8_t* digest;   // the digest section, or nullptr
     unsigned first, count;
@@ -1054,8 +974,8 @@ void wots_digits(sycl::queue& q, const Workspace& ws, std::size_t n) {
 }
 
 // The WOTS+ signatures of the d signing leaves (Algorithm 7, lines 8-15, in xmss_sign: Algorithm 10, lines
-// 5-7), one work-item per chain: chain(sk, 0, msg[i]) of the digits of wots_digits, into the XMSS signature
-// of each layer
+// 5-7), one work-item per chain: chain(sk, 0, msg[i]) of the digits of wots_digits, the chain computed again
+// up to the digit, into the XMSS signature of each layer
 template <class P>
 void wots_sign(sycl::queue& q, const Workspace& ws, std::uint8_t* sig, Keys keys, std::size_t n) {
     using S = Sizes<P>;
@@ -1227,6 +1147,13 @@ void keygen_finish(sycl::queue& q, const Workspace& ws, std::uint8_t* pk_base, s
 
 // ------------------------------------------------------------------ operations
 
+// Every operation is a short sequence of kernels (the stages above) on one in-order queue, with no host wait.
+// This is the baseline (E0) of the planned optimisation experiments E1 to E6 (docs/GPU_ACCELERATION.md, Section
+// 10.6), built so that each would be a change of one stage or of the sequence in sign() / verify(), as a
+// compile-time macro OPENPQC_SLHDSA_SYCL_<NAME>, each byte-identical. Where each would go is said at Layers
+// (E1), TREE_TEAM (E2), Hashes (E3), Keys (E4), verify (E5) and sign (E6), with the hypotheses from the GPU
+// literature that it tests in parentheses (docs/catalog/SLH-DSA.md, Section 10.6).
+
 // Called after every stage with the stage's name: the stage profiler (bench/gpu) waits there and takes the
 // time
 struct NoProbe {
@@ -1234,7 +1161,7 @@ struct NoProbe {
 };
 
 // KeyGen (Algorithm 18) of n keys from the seeds SK.seed || SK.prf || PK.seed (3n bytes each): the top XMSS
-// tree, layer d - 1, tree 0 (lines 1-3)
+// tree, layer d - 1, tree 0 (lines 1-3: xmss_node(SK.seed, 0, h', PK.seed, ADRS))
 template <class P, class Probe = NoProbe>
 void keygen(sycl::queue& q, const Workspace& ws, std::uint8_t* pk, std::uint8_t* sk, const std::uint8_t* seeds,
             std::size_t n, Probe probe = {}) {
@@ -1256,7 +1183,9 @@ void keygen(sycl::queue& q, const Workspace& ws, std::uint8_t* pk, std::uint8_t*
 }
 
 // Sign (Algorithm 19, lines 1-19) of n messages in the given form, with the secret keys `keys` (one per
-// signature, or one for all) and addrnd (n bytes per signature; nullptr: the deterministic variant)
+// signature, or one for all) and addrnd (n bytes per signature; nullptr: the deterministic variant). For
+// experiment E6 (H10): sign() could end with Verify's message_digest (H_msg only), verify_fors and verify_ht
+// on the new signatures.
 template <class P, class Probe = NoProbe>
 void sign(sycl::queue& q, const Workspace& ws, std::uint8_t* sig, Keys keys, MessageForm form,
           const std::uint8_t* addrnd, std::size_t n, Probe probe = {}) {
@@ -1273,7 +1202,10 @@ void sign(sycl::queue& q, const Workspace& ws, std::uint8_t* sig, Keys keys, Mes
     probe("FORS trees");
     fors_pk<P>(q, ws, keys, n);                                          // 16: fors_pkFromSig = T_k of the roots
     probe("FORS public key");
-    // 17-18: ht_sign (Algorithm 12), layer-parallel (see the top of the file)
+    // 17-18: ht_sign (Algorithm 12), layer-parallel: the trees of all d layers are built at once, since every
+    // layer's tree address and leaf index follow from the digest (lines 6-10), and the root that layer j signs
+    // is the root of the tree below, which xmss_node computes as well as xmss_pkFromSig does: the same values
+    // as the layer-by-layer order of Algorithm 12, so the signatures are byte-identical
     const Layers ly{ws.digest, 0, P::d, ws.scratch, Sp::scratch, ws.nodes, Sp::nodes};
     wots_chains<P>(q, ws, keys, ly, n);
     probe("WOTS+ chains");
@@ -1287,7 +1219,9 @@ void sign(sycl::queue& q, const Workspace& ws, std::uint8_t* sig, Keys keys, Mes
     probe("WOTS+ signatures");
 }
 
-// Verify (Algorithm 20, lines 4-18) of n signatures under `keys` (public keys), the results into status
+// Verify (Algorithm 20, lines 4-18) of n signatures under `keys` (public keys), the results into status. For
+// experiment E5 (H8, H9): verify() is message_digest, verify_fors and verify_ht; a team per signature would
+// replace verify_ht.
 template <class P, class Probe = NoProbe>
 void verify(sycl::queue& q, const Workspace& ws, const std::uint8_t* sig, Keys keys, MessageForm form,
             std::int32_t* status, std::size_t n, Probe probe = {}) {

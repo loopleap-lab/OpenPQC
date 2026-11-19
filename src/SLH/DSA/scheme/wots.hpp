@@ -1,18 +1,13 @@
 // wots.hpp  --  WOTS+, the Winternitz one-time signature scheme of SLH-DSA (FIPS 205, Section 5)
 //
-//   tmp <- chain(X, i, s, PK.seed, ADRS)              Algorithm 5
-//   pk <- wots_pkGen(SK.seed, PK.seed, ADRS)          Algorithm 6
-//   sig <- wots_sign(M, SK.seed, PK.seed, ADRS)       Algorithm 7
-//   pk_sig <- wots_pkFromSig(sig, M, PK.seed, ADRS)   Algorithm 8
+// Algorithms 5-8. A WOTS+ key has len chains of w - 1 applications of F each; the signature on
+// an n-byte message M holds, for each base-w digit of M and of its checksum, the chain value at
+// that position (Figure 10: len n-byte strings).
 //
-// A WOTS+ key has len chains of w - 1 applications of F each; the signature on
-// an n-byte message M holds, for each base-w digit of M and of its checksum,
-// the chain value at that position (Figure 10: len n-byte strings).
-//
-// Constant time. The secret values (PRF outputs) and the chain values below
-// the signed positions are secret; the chain lengths msg[i] are digits of M,
-// which in SLH-DSA is a FORS public key or an XMSS root, both public (they
-// follow from the signature), so the loops may depend on them.
+// Secrets: the secret values (PRF outputs) and the chain values below the signed positions. The
+//          chain lengths msg[i] are digits of M, which in SLH-DSA is a FORS public key or an XMSS
+//          root, both public (they follow from the signature), so the loops may depend on them.
+// Design:  ../README.md, "FIPS 205 in the code".
 #pragma once
 
 #include <array>

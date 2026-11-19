@@ -6,23 +6,10 @@
 // The compiled file of SLH-DSA's library (slhdsa_testing.cpp has the testing
 // interfaces, in OpenPQC::testing): it instantiates the templates of
 // scheme/slh_dsa.hpp for the twelve parameter sets and exports them under the
-// C names. Each function turns its pointer arguments into spans.
+// C names. In FIPS 140-3 mode (OPENPQC_FIPS140_3; Core/opqc_fips.h) every
+// function is a service of the module, run by fips_service.
 //
-// Outputs on failure (openpqc_slhdsa.h, Results): every check that can fail
-// (ctx, ph, the RNG) runs before anything is written to sig, pk or sk, so a
-// failure leaves them unchanged; only a failed pair-wise consistency test
-// after KeyGen zeroizes pk and sk (scheme/slh_dsa.hpp). The check of ph below
-// comes before any write as well. In FIPS 140-3 mode, a call during which the
-// module enters its error state zeroizes its outputs instead (fips_service
-// below).
-//
-// FIPS 140-3 mode (OPENPQC_FIPS140_3; Core/opqc_fips.h): every function is a
-// service of the module, run by fips_service below, which checks the module's
-// state before and after the call, sets the approved-service indicator last,
-// and puts the module in its error state when a key generation fails its
-// pair-wise consistency test. HashSLH-DSA with a pre-hash weaker than the
-// parameter set is a service that is not approved (prehash_approved). The
-// ordinary build compiles exactly the calls it compiled before.
+// Design: README.md, "C and C++ APIs".
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
 
@@ -59,6 +46,13 @@ openpqc_status result(Status s) {
     return static_cast<openpqc_status>(s);
 }
 
+// The functions of the C API for one parameter set. Each turns its pointer arguments into spans.
+//
+// Outputs on failure (openpqc_slhdsa.h, Results): every check that can fail (ctx, ph, the RNG) runs before
+// anything is written to sig, pk or sk, so a failure leaves them unchanged; only a failed pair-wise
+// consistency test after KeyGen zeroizes pk and sk (scheme/slh_dsa.hpp). The check of ph below comes before
+// any write as well. In FIPS 140-3 mode, a call during which the module enters its error state zeroizes its
+// outputs instead (fips_service).
 template <ParameterSet P>
 struct CApi {
     using S = Sizes<P>;
@@ -236,6 +230,7 @@ openpqc_status fips_service(bool approved, Call call, Zeroize zeroize) {
     return fips_service<Kind::kind>(                                                                             \
             approved, [&]() -> openpqc_status { return __VA_ARGS__; }, [&]() { zeroize_outputs outputs; })
 #else
+// The ordinary build: the call alone
 #define OPENPQC_SLHDSA_SERVICE(kind, approved, outputs, ...) return __VA_ARGS__
 #endif
 

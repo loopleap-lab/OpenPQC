@@ -5,45 +5,11 @@
 //
 // Header-only wrapper over the C API in SLH/DSA/openpqc_slhdsa.h, so that
 // including it does not pull in the algorithms (those are in SLH/DSA/scheme/,
-// compiled once in SLH/DSA/slhdsa.cpp). Sizes are part of the types, and sk is
-// an openpqc::secret<N>, which zeroizes itself (openpqc/common.hpp):
+// compiled once in SLH/DSA/slhdsa.cpp). Sizes are part of the types, and every
+// function returns an openpqc::status and is [[nodiscard]].
 //
-//   using DSA = openpqc::SLH_DSA_SHAKE_128f;       // openpqc/openpqc.hpp; = openpqc::slhdsa::SLHDSA_SHAKE_128f
-//   DSA::public_key pk;  DSA::secret_key sk;  DSA::signature sig;
-//   openpqc::check(DSA::keygen(pk, sk));            // randomness from opqc_randombytes (below)
-//   openpqc::check(DSA::sign(sig, message, sk));    // hedged; optional context string last
-//   bool valid = DSA::verify(sig, message, pk) == openpqc::status::ok;    // ok and only ok: valid
-//   openpqc::check(DSA::sign_deterministic(sig, message, sk));            // the deterministic variant
-//   openpqc::check(DSA::prehash_sign(sig, message, openpqc::PreHash::SHA2_512, sk));   // HashSLH-DSA
-//
-// Every function returns an openpqc::status and is [[nodiscard]]. The
-// *_deterministic functions are the deterministic variant of FIPS 205 (Section
-// 9.2: opt_rand = PK.seed). Key generation from given seeds, signing with
-// addrnd given and the internal functions of Section 9 are for testing only, in
-// openpqc/testing.hpp.
-//
-// keygen and the hedged signing functions (sign, prehash_sign) draw the seeds or addrnd
-// through Core's opqc_randombytes (Core/opqc_platform.h): from the source that the
-// application registered with opqc_set_randombytes, else, in a library built with the
-// CMake option OPENPQC_EXTERNAL_RANDOMBYTES, from the application's
-// opqc_external_randombytes, else from the operating system (the default). In FIPS
-// 140-3 mode they come from the module's own HMAC_DRBG, and registering another
-// source is refused.
-//
-// In FIPS 140-3 mode (openpqc_slhdsa.h, "FIPS 140-3 mode") this C++ API is not part
-// of the module: it is compiled into the application, and each of its functions is
-// one call of one service of the C API, so the approved-service indicator
-// (openpqc_fips_service_approved, openpqc/fips.h) read right after it is that
-// service's. The pre-hash functions named below (prehash, prehash_oid,
-// prehash_bytes) run as the application's own code, outside the module.
-//
-// Signatures are up to 49,856 bytes (SLH-DSA-*-256f), which is a lot for a
-// stack: callers that sign on small thread stacks may prefer to hold
-// them elsewhere. Each function also needs about 35 KiB of stack below the
-// call (with OPENPQC_SLHDSA_KEYGEN_PCT, keygen needs a signature's size more:
-// up to 84 KiB, SLH-DSA-*-256f), and the signature may overlap the message and
-// the context string but not the secret key: see "Buffers" and "Stack" in
-// openpqc_slhdsa.h.
+// Secrets: sk is an openpqc::secret<N>, which zeroizes itself (openpqc/common.hpp).
+// Design:  README.md, "C and C++ APIs".
 #pragma once
 
 #include <array>
@@ -57,7 +23,8 @@
 
 namespace openpqc::slhdsa {
 
-// The pre-hash functions of HashSLH-DSA are Core's (Core/prehash.hpp), shared with HashML-DSA
+// The pre-hash functions of HashSLH-DSA are Core's (Core/prehash.hpp), shared with HashML-DSA. In FIPS 140-3
+// mode, prehash, prehash_oid and prehash_bytes run as the application's own code, outside the module.
 using openpqc::max_prehash_bytes;
 using openpqc::PreHash;
 using openpqc::prehash;
@@ -105,7 +72,18 @@ OPENPQC_SLHDSA_CXX_API(shake_256f, SHAKE_256F)
 
 } // namespace detail
 
-// Set is a set id OPENPQC_SLHDSA_<SET> (1-12, in the order of FIPS 205, Table 2)
+// Set is a set id OPENPQC_SLHDSA_<SET> (1-12, in the order of FIPS 205, Table 2).
+//
+// Each function needs about 35 KiB of stack below the call (with OPENPQC_SLHDSA_KEYGEN_PCT, keygen needs a
+// signature's size more: up to 84 KiB, SLH-DSA-*-256f), and the signature may overlap the message and the
+// context string but not the secret key: see "Buffers" and "Stack" in openpqc_slhdsa.h. Key generation from
+// given seeds, signing with addrnd given and the internal functions of Section 9 are for testing only, in
+// openpqc/testing.hpp.
+//
+// In FIPS 140-3 mode (openpqc_slhdsa.h, "FIPS 140-3 mode") this C++ API is not part of the module: it is
+// compiled into the application, and each of its functions is one call of one service of the C API, so the
+// approved-service indicator (openpqc_fips_service_approved, openpqc/fips.h) read right after it is that
+// service's.
 template <int Set>
 struct SLHDSA {
     using api = detail::api<Set>;
@@ -122,6 +100,8 @@ struct SLHDSA {
 
     using public_key = std::array<std::uint8_t, public_key_bytes>;
     using secret_key = openpqc::secret<secret_key_bytes>;
+    // Up to 49,856 bytes (SLH-DSA-*-256f), which is a lot for a stack: callers that sign on small thread
+    // stacks may prefer to hold signatures elsewhere.
     using signature = std::array<std::uint8_t, signature_bytes>;
     using seed = openpqc::secret<seed_bytes>;
     using randomness = std::array<std::uint8_t, randomness_bytes>;
@@ -130,7 +110,12 @@ struct SLHDSA {
     using sk_in = std::span<const std::uint8_t, secret_key_bytes>;
     using sig_out = std::span<std::uint8_t, signature_bytes>;
 
-    // slh_keygen, FIPS 205 Algorithm 21 (the seeds from opqc_randombytes, above)
+    // slh_keygen, FIPS 205 Algorithm 21. keygen and the hedged signing functions (sign, prehash_sign) draw the
+    // seeds or addrnd through Core's opqc_randombytes (Core/opqc_platform.h): from the source that the
+    // application registered with opqc_set_randombytes, else, in a library built with the CMake option
+    // OPENPQC_EXTERNAL_RANDOMBYTES, from the application's opqc_external_randombytes, else from the operating
+    // system (the default). In FIPS 140-3 mode they come from the module's own HMAC_DRBG, and registering
+    // another source is refused.
     [[nodiscard]] static status keygen(std::span<std::uint8_t, public_key_bytes> pk,
                                        std::span<std::uint8_t, secret_key_bytes> sk) {
         return to_status(api::keygen(pk.data(), sk.data()));
@@ -144,6 +129,7 @@ struct SLHDSA {
     }
 
     // slh_sign, Algorithm 22: hedged (addrnd from opqc_randombytes, above), and the deterministic variant
+    // (Section 9.2: opt_rand = PK.seed)
     [[nodiscard]] static status sign(sig_out sig, bytes message, sk_in sk, bytes ctx = {}) {
         return to_status(api::sign(sig.data(), message.data(), message.size(), ctx.data(), ctx.size(), sk.data()));
     }

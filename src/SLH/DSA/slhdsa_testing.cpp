@@ -6,10 +6,12 @@
 // slh_keygen_internal of given seeds (Algorithm 18), signing with addrnd given, and slh_sign_internal and
 // slh_verify_internal on a formatted message M' (Algorithms 19 and 20): FIPS 205, Section 9, says that, "other than
 // for testing purposes", the interfaces of key generation and signing of that section "should not be made
-// available to applications", so they are compiled apart from the library openpqc, which never contains them
-// (review finding M13). Built with the same definitions as slhdsa.cpp (src/SLH/DSA/CMakeLists.txt), so that
-// the two agree. A NULL seed or addrnd is refused with OPENPQC_ERR_INVALID_ARGUMENT: these functions never pick a
-// value. The deterministic variant is addrnd = PK.seed (Algorithm 19, line 2), the bytes sk + 2n.
+// available to applications", so they are compiled apart from the library openpqc, which never contains them.
+// Built with the same definitions as slhdsa.cpp (src/SLH/DSA/CMakeLists.txt), so that the two agree. A NULL seed
+// or addrnd is refused with OPENPQC_ERR_INVALID_ARGUMENT: these functions never pick a value. The deterministic
+// variant is addrnd = PK.seed (Algorithm 19, line 2), the bytes sk + 2n.
+//
+// Design: README.md, "C and C++ APIs".
 // Compiled as part of the library: the header-only C++ layers it uses get the library's names (Core/abi.hpp).
 #define OPENPQC_LIBRARY_TRANSLATION_UNIT 1
 
