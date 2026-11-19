@@ -4,15 +4,25 @@
 else uses; what every scheme shares is in `src/Core`. The rule is the same at both levels: a primitive lives at
 the lowest level that all its users can see, and it is written once.
 
-| What | File | Used by |
+## Files
+
+| File | Layer | Contents |
 |---|---|---|
-| The bit packing of both standards: 8 integers of d bits to and from d bytes, least significant bit first | `math/ml_bitpack.h` (`ml_pack8`, `ml_unpack8`), C11, header-only | FIPS 203 ByteEncode_d / ByteDecode_d (Algorithms 5, 6) in `KEM/math/mlkem_encode.h`; FIPS 204 SimpleBitPack, BitPack and their inverses (Algorithms 16–19) in `DSA/math/mldsa_encode.h`; the GPU kernels of both, one 8-coefficient chunk per work-item |
+| [`math/ml_bitpack.h`](math/ml_bitpack.h) | math core, C11, header-only | The bit packing of both standards: 8 integers of d bits to and from d bytes, least significant bit first (`ml_pack8`, `ml_unpack8`) |
+
+The schemes have READMEs of their own: [`KEM/`](KEM/README.md) and [`DSA/`](DSA/README.md).
 
 Both standards turn 256 integers into bytes the same way (FIPS 203 §4.2.1 through BitsToBytes, FIPS 204 §7.1 through
 IntegerToBits and BitsToBytes). Eight integers of d bits fill exactly d bytes, so a polynomial is 32 independent
 chunks; `ml_pack8` and `ml_unpack8` encode and decode one chunk, for d from 1 to 24 (ML-KEM uses 1–12, ML-DSA 3–20).
 `tests/ML-KEM/test_mlkem_math.c` and `tests/ML-DSA/test_mldsa_math.c` check both standards' functions against
 bit-by-bit transcriptions of the standards' algorithms, for every bit width they use.
+
+## Use it
+
+Nothing here is called from an application. `math/ml_bitpack.h` is included by `KEM/math/mlkem_encode.h` (FIPS 203
+ByteEncode_d / ByteDecode_d, Algorithms 5, 6) and `DSA/math/mldsa_encode.h` (FIPS 204 SimpleBitPack, BitPack and
+their inverses, Algorithms 16–19), and the GPU kernels of both use it, one 8-coefficient chunk per work-item.
 
 ## Shared in structure, not in code
 
@@ -29,4 +39,8 @@ similarity is in how the code is organised rather than in shared functions:
   work-item per sponge, arithmetic stages with a team of 32 work-items per operation, each work-item owning one
   8-coefficient chunk of every polynomial — the chunk of `ml_pack8`.
 
-When a third module-lattice scheme arrives, code that it would share with these two moves here.
+## Limits
+
+- The NTT, rejection sampling from an XOF and the GPU kernels are alike in how the code is organised, not shared
+  functions ([Shared in structure, not in code](#shared-in-structure-not-in-code)).
+- When a third module-lattice scheme arrives, code that it would share with these two moves here.
